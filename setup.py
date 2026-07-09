@@ -50,7 +50,14 @@ def prompt(label: str, default: str = "") -> str:
     return value if value else default
 
 
-from src.config import hash_password
+try:
+    from src.config import hash_password
+except ImportError as e:
+    import sys
+    missing = str(e).split("'")[1] if "'" in str(e) else str(e)
+    print(f"Missing dependency: {missing}")
+    print(f"Run: pip install -r requirements.txt")
+    sys.exit(1)
 
 
 def prompt_password(label: str, existing_hash: str = "") -> tuple[str, str]:
