@@ -145,6 +145,24 @@ def check_ollama() -> tuple[bool, list[str]]:
         return False, []
 
 
+def _check_openai_compat(base_url: str) -> tuple[bool, list[str]]:
+    """Check if an OpenAI-compatible endpoint is reachable and list models."""
+    import requests as _req
+    url = base_url.rstrip("/") + "/models"
+    api_key = os.getenv("LLM_API_KEY", "")
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        resp = _req.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            models = [m.get("id", m.get("name", "")) for m in data.get("data", [])]
+            return True, models
+    except Exception:
+        pass
+    return False, []
+
 # ── Sections ─────────────────────────────────────────────────────────
 
 def setup_env() -> None:
@@ -173,19 +191,28 @@ def setup_env() -> None:
     else:
         print("\n  ⚠  Garmin email is required. Set it later in config.env or re-run setup.")
 
-    banner("Local LLM (Ollama)")
+    banner("LLM (OpenAI-compatible)")
 
-    env["LLM_ENDPOINT"] = prompt(
-        "  LLM Endpoint", env.get("LLM_ENDPOINT", "http://localhost:11434/api/generate")
+    print("  Supports vLLM, Ollama (with OpenAI compat), LM Studio, LocalAI, etc.")
+    print("  Set LLM_BASE_URL to the /v1 base URL (e.g. http://localhost:8010/v1)")
+    print()
+
+    env["LLM_BASE_URL"] = prompt(
+        "  LLM Base URL (/v1)", env.get("LLM_BASE_URL", "http://localhost:11434/v1")
+    )
+    env["LLM_API_KEY"] = prompt(
+        "  API Key (blank for local)", env.get("LLM_API_KEY", "")
     )
 
-    # Check available models
-    running, models = check_ollama()
-    if running and models:
-        print(f"  Available Ollama models: {', '.join(models)}")
-    elif running and not models:
-        print("  ⚠  Ollama is running but no models are pulled.")
-        print("  Run: ollama pull llama3  (or your preferred model)")
+    # Try to discover available models
+    if env["LLM_BASE_URL"]:
+        running, models = _check_openai_compat(env["LLM_BASE_URL"])
+        if running and models:
+            print(f"  Available models: {', '.join(models[:10])}")
+        elif running and not models:
+            print("  ⚠  Endpoint reachable but no models listed.")
+        else:
+            print("  ⚠  Cannot reach LLM endpoint. Make sure your server is running.")
 
     env["LLM_MODEL"] = prompt(
         "  LLM Model", env.get("LLM_MODEL", "llama3")
