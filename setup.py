@@ -36,6 +36,9 @@ def _ensure_venv() -> None:
         print(f"  Reloading with venv Python: {venv_python}")
         os.execv(str(venv_python), [str(venv_python), __file__])
 
+# Run venv setup at module level, before any src/ imports
+_ensure_venv()
+
 
 def _vault_dir() -> Path:
     """Resolve the vault directory (outside the git repo)."""
@@ -376,8 +379,6 @@ def setup_cron() -> None:
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main() -> None:
-    # Ensure virtual environment before anything else
-    _ensure_venv()
 
     banner("🚴‍♂️ Cycling AI Agent — Setup Wizard")
     print(f"  Project: {PROJECT_ROOT}")
