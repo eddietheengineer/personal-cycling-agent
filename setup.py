@@ -148,37 +148,19 @@ def check_ollama() -> tuple[bool, list[str]]:
 # ── Sections ─────────────────────────────────────────────────────────
 
 def setup_env() -> None:
-    banner("Intervals.icu API Credentials")
+    banner("Garmin Connect Credentials")
 
     env = read_env()
 
-    print("  Get your API key from https://intervals.icu/settings (scroll to bottom)")
+    print("  Garmin Connect is the primary data source for this agent.")
+    print("  It provides HRV/RMSSD, RHR, stress, sleep, weight, and activities.")
+    print("  Get your credentials from your Garmin Connect account.")
     print()
 
-    env["INTERVALS_ICU_BASE_URL"] = prompt(
-        "  API Base URL", env.get("INTERVALS_ICU_BASE_URL", "https://intervals.icu")
-    )
-    env["INTERVALS_ICU_API_KEY"] = prompt(
-        "  API Key", env.get("INTERVALS_ICU_API_KEY", "")
-    )
-    h, raw = prompt_password(
-        "  API Secret", env.get("INTERVALS_ICU_API_SECRET", "")
-    )
-    env["INTERVALS_ICU_API_SECRET"] = h
-    env["INTERVALS_ICU_ATHLETE_ID"] = prompt(
-        "  Athlete ID (0 = self)", env.get("INTERVALS_ICU_ATHLETE_ID", "0")
-    )
-
-    if not env["INTERVALS_ICU_API_KEY"]:
-        print(f"\n  ⚠  API Key is required. Set it later in {ENV_PATH} or re-run setup.")
-
-    banner("Garmin Connect (Optional — for HRV/RMSSD)")
-    print("  Direct Garmin Connect access pulls HRV data that the")
-    print("  data export doesn't include. Requires garminconnect package.")
-    print()
     env["GARMIN_EMAIL"] = prompt(
-        "  Garmin email (blank to skip)", env.get("GARMIN_EMAIL", "")
+        "  Garmin email", env.get("GARMIN_EMAIL", "")
     )
+
     if env["GARMIN_EMAIL"]:
         h, raw = prompt_password(
             "  Garmin password", env.get("GARMIN_PASSWORD", "")
@@ -188,6 +170,8 @@ def setup_env() -> None:
             "  Token store path (blank for default)",
             env.get("GARMIN_TOKENSTORE", ""),
         )
+    else:
+        print("\n  ⚠  Garmin email is required. Set it later in config.env or re-run setup.")
 
     banner("Local LLM (Ollama)")
 
