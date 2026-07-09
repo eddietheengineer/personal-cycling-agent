@@ -27,7 +27,32 @@ class CyclingDB:
         self.conn.row_factory = sqlite3.Row
         self._create_tables()
 
+    def _migrate_wellness(self):
+        """Add missing columns to the wellness table."""
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(wellness)")
+        existing = {row[1] for row in c.fetchall()}
+
+        columns = {
+            "spo2": "REAL",
+            "body_battery_start": "REAL",
+            "body_battery_end": "REAL",
+            "calories": "REAL",
+            "active_calories": "REAL",
+            "distance_m": "REAL",
+            "min_hr": "REAL",
+            "max_hr": "REAL",
+        }
+
+        for col, typ in columns.items():
+            if col not in existing:
+                c.execute(f"ALTER TABLE wellness ADD COLUMN {col} {typ}")
+                logger.info(f"Migrated: added column {col} to wellness")
+
+        self.conn.commit()
+
     def _create_tables(self):
+        self._migrate_wellness()
         c = self.conn.cursor()
 
         c.execute("""
