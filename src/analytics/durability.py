@@ -80,13 +80,20 @@ def compute_durability(
     total_kj = float(cumulative_kj[-1])
 
     # Rolling max for 1-min (60s) and 5-min (300s) windows
+    from collections import deque
+
     def rolling_max(arr: np.ndarray, window: int) -> np.ndarray:
-        """Compute rolling maximum over a fixed window."""
-        result = np.empty_like(arr)
-        result[:window] = np.nan
-        cummax = np.maximum.accumulate(arr)
-        for i in range(window, len(arr)):
-            result[i] = float(np.max(arr[i - window : i]))
+        """Compute rolling maximum over a fixed window using deque (O(n))."""
+        result = np.full_like(arr, np.nan)
+        dq = deque()  # stores indices, values decreasing
+        for i in range(len(arr)):
+            while dq and arr[dq[-1]] <= arr[i]:
+                dq.pop()
+            dq.append(i)
+            if dq[0] <= i - window:
+                dq.popleft()
+            if i >= window:
+                result[i] = float(arr[dq[0]])
         return result
 
     window_1min = 60

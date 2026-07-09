@@ -42,6 +42,7 @@ class ReadinessResult:
     rhr_upper_band: float
     state: ReadinessState
     recommendation: str
+    confidence: str
 
 
 def _compute_bands(
@@ -70,8 +71,8 @@ def assess_readiness(
     Assess readiness for a target date based on recent wellness history.
 
     Args:
-        wellness_records: List of wellness dicts (from Intervals.icu or DB).
-            Each must have 'id' (date), 'rmssd', and 'resting_hr'.
+        wellness_records: List of wellness dicts (from Garmin Connect or DB).
+            Each must have 'date' (date string), 'rmssd', and 'resting_hr'.
         target_date: ISO date string to assess. Defaults to the most recent record.
         window: Number of days for rolling baseline.
 
@@ -82,13 +83,13 @@ def assess_readiness(
         raise ValueError("No wellness records provided")
 
     # Sort by date descending
-    records = sorted(wellness_records, key=lambda r: r.get("id", ""), reverse=True)
+    records = sorted(wellness_records, key=lambda r: r.get("date", ""), reverse=True)
 
     if not target_date:
-        target_date = records[0]["id"]
+        target_date = records[0].get("date", "")
 
     # Find today's values
-    today = next((r for r in records if r["id"] == target_date), None)
+    today = next((r for r in records if r.get("date") == target_date), None)
     if today is None:
         raise ValueError(f"No wellness record found for date {target_date}")
 
@@ -102,7 +103,7 @@ def assess_readiness(
 
     # Build baseline from the N days BEFORE today (not including today)
     baseline_records = [
-        r for r in records if r["id"] < target_date
+        r for r in records if r.get("date", "") < target_date
     ][:window]
 
     rmssd_values = [
@@ -160,6 +161,7 @@ def assess_readiness(
         rhr_upper_band=rhr_upper,
         state=state,
         recommendation=recommendation,
+        confidence="high" if len(rmssd_values) >= 7 and len(rhr_values) >= 7 else "low",
     )
 
 
@@ -193,4 +195,5 @@ def readiness_to_dict(result: ReadinessResult) -> dict[str, Any]:
         "rhr_band": [round(result.rhr_lower_band, 2), round(result.rhr_upper_band, 2)],
         "state": result.state.value,
         "recommendation": result.recommendation,
+        "confidence": result.confidence,
     }

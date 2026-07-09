@@ -14,8 +14,9 @@ Usage:
 
 import logging
 import os
+import sys
+import time
 from datetime import datetime, timedelta
-from typing import Any
 
 from src import config
 from src.db.store import CyclingDB
@@ -70,6 +71,11 @@ def _login(client: "garminconnect.Garmin") -> None:
     the prompt_mfa callback. Subsequent runs use cached tokens.
     """
     def prompt_mfa():
+        if not sys.stdin.isatty():
+            logger.warning("Non-interactive mode: cannot prompt for MFA code. "
+                           "Skipping Garmin sync.")
+            raise SystemExit("MFA required but running non-interactively. "
+                             "Run manually or pre-cache tokens.")
         code = input("  Enter Garmin MFA code: ").strip()
         return code
 
@@ -77,7 +83,7 @@ def _login(client: "garminconnect.Garmin") -> None:
         # Try to use cached tokens first
         client.login(prompt_mfa=prompt_mfa)
     except Exception as e:
-        logger.error(f"Garmin login failed: {e}")
+        logger.error(f"Garmin login failed: {type(e).__name__}")
         raise
 
 
@@ -151,7 +157,7 @@ def fetch_wellness_for_date(
             sleep_data = client.get_sleep_data(date_str)
             if sleep_data:
                 sleep_score = sleep_data.get("sleepScore")
-                # Sleep duration in milliseconds -> hours
+                # Sleep duration in seconds -> hours
                 sleep_ms = sleep_data.get("sleepTimeSeconds", 0)
                 if sleep_ms:
                     sleep_hours = sleep_ms / 3600.0
@@ -226,6 +232,8 @@ def sync_garmin(
         record = fetch_wellness_for_date(client, date_str)
         if record:
             records.append(record)
+
+        time.sleep(0.5)
 
         # Progress indicator every 30 days
         if (i + 1) % 30 == 0:

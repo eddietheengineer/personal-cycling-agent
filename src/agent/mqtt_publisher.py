@@ -17,7 +17,15 @@ except ImportError:
 
 from src import config
 
-config.setup()
+_initialized = False
+
+
+def _ensure_init() -> None:
+    """Lazily initialize config on first use."""
+    global _initialized
+    if not _initialized:
+        config.setup()
+        _initialized = True
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +48,7 @@ def publish(prescription: str, metadata: dict[str, Any] | None = None) -> bool:
     Returns:
         True if published successfully, False otherwise.
     """
+    _ensure_init()
     if mqtt is None:
         logger.warning("paho-mqtt not installed; skipping MQTT publish")
         return False

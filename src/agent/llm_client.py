@@ -13,7 +13,15 @@ import requests
 
 from src import config
 
-config.setup()
+_initialized = False
+
+
+def _ensure_init() -> None:
+    """Lazily initialize config on first use."""
+    global _initialized
+    if not _initialized:
+        config.setup()
+        _initialized = True
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +41,7 @@ def generate(prompt: str, stream: bool = False) -> str:
     Returns:
         The complete LLM response as a string.
     """
+    _ensure_init()
     payload = {
         "model": LLM_MODEL,
         "prompt": prompt,

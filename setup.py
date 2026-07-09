@@ -10,9 +10,8 @@ Usage:
 """
 
 import getpass
-import hashlib
 import os
-import subprocess
+import shutil
 from pathlib import Path
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -51,10 +50,7 @@ def prompt(label: str, default: str = "") -> str:
     return value if value else default
 
 
-def _hash_password(plaintext: str) -> tuple[str, str]:
-    """Hash a password for storage. Returns (hash_line, raw_value)."""
-    digest = hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
-    return f"hash:{digest}", plaintext
+from src.config import hash_password
 
 
 def prompt_password(label: str, existing_hash: str = "") -> tuple[str, str]:
@@ -63,12 +59,12 @@ def prompt_password(label: str, existing_hash: str = "") -> tuple[str, str]:
     Returns (hash_line, raw_value) for storage in config.env.
     If the user presses Enter with no input, returns ("", "").
     """
-    hint = f" (currently set)" if existing_hash and existing_hash.startswith("hash:") else ""
+    hint = f" (currently set)" if existing_hash and (existing_hash.startswith("hash:") or existing_hash.startswith("pbkdf2:")) else ""
     print(f"  {label}{hint}: ", end="", flush=True)
     raw = getpass.getpass("")
     if not raw:
         return "", ""
-    return _hash_password(raw)
+    return hash_password(raw)
 
 
 def read_env() -> dict[str, str]:
@@ -126,7 +122,6 @@ def copy_template(src: str, dst: str) -> bool:
         return False
     if not os.path.exists(src):
         return False
-    import shutil
     shutil.copy2(src, dst)
     return True
 
@@ -170,7 +165,6 @@ def setup_env() -> None:
         "  API Secret", env.get("INTERVALS_ICU_API_SECRET", "")
     )
     env["INTERVALS_ICU_API_SECRET"] = h
-    env["INTERVALS_ICU_API_SECRET_RAW"] = raw
     env["INTERVALS_ICU_ATHLETE_ID"] = prompt(
         "  Athlete ID (0 = self)", env.get("INTERVALS_ICU_ATHLETE_ID", "0")
     )
@@ -190,7 +184,6 @@ def setup_env() -> None:
             "  Garmin password", env.get("GARMIN_PASSWORD", "")
         )
         env["GARMIN_PASSWORD"] = h
-        env["GARMIN_PASSWORD_RAW"] = raw
         env["GARMIN_TOKENSTORE"] = prompt(
             "  Token store path (blank for default)",
             env.get("GARMIN_TOKENSTORE", ""),
@@ -241,6 +234,9 @@ def setup_env() -> None:
         "  MQTT Password", env.get("MQTT_PASSWORD", "")
     )
     env["MQTT_PASSWORD"] = h
+    # MQTT needs runtime access to the password; the _RAW variant is stored
+    # alongside the hash. Ensure the vault directory has restrictive permissions:
+    #   chmod 700 ~/cycling-agent-data && chmod 600 ~/cycling-agent-data/config.env
     env["MQTT_PASSWORD_RAW"] = raw
 
     write_env(env)
@@ -336,7 +332,6 @@ def main() -> None:
     # Ensure config.env exists (copy from template if first run)
     if not ENV_PATH.exists():
         if os.path.exists(ENV_EXAMPLE):
-            import shutil
             shutil.copy2(ENV_EXAMPLE, ENV_PATH)
             print(f"  Created {ENV_PATH} from template.")
         else:

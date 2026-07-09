@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-VAULT="${CYCLING_AGENT_VAULT:-$HOME/.cycling-agent}"
+VAULT="${CYCLING_AGENT_VAULT:-$HOME/cycling-agent-data}"
 CRON_CMD="cd ${SCRIPT_DIR} && python -m src.main >> ${VAULT}/data/pipeline.log 2>&1"
 
 if [ "${1:-}" = "--remove" ]; then

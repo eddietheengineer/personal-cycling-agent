@@ -100,7 +100,7 @@ def estimate_w_prime_from_activity(
         drawdown = excess / 1000.0  # convert to kJ per second
 
         # Recovery: exponential reconstitution
-        recovery = (balance / tau) if balance > 0 else 0.0
+        recovery = (w_prime_capacity - balance) / tau
 
         balance = balance - drawdown + recovery
         balance = max(0.0, min(balance, w_prime_capacity))

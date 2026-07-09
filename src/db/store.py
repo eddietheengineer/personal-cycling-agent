@@ -20,6 +20,8 @@ class CyclingDB:
     """Thin wrapper around a local SQLite database for cycling telemetry."""
 
     def __init__(self, db_path: str = "data/cycling_agent.sqlite"):
+        if not db_path:
+            raise ValueError('db_path must not be empty')
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         self.conn = sqlite3.connect(db_path)
         self.conn.row_factory = sqlite3.Row
@@ -30,15 +32,23 @@ class CyclingDB:
 
         c.execute("""
             CREATE TABLE IF NOT EXISTS wellness (
-                date        TEXT    PRIMARY KEY,
-                weight      REAL,
-                resting_hr  REAL,
-                rmssd       REAL,
-                stress      REAL,
-                sleep_score REAL,
-                sleep_hours REAL,
-                steps       INTEGER,
-                updated_at  TEXT   NOT NULL DEFAULT (datetime('now'))
+                date              TEXT    PRIMARY KEY,
+                weight            REAL,
+                resting_hr        REAL,
+                rmssd             REAL,
+                stress            REAL,
+                sleep_score       REAL,
+                sleep_hours       REAL,
+                steps             INTEGER,
+                spo2              REAL,
+                body_battery_start REAL,
+                body_battery_end  REAL,
+                calories          REAL,
+                active_calories   REAL,
+                distance_m        REAL,
+                min_hr            REAL,
+                max_hr            REAL,
+                updated_at        TEXT    NOT NULL DEFAULT (datetime('now'))
             )
         """)
 
@@ -77,6 +87,7 @@ class CyclingDB:
         c.execute("CREATE INDEX IF NOT EXISTS idx_streams_metric ON activity_streams(metric)")
 
         self.conn.commit()
+        self.conn.execute("PRAGMA journal_mode=WAL")
 
     # -- Wellness --
 
@@ -96,8 +107,10 @@ class CyclingDB:
             c.execute(
                 """
                 INSERT OR REPLACE INTO wellness
-                    (date, weight, resting_hr, rmssd, stress, sleep_score, sleep_hours, steps)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (date, weight, resting_hr, rmssd, stress, sleep_score, sleep_hours, steps,
+                     spo2, body_battery_start, body_battery_end, calories, active_calories,
+                     distance_m, min_hr, max_hr)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     date,
@@ -108,6 +121,14 @@ class CyclingDB:
                     rec.get("sleep_score"),
                     rec.get("sleep_hours"),
                     rec.get("steps"),
+                    rec.get("spo2"),
+                    rec.get("body_battery_start"),
+                    rec.get("body_battery_end"),
+                    rec.get("calories"),
+                    rec.get("active_calories"),
+                    rec.get("distance_m"),
+                    rec.get("min_hr"),
+                    rec.get("max_hr"),
                 ),
             )
             n += 1

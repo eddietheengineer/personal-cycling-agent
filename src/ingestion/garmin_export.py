@@ -162,10 +162,6 @@ def _parse_activity_files(zip_path: str, root: str) -> list[dict[str, Any]]:
                             activity = _extract_activity(act)
                             if activity:
                                 activities.append(activity)
-                    elif isinstance(item, dict):
-                        activity = _extract_activity(item)
-                        if activity:
-                            activities.append(activity)
             elif isinstance(data, dict):
                 act_list = data.get("summarizedActivitiesExport", [])
                 for act in act_list:
@@ -185,7 +181,7 @@ def _extract_activity(record: dict[str, Any]) -> dict[str, Any] | None:
     # Convert Garmin timestamp to ISO local date
     start_local = record.get("startTimeLocal")
     if start_local:
-        dt = datetime.fromtimestamp(start_local / 1000, tz=timezone.utc)
+        dt = datetime.fromtimestamp(start_local / 1000)
         start_date = dt.strftime("%Y-%m-%dT%H:%M:%S")
     else:
         start_date = None

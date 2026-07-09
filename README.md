@@ -1,11 +1,11 @@
 # 🚴‍♂️ Cycling AI Agent
 
-Privacy-first, locally hosted AI cycling coach. Ingests raw telemetry (HRV, RHR, Power, DFA-a1) from Intervals.icu, calculates physiological readiness, and prescribes daily training via a local LLM.
+Privacy-first, locally hosted AI cycling coach. Ingests raw telemetry (HRV, RHR, Power, DFA-a1) from Garmin Connect, calculates physiological readiness, and prescribes daily training via a local LLM.
 
 ## Architecture
 
 ```
-Intervals.icu API → Ingestion → SQLite → Analytics → Prompt Builder → Local LLM → MQTT → Dashboard
+Garmin Connect API → Ingestion → SQLite → Analytics → Prompt Builder → Local LLM → MQTT → Dashboard
 ```
 
 ### Analytics Engine
@@ -51,7 +51,7 @@ python -m src.main
 Individual stages:
 
 ```bash
-python -m src.main --ingest      # fetch data from Intervals.icu
+python -m src.main --ingest      # fetch data from Garmin Connect
 python -m src.main --analyze     # run analytics on stored data
 python -m src.main --prescribe   # generate LLM prescription
 python -m src.main --verbose     # enable debug logging
@@ -102,11 +102,11 @@ All sensitive data lives in a **vault directory** outside the repository (`~/cyc
 | `~/cycling-agent-data/config.env` | API keys, LLM endpoint, MQTT, biometrics. Passwords stored as SHA-256 hashes. |
 | `~/cycling-agent-data/user_profile.md` | Training goals, constraints, equipment |
 | `~/cycling-agent-data/data/` | SQLite database, pipeline logs, prescriptions |
-| `~/cycling-agent-data/raw/` | Raw FIT/TCX/GPX files downloaded from Intervals.icu |
+| `~/cycling-agent-data/raw/` | Raw FIT/TCX/GPX files downloaded from Garmin Connect |
 
 **Password hashing:** API secrets and MQTT passwords are stored as `hash:<sha256>` with the plaintext kept in a `_RAW` companion variable. At runtime, the hash is verified before the plaintext is loaded into the process environment. If the hash doesn't match, the credential is rejected.
 
-**Raw data archival:** Every activity file downloaded from Intervals.icu is saved to `~/cycling-agent-data/raw/` alongside the processed database, so you always have the original telemetry.
+**Raw data archival:** Every activity file downloaded from Garmin Connect is saved to `~/cycling-agent-data/raw/` alongside the processed database, so you always have the original telemetry.
 
 The repo itself contains zero secrets. Even if you accidentally run `git add -f .` on everything, nothing sensitive is in the tree.
 
@@ -125,7 +125,8 @@ src/
 ├── config.py                # Vault path resolver & env loader
 ├── main.py                  # Pipeline orchestrator
 ├── ingestion/
-│   └── intervals_api.py     # Intervals.icu API client
+│   ├── garmin_connect.py    # Garmin Connect API client
+│   └── garmin_export.py     # Garmin data export importer
 ├── analytics/
 │   ├── readiness.py         # Two-factor readiness engine
 │   ├── threshold.py         # DFA-a1 threshold modeler
@@ -143,6 +144,6 @@ src/
 ## Requirements
 
 - Python 3.10+
-- Intervals.icu account with API key enabled
+- Garmin Connect account
 - Local LLM (Ollama recommended)
 - Optional: MQTT broker (Mosquitto) for dashboard integration

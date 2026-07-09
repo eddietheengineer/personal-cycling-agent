@@ -13,13 +13,22 @@ from typing import Any
 
 from src import config
 
-config.setup()
+_initialized = False
+
+
+def _ensure_init() -> None:
+    """Lazily initialize config on first use."""
+    global _initialized
+    if not _initialized:
+        config.setup()
+        _initialized = True
 
 logger = logging.getLogger(__name__)
 
 
 def load_user_profile() -> str:
     """Load the user profile markdown file. Returns empty string if not found."""
+    _ensure_init()
     profile_path = config.user_profile_path()
     if not profile_path.exists():
         logger.warning(f"User profile not found at {profile_path}")

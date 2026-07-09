@@ -25,8 +25,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Environment variable names whose values are stored as SHA-256 hashes
-_HASHED_VARS = {"INTERVALS_ICU_API_SECRET", "MQTT_PASSWORD"}
+# Environment variable names whose values are stored as pbkdf2 hashes
+_HASHED_VARS = {"GARMIN_PASSWORD", "MQTT_PASSWORD"}
 
 
 def _vault_dir() -> Path:
@@ -41,7 +41,7 @@ def setup() -> Path:
     """
     Initialize the vault: create directories if needed, load config.env.
 
-    Passwords stored as SHA-256 hashes are transparently resolved back to
+    Passwords stored as pbkdf2 hashes are transparently resolved back to
     plaintext in the process environment.
 
     Returns the resolved vault path.
@@ -61,51 +61,66 @@ def setup() -> Path:
 
 def _resolve_hashed_passwords() -> None:
     """
-    For any env var in _HASHED_VARS whose value starts with 'hash:',
-    verify it's a valid SHA-256 hex string and replace the env var
-    with the raw value stored alongside it.
+    For any env var in _HASHED_VARS whose value starts with 'pbkdf2:',
+    verify it against the _RAW value stored alongside it and replace
+    the env var with the raw plaintext.
 
     Format in config.env:
-        INTERVALS_ICU_API_SECRET=hash:<sha256hex>
-        INTERVALS_ICU_API_SECRET_RAW=actual_secret_value
+        GARMIN_PASSWORD=pbkdf2:<salt_hex>:<hash_hex>
+        GARMIN_PASSWORD_RAW=actual_secret_value
 
-    The _RAW variant is loaded from the file but never exposed outside
-    the process. The hash variant is what's persisted to disk.
+    For garminconnect, the _RAW value is only needed for initial auth;
+    tokens are cached thereafter. For MQTT/API secrets that need runtime
+    access, the vault must have restrictive permissions (chmod 600).
     """
     for var in _HASHED_VARS:
         hashed = os.environ.get(var, "")
-        if hashed.startswith("hash:"):
+        if hashed.startswith("pbkdf2:"):
+            parts = hashed[9:].split(":", 1)
+            if len(parts) != 2:
+                continue
+            salt_hex, hash_hex = parts
+            raw_var = var + "_RAW"
+            raw_value = os.environ.get(raw_var, "")
+            if not raw_value:
+                continue
+            salt = bytes.fromhex(salt_hex)
+            computed = hashlib.pbkdf2_hmac('sha256', raw_value.encode(), salt, 600000).hex()
+            if computed == hash_hex:
+                os.environ[var] = raw_value
+            else:
+                os.environ[var] = ""
+        elif hashed.startswith("hash:"):
+            # Legacy SHA-256 format — resolve for backward compatibility
             digest = hashed[5:]
             raw_var = var + "_RAW"
             raw_value = os.environ.get(raw_var, "")
             if not raw_value:
-                # No raw value stored — can't resolve, leave as-is
                 continue
-            # Verify the hash matches
             computed = hashlib.sha256(raw_value.encode("utf-8")).hexdigest()
             if computed == digest:
-                # Hash verified — set the plaintext in env
                 os.environ[var] = raw_value
             else:
-                # Hash mismatch — password was changed externally
-                os.environ[var] = ""  # invalidate
-        # If value doesn't start with 'hash:', it's plaintext — leave as-is
+                os.environ[var] = ""
+        # If value doesn't start with 'pbkdf2:' or 'hash:', it's plaintext — leave as-is
 
 
-def hash_password(plaintext: str) -> str:
+def hash_password(plaintext: str) -> tuple[str, str]:
     """
-    Hash a password for storage in config.env.
+    Hash a password for storage in config.env using pbkdf2.
 
-    Returns 'hash:<sha256hex>' for the hash line, and the plaintext
-    for the corresponding _RAW line.
+    Returns 'pbkdf2:<salt_hex>:<hash_hex>' for the hash line.
+    No _RAW line is needed — garminconnect caches auth tokens,
+    so passwords are only used for initial authentication.
+    For MQTT and API secrets that need runtime access, the vault
+    must have restrictive permissions (chmod 600).
 
-    Usage in setup.py:
-        h, raw = hash_password(user_input)
-        env["INTERVALS_ICU_API_SECRET"] = h
-        env["INTERVALS_ICU_API_SECRET_RAW"] = raw
+    Returns (hash_line, plaintext) for compatibility with callers
+    that still need the raw value at runtime.
     """
-    digest = hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
-    return f"hash:{digest}", plaintext
+    salt = os.urandom(16)
+    hash_hex = hashlib.pbkdf2_hmac('sha256', plaintext.encode(), salt, 600000).hex()
+    return f"pbkdf2:{salt.hex()}:{hash_hex}", plaintext
 
 
 def vault_path() -> Path:

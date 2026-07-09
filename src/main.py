@@ -2,7 +2,7 @@
 Cycling AI Agent - Main Pipeline Orchestrator.
 
 Runs the full daily pipeline:
-1. Ingest data from Intervals.icu
+1. Ingest data from Garmin Connect
 2. Run analytics (readiness, thresholds, W', durability, decoupling)
 3. Build LLM prompt from analytics + user profile
 4. Generate training prescription via local LLM
@@ -29,13 +29,13 @@ from src import config
 
 config.setup()
 
-from src.ingestion.intervals_api import fetch_wellness, fetch_activities
+from src.ingestion.garmin_connect import sync_garmin
 from src.db.store import CyclingDB
 from src.analytics.readiness import assess_readiness, readiness_to_dict
-from src.analytics.threshold import threshold_to_dict
-from src.analytics.w_prime import w_prime_to_dict
-from src.analytics.durability import durability_to_dict
-from src.analytics.decoupling import decoupling_to_dict
+from src.analytics.threshold import analyze_thresholds, threshold_to_dict
+from src.analytics.w_prime import estimate_w_prime_from_activity, w_prime_to_dict
+from src.analytics.durability import compute_durability, durability_to_dict
+from src.analytics.decoupling import compute_decoupling, decoupling_to_dict
 from src.agent.prompt_builder import build_system_prompt
 from src.agent.llm_client import generate_with_retries
 from src.agent.mqtt_publisher import publish as mqtt_publish
@@ -48,11 +48,9 @@ logger = logging.getLogger("cycling_agent")
 
 
 def run_ingest() -> dict:
-    """Fetch and store data from Intervals.icu."""
-    from src.ingestion.intervals_api import ingest_all
-
+    """Fetch and store data from Garmin Connect."""
     logger.info("Starting data ingestion...")
-    counts = ingest_all(db_path=DB_PATH)
+    counts = sync_garmin(db_path=DB_PATH)
     logger.info(f"Ingestion complete: {counts}")
     return counts
 
@@ -69,10 +67,9 @@ def run_analyze() -> dict:
             return {}
 
         wellness_dicts = [dict(r) for r in wellness_records]
-        today = datetime.now().strftime("%Y-%m-%d")
 
-        # Use the latest available date if today has no data
-        latest_date = wellness_dicts[0]["id"]
+        # Use the latest available date
+        latest_date = wellness_dicts[0].get("date", "")
         readiness_result = assess_readiness(wellness_dicts, target_date=latest_date)
         readiness_dict = readiness_to_dict(readiness_result)
         logger.info(f"Readiness: {readiness_result.state.value} - {readiness_result.recommendation}")
@@ -81,9 +78,69 @@ def run_analyze() -> dict:
         activities = db.get_activities(oldest=(datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"))
         activity_dicts = [dict(a) for a in activities]
 
+        # --- Thresholds, W', Durability, Decoupling ---
+        # Run analytics on recent activities that have power data
+        thresholds_results = []
+        w_prime_results = []
+        durability_results = []
+        decoupling_results = []
+
+        for act in activity_dicts[:5]:
+            activity_id = act.get("id", "")
+            if not activity_id:
+                continue
+
+            # Get power stream for this activity
+            power_rows = db.get_activity_streams(activity_id, "power")
+            power_samples = [float(r["value"]) for r in power_rows] if power_rows else []
+
+            # Get HR stream for decoupling
+            hr_rows = db.get_activity_streams(activity_id, "heart_rate")
+            hr_samples = [float(r["value"]) for r in hr_rows] if hr_rows else []
+
+            # Get DFA-a1 stream for thresholds
+            dfa_rows = db.get_activity_streams(activity_id, "dfa_a1")
+            dfa_samples = [float(r["value"]) for r in dfa_rows] if dfa_rows else []
+
+            # Thresholds (needs power + DFA-a1)
+            if power_samples and dfa_samples:
+                try:
+                    tr = analyze_thresholds(activity_id, power_samples, dfa_samples)
+                    thresholds_results.append(threshold_to_dict(tr))
+                except Exception as e:
+                    logger.warning(f"Threshold analysis failed for {activity_id}: {e}")
+
+            # W' (needs power)
+            if power_samples:
+                try:
+                    wp = estimate_w_prime_from_activity(activity_id, power_samples)
+                    w_prime_results.append(w_prime_to_dict(wp))
+                except Exception as e:
+                    logger.warning(f"W' estimation failed for {activity_id}: {e}")
+
+            # Durability (needs power)
+            if power_samples:
+                try:
+                    dp = compute_durability(activity_id, power_samples)
+                    durability_results.append(durability_to_dict(dp))
+                except Exception as e:
+                    logger.warning(f"Durability analysis failed for {activity_id}: {e}")
+
+            # Decoupling (needs power + HR)
+            if power_samples and hr_samples:
+                try:
+                    dc = compute_decoupling(activity_id, power_samples, hr_samples)
+                    decoupling_results.append(decoupling_to_dict(dc))
+                except Exception as e:
+                    logger.warning(f"Decoupling analysis failed for {activity_id}: {e}")
+
     result = {
         "readiness": readiness_dict,
         "recent_activities": activity_dicts[:5],
+        "thresholds": thresholds_results,
+        "w_prime": w_prime_results,
+        "durability": durability_results,
+        "decoupling": decoupling_results,
     }
 
     # Save analytics result for the prompt builder
