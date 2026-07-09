@@ -59,41 +59,6 @@ LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 logger = logging.getLogger("cycling_agent")
 
 
-def _resolve_ftp(db: CyclingDB) -> float:
-    """Resolve FTP from user profile, falling back to CP estimation."""
-    profile_path = config.user_profile_path()
-    if profile_path.exists():
-        text = profile_path.read_text()
-        for line in text.splitlines():
-            if "FTP" in line.upper() and ":" in line:
-                # Extract number from lines like "- FTP (watts): ~180"
-                parts = line.split(":")
-                if len(parts) >= 2:
-                    import re
-                    nums = re.findall(r"(\d+)", parts[-1])
-                    if nums:
-                        ftp = int(nums[0])
-                        logger.info(f"FTP from profile: {ftp}W")
-                        return float(ftp)
-
-    # Fallback: estimate CP from all activities with power data
-    activities = db.get_activities()
-    activity_data = []
-    for act in activities:
-        d = dict(act)
-        dur = d.get("duration", 0)
-        avg_pwr = d.get("average_power")
-        if dur and avg_pwr and dur > 60:
-            activity_data.append({"duration": dur, "average_power": avg_pwr})
-
-    if activity_data:
-        cp = estimate_critical_power(activity_data)
-        logger.info(f"Estimated CP (used as FTP): {cp}W")
-        return cp
-
-    logger.warning("No FTP found — using default 200W")
-    return 200.0
-
 
 def run_ingest() -> dict:
     """Fetch and store data from Garmin Connect."""
@@ -125,9 +90,6 @@ def run_analyze() -> dict:
         readiness_dict = readiness_to_dict(readiness_result)
         logger.info(f"Readiness: {readiness_result.state.value} - {readiness_result.recommendation}")
 
-        # --- Base FTP from profile (starting point) ---
-        base_ftp = _resolve_ftp(db)
-
         # --- All activities, sorted chronologically ---
         activities = db.get_activities()
         activity_dicts = sorted(
@@ -136,8 +98,8 @@ def run_analyze() -> dict:
         )
 
         # --- Walk chronologically, advancing FTP only forward ---
-        current_ftp = base_ftp
-        cp_data_points: list[dict] = []  # (duration, avg_power) for CP estimation
+        current_ftp = 0.0
+        cp_data_points: list[dict] = []
 
         power_metrics_results = []
         w_prime_results = []
