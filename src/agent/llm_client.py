@@ -7,7 +7,7 @@ LocalAI, etc.) via the standard /v1/chat/completions interface.
 Configuration via environment variables:
     LLM_BASE_URL   - Base URL (e.g. http://localhost:8010/v1)
     LLM_API_KEY    - API key (optional for local servers)
-    LLM_MODEL      - Model name (e.g. qwen3.6-27b)
+    LLM_MODEL      - Model name (auto-detected if blank)
     LLM_TIMEOUT    - Request timeout in seconds (default 120)
 """
 
@@ -40,16 +40,42 @@ def _get_base_url() -> str:
     return os.getenv("LLM_BASE_URL", "http://localhost:11434/v1").rstrip("/")
 
 
-def _get_model() -> str:
-    return os.getenv("LLM_MODEL", "llama3")
-
-
 def _get_api_key() -> str:
     return os.getenv("LLM_API_KEY", "")
 
 
 def _get_timeout() -> int:
     return int(os.getenv("LLM_TIMEOUT", "120"))
+
+
+def _discover_models() -> list[str]:
+    """Query /v1/models and return a list of available model IDs."""
+    url = _get_base_url() + "/models"
+    api_key = _get_api_key()
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            return [m.get("id", "") for m in data.get("data", [])]
+    except Exception:
+        pass
+    return []
+
+
+def _get_model() -> str:
+    """Get the LLM model, auto-detecting from /v1/models if not set."""
+    model = os.getenv("LLM_MODEL", "")
+    if model:
+        return model
+    # Auto-detect: pick first available model
+    models = _discover_models()
+    if models:
+        logger.info(f"Auto-detected LLM model: {models[0]}")
+        return models[0]
+    return "llama3"
 
 
 # ── OpenAI-compatible API ────────────────────────────────────────────

@@ -208,15 +208,32 @@ def setup_env() -> None:
     if env["LLM_BASE_URL"]:
         running, models = _check_openai_compat(env["LLM_BASE_URL"])
         if running and models:
-            print(f"  Available models: {', '.join(models[:10])}")
+            print(f"  Found {len(models)} model(s):")
+            for idx, m in enumerate(models, 1):
+                print(f"    {idx}. {m}")
+            if len(models) > 1:
+                choice = prompt(f"\n  Select model (1-{len(models)}, or blank for default)", "")
+                try:
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(models):
+                        env["LLM_MODEL"] = models[idx]
+                        print(f"  → Selected: {models[idx]}")
+                    else:
+                        print("  Invalid selection, using default.")
+                except ValueError:
+                    pass
+            elif len(models) == 1:
+                env["LLM_MODEL"] = models[0]
+                print(f"  → Auto-selected: {models[0]}")
         elif running and not models:
             print("  ⚠  Endpoint reachable but no models listed.")
         else:
             print("  ⚠  Cannot reach LLM endpoint. Make sure your server is running.")
 
-    env["LLM_MODEL"] = prompt(
-        "  LLM Model", env.get("LLM_MODEL", "llama3")
-    )
+    if not env.get("LLM_MODEL"):
+        env["LLM_MODEL"] = prompt(
+            "  LLM Model", env.get("LLM_MODEL", "llama3")
+        )
     env["LLM_TIMEOUT"] = prompt(
         "  LLM Timeout (seconds)", env.get("LLM_TIMEOUT", "120")
     )
