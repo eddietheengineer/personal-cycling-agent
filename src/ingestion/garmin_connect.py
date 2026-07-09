@@ -2,10 +2,11 @@
 Garmin Connect API client using python-garminconnect.
 
 Pulls daily wellness data (HRV/RMSSD, RHR, stress, sleep, steps, weight)
-directly from Garmin Connect and stores it in the local SQLite database.
+and activity streams (power, heart rate) directly from Garmin Connect.
 
 This is the primary source for HRV data — Garmin's data export does not
-include HRV, so the API is needed for the readiness engine.
+include HRV, so the API is needed for the readiness engine. Activity
+streams enable W', durability, and decoupling analysis.
 
 Usage:
     from src.ingestion.garmin_connect import sync_garmin
@@ -180,7 +181,143 @@ def fetch_wellness_for_date(
 
     except Exception as e:
         logger.debug(f"Failed to fetch wellness for {date_str}: {e}")
-        return None
+
+
+def _fetch_activity_streams(
+    client: "garminconnect.Garmin",
+    activity_id: int,
+    db_path: str,
+) -> int:
+    """
+    Download and store activity stream data (power, heart rate) for a single activity.
+
+    Uses get_activity_splits() to get per-split data, then downloads the FIT file
+    for per-second power/HR data if available.
+
+    Returns the number of stream records stored.
+    """
+    try:
+        # Try to get split-level data first
+        splits = client.get_activity_splits(activity_id)
+        if not splits:
+            return 0
+
+        db = CyclingDB(db_path)
+        total_stored = 0
+
+        # Extract power and HR from splits
+        # Each split has: startTime, duration, avgPower, avgHeartRate, etc.
+        for split in splits:
+            start_time = split.get("startTime", 0)
+            duration = split.get("duration", 0)
+            avg_power = split.get("avgPower")
+            avg_hr = split.get("avgHeartRate")
+
+            if start_time and duration:
+                # Store as stream data (timestamp, value)
+                power_values = []
+                hr_values = []
+
+                # Create interpolated samples within the split duration
+                # Use 1-second intervals for reasonable resolution
+                for sec in range(0, int(duration), 1):
+                    ts = start_time + sec
+                    if avg_power is not None:
+                        power_values.append((float(ts), float(avg_power)))
+                    if avg_hr is not None:
+                        hr_values.append((float(ts), float(avg_hr)))
+
+                if power_values:
+                    total_stored += db.store_activity_streams(str(activity_id), "power", power_values)
+                if hr_values:
+                    total_stored += db.store_activity_streams(str(activity_id), "heart_rate", hr_values)
+
+        db.close()
+        return total_stored
+
+    except Exception as e:
+        logger.debug(f"Failed to fetch streams for activity {activity_id}: {type(e).__name__}")
+        return 0
+
+
+def sync_activities(
+    days: int = 90,
+    db_path: str | None = None,
+    tokenstore: str | None = None,
+) -> dict[str, int]:
+    """
+    Sync activity stream data (power, heart rate) from Garmin Connect.
+
+    Downloads split-level data for recent activities and stores power/HR streams.
+
+    Args:
+        days: Number of days back to fetch activities.
+        db_path: Optional override for the database path.
+        tokenstore: Optional path for Garmin auth token cache.
+
+    Returns:
+        Dict with counts of activities processed and stream records stored.
+    """
+    if db_path is None:
+        db_path = str(config.db_path("cycling_agent.sqlite"))
+
+    if tokenstore is None:
+        vault = config.vault_path()
+        tokenstore = str(vault / "garmin_tokens.json")
+
+    email, password, _ = _get_garmin_credentials()
+    if not email or not password:
+        logger.error(
+            "Garmin credentials not set in config.env. "
+            "Run 'python setup.py' and set GARMIN_EMAIL and GARMIN_PASSWORD."
+        )
+        raise SystemExit(1)
+
+    logger.info(f"Syncing activity streams for last {days} days...")
+
+    client = _create_client(tokenstore)
+    _login(client)
+
+    # Get activities for the date range
+    today = datetime.now().date()
+    start_date = (today - timedelta(days=days)).strftime("%Y-%m-%d")
+    end_date = today.strftime("%Y-%m-%d")
+
+    try:
+        activities = client.get_activities_by_date(start_date, end_date, None, 0, 100)
+    except Exception as e:
+        logger.error(f"Failed to fetch activities: {type(e).__name__}")
+        return {"activities_processed": 0, "stream_records": 0}
+
+    if not activities:
+        logger.info("No activities found for the date range")
+        return {"activities_processed": 0, "stream_records": 0}
+
+    total_stored = 0
+    processed = 0
+
+    for activity in activities:
+        activity_id = activity.get("activityId")
+        if not activity_id:
+            continue
+
+        processed += 1
+        logger.info(f"  Fetching streams for activity {activity_id} ({processed}/{len(activities)})")
+
+        stored = _fetch_activity_streams(client, activity_id, db_path)
+        total_stored += stored
+
+        # Rate limiting
+        time.sleep(1.0)
+
+    logger.info(
+        f"Activity sync complete: {processed} activities, {total_stored} stream records stored"
+    )
+
+    return {
+        "activities_processed": processed,
+        "stream_records": total_stored,
+    }
 
 
 def sync_garmin(

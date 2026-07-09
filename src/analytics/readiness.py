@@ -96,9 +96,10 @@ def assess_readiness(
     rmssd = today.get("rmssd")
     resting_hr = today.get("resting_hr")
 
-    if rmssd is None or resting_hr is None:
+    if rmssd is None and resting_hr is None:
         raise ValueError(
-            f"RMSSD and resting_hr are required for readiness assessment on {target_date}"
+            f"Both RMSSD and resting_hr are missing for {target_date}. "
+            f"At least one is required for readiness assessment."
         )
 
     # Build baseline from the N days BEFORE today (not including today)
@@ -113,20 +114,22 @@ def assess_readiness(
         r["resting_hr"] for r in baseline_records if r.get("resting_hr") is not None
     ]
 
-    if len(rmssd_values) < 7 or len(rhr_values) < 7:
-        logger.warning(
-            f"Insufficient baseline data: {len(rmssd_values)} RMSSD, {len(rhr_values)} RHR "
-            f"(minimum 7 each recommended)"
-        )
+    # Compute bands; use defaults when data is unavailable
+    if rmssd_values:
+        rmssd_mean, rmssd_std, rmssd_lower, rmssd_upper = _compute_bands(rmssd_values)
+    else:
+        rmssd_mean, rmssd_std, rmssd_lower, rmssd_upper = 0.0, 0.0, 0.0, 0.0
 
-    rmssd_mean, rmssd_std, rmssd_lower, rmssd_upper = _compute_bands(rmssd_values)
-    rhr_mean, rhr_std, rhr_lower, rhr_upper = _compute_bands(rhr_values)
+    if rhr_values:
+        rhr_mean, rhr_std, rhr_lower, rhr_upper = _compute_bands(rhr_values)
+    else:
+        rhr_mean, rhr_std, rhr_lower, rhr_upper = 0.0, 0.0, 0.0, 0.0
 
-    # State machine
-    rmssd_below = rmssd < rmssd_lower
-    rmssd_above = rmssd > rmssd_upper
-    rhr_above = resting_hr > rhr_upper
-    rhr_below = resting_hr < rhr_lower
+    # State machine — handle partial data gracefully
+    rmssd_below = rmssd is not None and rmssd < rmssd_lower
+    rmssd_above = rmssd is not None and rmssd > rmssd_upper
+    rhr_above = resting_hr is not None and resting_hr > rhr_upper
+    rhr_below = resting_hr is not None and resting_hr < rhr_lower
 
     if rmssd_below and rhr_above:
         state = ReadinessState.SYMPATHETIC_STRESS
@@ -140,12 +143,30 @@ def assess_readiness(
             "Parasympathetic hyperactivity: HRV abnormally high AND RHR abnormally low. "
             "Indicates deep systemic exhaustion. Cap intensity; permit steady endurance only."
         )
+    elif rmssd is None and rhr_above:
+        state = ReadinessState.SYMPATHETIC_STRESS
+        recommendation = (
+            "RHR above baseline (no HRV data available). "
+            "Consider reducing intensity; monitor closely."
+        )
+    elif rmssd is None and rhr_below:
+        state = ReadinessState.PARASYMPATHETIC_HYPERACTIVITY
+        recommendation = (
+            "RHR below baseline (no HRV data available). "
+            "May indicate deep exhaustion; cap intensity."
+        )
     else:
         state = ReadinessState.COPING
-        recommendation = (
-            "Coping well: HRV and RHR within normal bands. "
-            "Proceed with planned training intensity."
-        )
+        if rmssd is None:
+            recommendation = (
+                "RHR within normal bands (no HRV data available). "
+                "Proceed with planned training; enable Garmin Connect sync for HRV."
+            )
+        else:
+            recommendation = (
+                "Coping well: metrics within normal bands. "
+                "Proceed with planned training intensity."
+            )
 
     return ReadinessResult(
         date=target_date,
@@ -171,7 +192,7 @@ def assess_all_dates(
 ) -> list[ReadinessResult]:
     """Assess readiness for every date in the wellness records."""
     results = []
-    dates = sorted(set(r["id"] for r in wellness_records))
+    dates = sorted(set(r.get("date", "") for r in wellness_records if r.get("date")))
     for date in dates:
         try:
             result = assess_readiness(wellness_records, target_date=date, window=window)

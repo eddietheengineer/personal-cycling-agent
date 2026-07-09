@@ -29,7 +29,7 @@ from src import config
 
 config.setup()
 
-from src.ingestion.garmin_connect import sync_garmin
+from src.ingestion.garmin_connect import sync_garmin, sync_activities
 from src.db.store import CyclingDB
 from src.analytics.readiness import assess_readiness, readiness_to_dict
 from src.analytics.threshold import analyze_thresholds, threshold_to_dict
@@ -51,8 +51,13 @@ def run_ingest() -> dict:
     """Fetch and store data from Garmin Connect."""
     logger.info("Starting data ingestion...")
     counts = sync_garmin(db_path=DB_PATH)
-    logger.info(f"Ingestion complete: {counts}")
-    return counts
+    logger.info(f"Wellness sync complete: {counts}")
+
+    # Sync activity streams for recent activities
+    activity_counts = sync_activities(days=90, db_path=DB_PATH)
+    logger.info(f"Activity sync complete: {activity_counts}")
+
+    return {**counts, **activity_counts}
 
 
 def run_analyze() -> dict:
