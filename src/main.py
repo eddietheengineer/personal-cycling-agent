@@ -19,11 +19,16 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
 from datetime import datetime, timedelta
 
-# Add project root to path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, PROJECT_ROOT)
+PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+VENV_DIR = PROJECT_ROOT / ".venv"
+
+# Use venv Python if available
+_venv_python = VENV_DIR / "bin" / "python"
+if _venv_python.exists() and _venv_python != Path(sys.executable):
+    os.execv(str(_venv_python), [str(_venv_python), "-m", "src.main"] + sys.argv[1:])
 
 from src import config
 

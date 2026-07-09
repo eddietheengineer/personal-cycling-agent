@@ -12,9 +12,29 @@ Usage:
 import getpass
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
-PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__)))
+VENV_DIR = PROJECT_ROOT / ".venv"
+
+
+def _ensure_venv() -> None:
+    """Create and activate a virtual environment if it doesn't exist."""
+    if not VENV_DIR.exists():
+        print(f"  Creating virtual environment at {VENV_DIR}...")
+        subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], check=True)
+        print(f"  Installing dependencies...")
+        subprocess.run([str(VENV_DIR / "bin" / "pip"), "install", "-r", "requirements.txt"], check=True)
+    else:
+        print(f"  Virtual environment found at {VENV_DIR}.")
+
+    # Activate venv by prepending to PATH and updating sys.path
+    venv_python = VENV_DIR / "bin" / "python"
+    if venv_python.exists() and venv_python != Path(sys.executable):
+        print(f"  Reloading with venv Python: {venv_python}")
+        os.execv(str(venv_python), [str(venv_python), __file__])
 
 
 def _vault_dir() -> Path:
@@ -356,6 +376,9 @@ def setup_cron() -> None:
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # Ensure virtual environment before anything else
+    _ensure_venv()
+
     banner("🚴‍♂️ Cycling AI Agent — Setup Wizard")
     print(f"  Project: {PROJECT_ROOT}")
     print(f"  Vault:   {VAULT}")
