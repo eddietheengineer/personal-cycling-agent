@@ -21,6 +21,7 @@ import os
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
+import numpy as np
 
 PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VENV_DIR = PROJECT_ROOT / ".venv"
@@ -112,10 +113,6 @@ def run_analyze() -> dict:
     logger.info("Starting analytics...")
 
     with CyclingDB(DB_PATH) as db:
-        # --- FTP ---
-        ftp = _resolve_ftp(db)
-        logger.info(f"Using FTP: {ftp}W")
-
         # --- Readiness ---
         wellness_records = db.get_wellness()
         if not wellness_records:
@@ -123,20 +120,25 @@ def run_analyze() -> dict:
             return {}
 
         wellness_dicts = [dict(r) for r in wellness_records]
-
-        # Use the latest available date
         latest_date = wellness_dicts[0].get("date", "")
         readiness_result = assess_readiness(wellness_dicts, target_date=latest_date)
         readiness_dict = readiness_to_dict(readiness_result)
         logger.info(f"Readiness: {readiness_result.state.value} - {readiness_result.recommendation}")
 
-        # --- Activities (last 90 days) ---
-        activities = db.get_activities(
-            oldest=(datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-        )
-        activity_dicts = [dict(a) for a in activities]
+        # --- Base FTP from profile (starting point) ---
+        base_ftp = _resolve_ftp(db)
 
-        # --- Per-activity analytics ---
+        # --- All activities, sorted chronologically ---
+        activities = db.get_activities()
+        activity_dicts = sorted(
+            [dict(a) for a in activities],
+            key=lambda a: a.get("start_date", ""),
+        )
+
+        # --- Walk chronologically, advancing FTP only forward ---
+        current_ftp = base_ftp
+        cp_data_points: list[dict] = []  # (duration, avg_power) for CP estimation
+
         power_metrics_results = []
         w_prime_results = []
         durability_results = []
@@ -149,7 +151,6 @@ def run_analyze() -> dict:
             if not activity_id:
                 continue
 
-            # Strip 'garmin_' prefix for stream lookup (FIT files use bare IDs)
             stream_id = activity_id
             if stream_id.startswith("garmin_"):
                 stream_id = stream_id[len("garmin_"):]
@@ -164,13 +165,29 @@ def run_analyze() -> dict:
             dfa_samples = [float(r["value"]) for r in dfa_rows] if dfa_rows else []
             duration = len(power_samples) if power_samples else 0
 
-            # Power metrics (needs power)
+            # Add this activity to CP data pool (if it has power)
+            if power_samples and duration >= 60:
+                avg_pwr = float(np.mean(power_samples))
+                cp_data_points.append({"duration": duration, "avg_power": avg_pwr})
+
+                # Re-estimate CP from all activities seen so far
+                new_cp = estimate_critical_power(cp_data_points)
+                if new_cp > current_ftp:
+                    current_ftp = new_cp
+                    logger.info(f"FTP advanced to {current_ftp:.0f}W (from {len(cp_data_points)} activities)")
+
+            # Use current FTP for this activity's metrics
             pm_result = None
             if power_samples:
                 try:
-                    pm_result = compute_power_metrics(activity_id, power_samples, duration, ftp)
+                    pm_result = compute_power_metrics(
+                        activity_id, power_samples, duration, current_ftp
+                    )
                     power_metrics_results.append(power_metrics_to_dict(pm_result))
-                    tss_records.append({"date": act.get("start_date", "")[:10], "tss": pm_result.tss})
+                    tss_records.append({
+                        "date": act.get("start_date", "")[:10],
+                        "tss": pm_result.tss,
+                    })
                 except Exception as e:
                     logger.warning(f"Power metrics failed for {activity_id}: {e}")
 
@@ -211,6 +228,7 @@ def run_analyze() -> dict:
             # Store computed metrics in DB (separate from raw data)
             if pm_result is not None:
                 db.store_activity_metrics(activity_id, {
+                    "ftp_used": current_ftp,
                     "normalized_power": pm_result.normalized_power,
                     "intensity_factor": pm_result.intensity_factor,
                     "tss": pm_result.tss,
@@ -226,14 +244,14 @@ def run_analyze() -> dict:
         training_load_history = []
         if tss_records:
             try:
-                tl = compute_training_load(tss_records, ftp)
+                tl = compute_training_load(tss_records, current_ftp)
                 training_load_result = training_load_to_dict(tl)
                 training_load_history = compute_training_load_history(tss_records)
             except Exception as e:
                 logger.warning(f"Training load computation failed: {e}")
 
     result = {
-        "ftp": ftp,
+        "ftp": current_ftp,
         "readiness": readiness_dict,
         "training_load": training_load_result,
         "training_load_history": training_load_history,

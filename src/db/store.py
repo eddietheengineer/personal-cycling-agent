@@ -51,9 +51,27 @@ class CyclingDB:
 
         self.conn.commit()
 
+    def _migrate_activity_metrics(self):
+        """Add missing columns to the activity_metrics table."""
+        c = self.conn.cursor()
+        c.execute("PRAGMA table_info(activity_metrics)")
+        existing = {row[1] for row in c.fetchall()}
+
+        columns = {
+            "ftp_used": "REAL",
+        }
+
+        for col, typ in columns.items():
+            if col not in existing:
+                c.execute(f"ALTER TABLE activity_metrics ADD COLUMN {col} {typ}")
+                logger.info(f"Migrated: added column {col} to activity_metrics")
+
+        self.conn.commit()
+
 
     def _create_tables(self):
         self._migrate_wellness()
+        self._migrate_activity_metrics()
         c = self.conn.cursor()
 
         c.execute("""
@@ -123,6 +141,7 @@ class CyclingDB:
         c.execute("""
             CREATE TABLE IF NOT EXISTS activity_metrics (
                 activity_id     TEXT    NOT NULL,
+                ftp_used        REAL,
                 normalized_power REAL,
                 intensity_factor REAL,
                 tss             REAL,
@@ -347,11 +366,12 @@ class CyclingDB:
         """Store computed metrics for an activity (separate from raw data)."""
         self.conn.execute(
             "INSERT OR REPLACE INTO activity_metrics "
-            "(activity_id, normalized_power, intensity_factor, tss, variability_index, "
+            "(activity_id, ftp_used, normalized_power, intensity_factor, tss, variability_index, "
             " w_prime_capacity, w_prime_min_balance, decoupling_drift, duration_sec) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 activity_id,
+                metrics.get("ftp_used"),
                 metrics.get("normalized_power"),
                 metrics.get("intensity_factor"),
                 metrics.get("tss"),
