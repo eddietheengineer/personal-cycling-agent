@@ -111,6 +111,13 @@ class CyclingDB:
         c.execute("CREATE INDEX IF NOT EXISTS idx_streams_activity ON activity_streams(activity_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_streams_metric ON activity_streams(metric)")
 
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS sync_state (
+                source          TEXT    PRIMARY KEY,
+                last_synced_at  TEXT    NOT NULL,
+                details         TEXT
+            )
+        """)
         self.conn.commit()
         self.conn.execute("PRAGMA journal_mode=WAL")
 
@@ -297,6 +304,25 @@ class CyclingDB:
             "WHERE activity_id = ? AND metric = ? ORDER BY elapsed",
             (activity_id, metric),
         ).fetchall()
+
+    # -- Sync State --
+
+    def get_last_synced(self, source: str) -> str | None:
+        """Return the last_synced_at timestamp for a source, or None."""
+        row = self.conn.execute(
+            "SELECT last_synced_at FROM sync_state WHERE source = ?",
+            (source,),
+        ).fetchone()
+        return row["last_synced_at"] if row else None
+
+    def set_last_synced(self, source: str, ts: str, details: str | None = None):
+        """Record the last sync timestamp for a source."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO sync_state (source, last_synced_at, details) "
+            "VALUES (?, ?, ?)",
+            (source, ts, details),
+        )
+        self.conn.commit()
 
     # -- Lifecycle --
 

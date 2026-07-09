@@ -29,6 +29,16 @@ try:
 except ImportError:
     garminconnect = None  # type: ignore
 
+try:
+    from garmin_auth import GarminAuth
+except ImportError:
+    GarminAuth = None  # type: ignore
+
+try:
+    from fitparse import FitFile
+except ImportError:
+    FitFile = None  # type: ignore
+
 
 def _get_garmin_credentials() -> tuple[str, str, str]:
     """
@@ -45,48 +55,45 @@ def _get_garmin_credentials() -> tuple[str, str, str]:
 
 
 def _create_client(tokenstore: str) -> "garminconnect.Garmin":
-    """Create and return an authenticated Garmin client."""
+    """Create and return an authenticated Garmin client using garmin-auth."""
     if garminconnect is None:
         raise ImportError(
             "garminconnect package not installed. "
             "Run: pip install garminconnect curl_cffi"
         )
+    if GarminAuth is None:
+        raise ImportError(
+            "garmin-auth package not installed. "
+            "Run: pip install garmin-auth"
+        )
 
     email, password, _ = _get_garmin_credentials()
 
-    client = garminconnect.Garmin(email, password)
+    # Use garmin-auth for token persistence and rate-limit-aware auth.
+    # Tokens are cached in the vault directory so cron runs don't re-auth.
+    auth = GarminAuth(
+        email=email,
+        password=password,
+        token_dir="~/.garminconnect",
+        prompt_mfa=lambda: _prompt_mfa_interactive(),
+    )
 
-    # Use custom token store if specified
-    if tokenstore:
-        os.makedirs(os.path.dirname(tokenstore) or ".", exist_ok=True)
-        client.set_tokenfile(tokenstore)
+    client = auth.login()
+    if client is None:
+        raise RuntimeError("Garmin login returned no client")
 
     return client
 
 
-def _login(client: "garminconnect.Garmin") -> None:
-    """
-    Login to Garmin Connect. Handles MFA via callback.
-
-    On first run, Garmin may require MFA. The library will prompt via
-    the prompt_mfa callback. Subsequent runs use cached tokens.
-    """
-    def prompt_mfa():
-        if not sys.stdin.isatty():
-            logger.warning("Non-interactive mode: cannot prompt for MFA code. "
-                           "Skipping Garmin sync.")
-            raise SystemExit("MFA required but running non-interactively. "
-                             "Run manually or pre-cache tokens.")
-        code = input("  Enter Garmin MFA code: ").strip()
-        return code
-
-    try:
-        # Try to use cached tokens first
-        client.login(prompt_mfa=prompt_mfa)
-    except Exception as e:
-        logger.error(f"Garmin login failed: {type(e).__name__}")
-        raise
-
+def _prompt_mfa_interactive() -> str:
+    """Prompt for MFA code; exit gracefully in non-interactive mode."""
+    if not sys.stdin.isatty():
+        logger.warning("Non-interactive mode: cannot prompt for MFA code. "
+                       "Skipping Garmin sync.")
+        raise SystemExit("MFA required but running non-interactively. "
+                         "Run manually or pre-cache tokens.")
+    code = input("  Enter Garmin MFA code: ").strip()
+    return code
 
 def fetch_wellness_for_date(
     client: "garminconnect.Garmin", date_str: str
@@ -189,81 +196,152 @@ def _fetch_activity_streams(
     db_path: str,
 ) -> int:
     """
-    Download and store activity stream data (power, heart rate) for a single activity.
-
-    Uses get_activity_splits() to get per-split data, then downloads the FIT file
-    for per-second power/HR data if available.
+    Download the original FIT file for an activity, save it locally,
+    and parse per-second power/HR/cadence/speed data into the DB.
 
     Returns the number of stream records stored.
     """
+    if FitFile is None:
+        logger.warning("fitparse not installed — cannot parse FIT files")
+        return 0
+
     try:
-        # Try to get split-level data first
-        splits = client.get_activity_splits(activity_id)
-        if not splits:
+        vault = config.vault_path()
+        fit_dir = vault / "raw" / "fit"
+        fit_dir.mkdir(parents=True, exist_ok=True)
+
+        fit_path = fit_dir / f"{activity_id}.fit"
+
+        if not fit_path.exists():
+            # Download original FIT from Garmin (returns a ZIP)
+            zip_bytes = client.download_activity(
+                str(activity_id),
+                garminconnect.Garmin.ActivityDownloadFormat.ORIGINAL,
+            )
+
+            # Extract the .fit file from the ZIP
+            import io
+            import zipfile
+
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+                # Find the FIT file in the archive
+                fit_names = [n for n in zf.namelist() if n.endswith(".fit")]
+                if not fit_names:
+                    logger.debug(
+                        f"No .fit file in download for activity {activity_id}, "
+                        f"archive contains: {zf.namelist()[:5]}"
+                    )
+                    return 0
+                fit_name = fit_names[0]
+                fit_data = zf.read(fit_name)
+
+            fit_path.write_bytes(fit_data)
+            logger.info(f"Downloaded FIT file for activity {activity_id} ({fit_name})")
+
+        # Parse FIT file from disk
+        fit_file = FitFile(str(fit_path))
+
+        # Collect per-second data from record messages.
+        # FIT timestamps are absolute UTC (systime), so we normalize to
+        # elapsed seconds from the first record.
+        power_values: list[tuple[float, float]] = []
+        hr_values: list[tuple[float, float]] = []
+        cadence_values: list[tuple[float, float]] = []
+        speed_values: list[tuple[float, float]] = []
+        altitude_values: list[tuple[float, float]] = []
+
+        first_ts: float | None = None
+
+        for msg in fit_file.get_messages("record"):
+            ts = msg.get_value("timestamp")
+            if ts is None:
+                continue
+
+            # fitparse returns datetime.datetime for timestamp
+            if hasattr(ts, "timestamp"):
+                ts = ts.timestamp()
+
+            if first_ts is None:
+                first_ts = float(ts)
+
+            elapsed = float(ts) - first_ts
+
+            pwr = msg.get_value("power")
+            if pwr is not None:
+                power_values.append((elapsed, float(pwr)))
+
+            hr = msg.get_value("heart_rate")
+            if hr is not None:
+                hr_values.append((elapsed, float(hr)))
+
+            cad = msg.get_value("cadence")
+            if cad is not None:
+                cadence_values.append((elapsed, float(cad)))
+
+            speed = msg.get_value("enhanced_speed") or msg.get_value("speed")
+            if speed is not None:
+                speed_values.append((elapsed, float(speed)))
+
+            alt = msg.get_value("enhanced_altitude") or msg.get_value("altitude")
+            if alt is not None:
+                altitude_values.append((elapsed, float(alt)))
+
+        fit_file.close()
+
+        if not any([power_values, hr_values, cadence_values, speed_values, altitude_values]):
+            logger.debug(f"No stream data in FIT file for activity {activity_id}")
             return 0
 
         db = CyclingDB(db_path)
         total_stored = 0
 
-        # Extract power and HR from splits
-        # Each split has: startTime, duration, avgPower, avgHeartRate, etc.
-        for split in splits:
-            start_time = split.get("startTime", 0)
-            duration = split.get("duration", 0)
-            avg_power = split.get("avgPower")
-            avg_hr = split.get("avgHeartRate")
-
-            if start_time and duration:
-                # Store as stream data (timestamp, value)
-                power_values = []
-                hr_values = []
-
-                # Create interpolated samples within the split duration
-                # Use 1-second intervals for reasonable resolution
-                for sec in range(0, int(duration), 1):
-                    ts = start_time + sec
-                    if avg_power is not None:
-                        power_values.append((float(ts), float(avg_power)))
-                    if avg_hr is not None:
-                        hr_values.append((float(ts), float(avg_hr)))
-
-                if power_values:
-                    total_stored += db.store_activity_streams(str(activity_id), "power", power_values)
-                if hr_values:
-                    total_stored += db.store_activity_streams(str(activity_id), "heart_rate", hr_values)
+        for metric, values in [
+            ("power", power_values),
+            ("heart_rate", hr_values),
+            ("cadence", cadence_values),
+            ("speed", speed_values),
+            ("altitude", altitude_values),
+        ]:
+            if values:
+                total_stored += db.store_activity_streams(str(activity_id), metric, values)
 
         db.close()
+        logger.info(
+            f"Parsed FIT for activity {activity_id}: "
+            f"{len(power_values)} power, {len(hr_values)} HR, "
+            f"{len(cadence_values)} cadence, {len(speed_values)} speed, "
+            f"{len(altitude_values)} altitude samples"
+        )
         return total_stored
 
     except Exception as e:
-        logger.debug(f"Failed to fetch streams for activity {activity_id}: {type(e).__name__}")
+        logger.debug(f"Failed to fetch streams for activity {activity_id}: {type(e).__name__}: {e}")
         return 0
 
 
 def sync_activities(
-    days: int = 90,
+    days: int = 1,
     db_path: str | None = None,
     tokenstore: str | None = None,
 ) -> dict[str, int]:
     """
-    Sync activity stream data (power, heart rate) from Garmin Connect.
+    Sync activity stream data from Garmin Connect, one day at a time.
 
-    Downloads split-level data for recent activities and stores power/HR streams.
+    Pulls activities for the single most recent day that hasn't been
+    synced yet (going backwards from the last sync point), downloads
+    and parses their FIT files. This lets cron run daily and
+    incrementally backfill without overwhelming the API.
 
     Args:
-        days: Number of days back to fetch activities.
+        days: Unused (kept for backward compatibility).
         db_path: Optional override for the database path.
-        tokenstore: Optional path for Garmin auth token cache.
+        tokenstore: Unused (kept for backward compatibility).
 
     Returns:
         Dict with counts of activities processed and stream records stored.
     """
     if db_path is None:
         db_path = str(config.db_path("cycling_agent.sqlite"))
-
-    if tokenstore is None:
-        vault = config.vault_path()
-        tokenstore = str(vault / "garmin_tokens.json")
 
     email, password, _ = _get_garmin_credentials()
     if not email or not password:
@@ -273,24 +351,41 @@ def sync_activities(
         )
         raise SystemExit(1)
 
-    logger.info(f"Syncing activity streams for last {days} days...")
+    db = CyclingDB(db_path)
+    last_synced = db.get_last_synced("garmin_activities")
+    db.close()
+
+    today = datetime.now().date()
+    if last_synced:
+        try:
+            last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
+        except ValueError:
+            logger.warning(f"Unparseable last_synced value '{last_synced}', "
+                           "starting from yesterday")
+            last_date = today - timedelta(days=1)
+    else:
+        last_date = today - timedelta(days=1)
+
+    # Target the day before the last synced day
+    target_date = last_date - timedelta(days=1)
+    target_str = target_date.strftime("%Y-%m-%d")
+
+    logger.info(f"Syncing activities for {target_str} (last synced: {last_synced or 'never'})")
 
     client = _create_client(tokenstore)
-    _login(client)
-
-    # Get activities for the date range
-    today = datetime.now().date()
-    start_date = (today - timedelta(days=days)).strftime("%Y-%m-%d")
-    end_date = today.strftime("%Y-%m-%d")
 
     try:
-        activities = client.get_activities_by_date(start_date, end_date, None, 0, 100)
+        activities = client.get_activities_by_date(target_str, target_str)
     except Exception as e:
         logger.error(f"Failed to fetch activities: {type(e).__name__}")
         return {"activities_processed": 0, "stream_records": 0}
 
     if not activities:
-        logger.info("No activities found for the date range")
+        logger.info(f"No activities found for {target_str}")
+        # Advance the sync pointer so we don't retry forever
+        db = CyclingDB(db_path)
+        db.set_last_synced("garmin_activities", target_str)
+        db.close()
         return {"activities_processed": 0, "stream_records": 0}
 
     total_stored = 0
@@ -302,16 +397,24 @@ def sync_activities(
             continue
 
         processed += 1
-        logger.info(f"  Fetching streams for activity {activity_id} ({processed}/{len(activities)})")
+        logger.info(
+            f"  Fetching streams for activity {activity_id} "
+            f"({processed}/{len(activities)})"
+        )
 
         stored = _fetch_activity_streams(client, activity_id, db_path)
         total_stored += stored
 
-        # Rate limiting
         time.sleep(1.0)
 
+    # Record sync timestamp
+    db = CyclingDB(db_path)
+    db.set_last_synced("garmin_activities", target_str)
+    db.close()
+
     logger.info(
-        f"Activity sync complete: {processed} activities, {total_stored} stream records stored"
+        f"Activity sync complete for {target_str}: "
+        f"{processed} activities, {total_stored} stream records stored"
     )
 
     return {
@@ -321,27 +424,28 @@ def sync_activities(
 
 
 def sync_garmin(
-    days: int = 90,
+    days: int = 1,
     db_path: str | None = None,
     tokenstore: str | None = None,
 ) -> dict[str, int]:
     """
-    Sync wellness data from Garmin Connect for the last N days.
+    Sync wellness data from Garmin Connect, one day at a time.
+
+    Pulls the single most recent day that hasn't been synced yet
+    (going backwards from the last sync point). On first run with no
+    prior sync, pulls yesterday. This lets cron run daily and
+    incrementally backfill historical data without overwhelming the API.
 
     Args:
-        days: Number of days to sync back from today.
+        days: Unused (kept for backward compatibility).
         db_path: Optional override for the database path.
-        tokenstore: Optional path for Garmin auth token cache.
+        tokenstore: Unused (kept for backward compatibility).
 
     Returns:
         Dict with counts of new/updated records.
     """
-    vault = config.vault_path()
     if db_path is None:
         db_path = str(config.db_path("cycling_agent.sqlite"))
-
-    if tokenstore is None:
-        tokenstore = str(vault / "garmin_tokens.json")
 
     email, password, _ = _get_garmin_credentials()
     if not email or not password:
@@ -351,45 +455,49 @@ def sync_garmin(
         )
         raise SystemExit(1)
 
-    logger.info(f"Syncing Garmin Connect data for last {days} days...")
+    db = CyclingDB(db_path)
+    last_synced = db.get_last_synced("garmin_wellness")
+
+    today = datetime.now().date()
+    if last_synced:
+        try:
+            last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
+        except ValueError:
+            logger.warning(f"Unparseable last_synced value '{last_synced}', "
+                           "starting from yesterday")
+            last_date = today - timedelta(days=1)
+    else:
+        last_date = today - timedelta(days=1)
+
+    # Target the day before the last synced day
+    target_date = last_date - timedelta(days=1)
+    target_str = target_date.strftime("%Y-%m-%d")
+
+    logger.info(f"Syncing wellness for {target_str} (last synced: {last_synced or 'never'})")
 
     # Create client and login
     client = _create_client(tokenstore)
-    _login(client)
     logger.info("Authenticated with Garmin Connect")
 
-    # Fetch wellness data for each day
-    records = []
-    today = datetime.now().date()
+    record = fetch_wellness_for_date(client, target_str)
+    time.sleep(0.5)
 
-    for i in range(days):
-        date = today - timedelta(days=i)
-        date_str = date.strftime("%Y-%m-%d")
-
-        record = fetch_wellness_for_date(client, date_str)
-        if record:
-            records.append(record)
-
-        time.sleep(0.5)
-
-        # Progress indicator every 30 days
-        if (i + 1) % 30 == 0:
-            logger.info(f"  Processed {i + 1}/{days} days, {len(records)} with data")
-
-    if not records:
-        logger.warning("No wellness data retrieved from Garmin Connect")
+    if record is None:
+        logger.info(f"No wellness data for {target_str}")
+        # Still advance the sync pointer so we don't retry forever
+        db.set_last_synced("garmin_wellness", target_str)
+        db.close()
         return {"wellness_records": 0, "with_hrv": 0}
 
-    # Store in database
-    db = CyclingDB(db_path)
-    stored = db.store_wellness(records)
+    stored = db.store_wellness([record])
+    db.set_last_synced("garmin_wellness", target_str)
     db.close()
 
-    # Count records with HRV
-    with_hrv = sum(1 for r in records if r.get("rmssd") is not None)
+    with_hrv = 1 if record.get("rmssd") is not None else 0
 
     logger.info(
-        f"Sync complete: {stored} records stored, {with_hrv} with HRV data"
+        f"Sync complete for {target_str}: {stored} record(s) stored, "
+        f"{with_hrv} with HRV data"
     )
 
     return {

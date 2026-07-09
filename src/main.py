@@ -59,7 +59,7 @@ def run_ingest() -> dict:
     logger.info(f"Wellness sync complete: {counts}")
 
     # Sync activity streams for recent activities
-    activity_counts = sync_activities(days=90, db_path=DB_PATH)
+    activity_counts = sync_activities(days=1, db_path=DB_PATH)
     logger.info(f"Activity sync complete: {activity_counts}")
 
     return {**counts, **activity_counts}
