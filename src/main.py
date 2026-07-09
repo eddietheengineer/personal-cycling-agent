@@ -97,8 +97,18 @@ def run_analyze() -> dict:
             key=lambda a: a.get("start_date", ""),
         )
 
-        # --- Walk chronologically, advancing FTP only forward ---
+        # --- Walk chronologically, with CP decay over time ---
+        # CP decays exponentially between activities (half-life ~28 days,
+        # consistent with VO2max/CP detraining literature: ~10-15% loss
+        # per week of complete detraining). Recent high-intensity data
+        # can raise it again.
+        _CP_HALF_LIFE_DAYS = 28.0
+        _CP_DECAY_FACTOR = 1.0 - (1.0 / (2.0 ** (1.0 / _CP_HALF_LIFE_DAYS)))
+        # Equivalent EWMA: CP_today = CP_yesterday + (new_cp - CP_yesterday) * alpha
+        # where alpha = 1 - 0.5^(1/28) ≈ 0.0247 per day
+
         current_ftp = 0.0
+        last_activity_date: datetime | None = None
         cp_data_points: list[dict] = []
 
         power_metrics_results = []
@@ -127,6 +137,21 @@ def run_analyze() -> dict:
             dfa_samples = [float(r["value"]) for r in dfa_rows] if dfa_rows else []
             duration = len(power_samples) if power_samples else 0
 
+            # Parse activity date for decay calculation
+            act_date_str = act.get("start_date", "")[:10]
+            try:
+                act_date = datetime.strptime(act_date_str, "%Y-%m-%d")
+            except ValueError:
+                act_date = None
+
+            # Decay FTP based on days since last activity
+            if last_activity_date is not None and act_date is not None:
+                days_gap = (act_date - last_activity_date).days
+                if days_gap > 0 and current_ftp > 0:
+                    # Exponential decay: FTP_new = FTP_old * 0.5^(days/half_life)
+                    decay = 0.5 ** (days_gap / _CP_HALF_LIFE_DAYS)
+                    current_ftp = current_ftp * decay
+
             # Add this activity to CP data pool (if it has power)
             if power_samples and duration >= 60:
                 avg_pwr = float(np.mean(power_samples))
@@ -136,7 +161,13 @@ def run_analyze() -> dict:
                 new_cp = estimate_critical_power(cp_data_points)
                 if new_cp > current_ftp:
                     current_ftp = new_cp
-                    logger.info(f"FTP advanced to {current_ftp:.0f}W (from {len(cp_data_points)} activities)")
+                    logger.info(
+                        f"FTP advanced to {current_ftp:.0f}W "
+                        f"(from {len(cp_data_points)} activities)"
+                    )
+
+            if act_date is not None:
+                last_activity_date = act_date
 
             # Use current FTP for this activity's metrics
             pm_result = None
