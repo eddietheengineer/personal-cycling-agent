@@ -1,0 +1,364 @@
+#!/usr/bin/env python3
+"""
+Interactive setup wizard for the Cycling AI Agent.
+
+Guides the user through configuring .env, USER_PROFILE.md, and Ollama.
+Accepts current values (if set) or prompts for new ones.
+
+Usage:
+    python setup.py
+"""
+
+import getpass
+import hashlib
+import os
+import subprocess
+from pathlib import Path
+
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+
+def _vault_dir() -> Path:
+    """Resolve the vault directory (outside the git repo)."""
+    override = os.environ.get("CYCLING_AGENT_VAULT")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path.home() / "cycling-agent-data"
+
+
+VAULT = _vault_dir()
+ENV_PATH = VAULT / "config.env"
+PROFILE_PATH = VAULT / "user_profile.md"
+ENV_EXAMPLE = os.path.join(PROJECT_ROOT, ".env.example")
+PROFILE_TEMPLATE = os.path.join(PROJECT_ROOT, "USER_PROFILE_TEMPLATE.md")
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+def banner(title: str) -> None:
+    width = 60
+    print(f"\n{'=' * width}")
+    print(f"  {title}")
+    print(f"{'=' * width}")
+
+
+def prompt(label: str, default: str = "") -> str:
+    if default:
+        print(f"  {label} [{default}]: ", end="", flush=True)
+    else:
+        print(f"  {label}: ", end="", flush=True)
+    value = input().strip()
+    return value if value else default
+
+
+def _hash_password(plaintext: str) -> tuple[str, str]:
+    """Hash a password for storage. Returns (hash_line, raw_value)."""
+    digest = hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
+    return f"hash:{digest}", plaintext
+
+
+def prompt_password(label: str, existing_hash: str = "") -> tuple[str, str]:
+    """
+    Prompt for a password securely (no echo).
+    Returns (hash_line, raw_value) for storage in config.env.
+    If the user presses Enter with no input, returns ("", "").
+    """
+    hint = f" (currently set)" if existing_hash and existing_hash.startswith("hash:") else ""
+    print(f"  {label}{hint}: ", end="", flush=True)
+    raw = getpass.getpass("")
+    if not raw:
+        return "", ""
+    return _hash_password(raw)
+
+
+def read_env() -> dict[str, str]:
+    """Parse KEY=VALUE lines from .env (ignoring comments and blanks)."""
+    env = {}
+    if not os.path.exists(ENV_PATH):
+        return env
+    with open(ENV_PATH, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                env[key.strip()] = value.strip()
+    return env
+
+
+def write_env(env: dict[str, str]) -> None:
+    """Write .env from the dict, preserving order from .env.example."""
+    # Read example to get canonical key order and comments
+    lines = []
+    if os.path.exists(ENV_EXAMPLE):
+        with open(ENV_EXAMPLE, "r") as f:
+            example_lines = f.readlines()
+    else:
+        example_lines = []
+
+    seen = set()
+    for line in example_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            lines.append(line.rstrip("\n"))
+            continue
+        if "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if key in env:
+                lines.append(f"{key}={env[key]}")
+                seen.add(key)
+            else:
+                lines.append(line.rstrip("\n"))  # keep original (empty value)
+
+    # Add any keys not in the example
+    for key, value in env.items():
+        if key not in seen:
+            lines.append(f"{key}={value}")
+
+    with open(ENV_PATH, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def copy_template(src: str, dst: str) -> bool:
+    """Copy template if destination doesn't exist. Returns True if copied."""
+    if os.path.exists(dst):
+        return False
+    if not os.path.exists(src):
+        return False
+    import shutil
+    shutil.copy2(src, dst)
+    return True
+
+
+def check_ollama() -> tuple[bool, list[str]]:
+    """Check if Ollama is running and return (running, available_models)."""
+    try:
+        result = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            models = []
+            for line in result.stdout.strip().split("\n")[1:]:  # skip header
+                parts = line.split()
+                if parts:
+                    models.append(parts[0].split(":")[0])
+            return True, models
+        return False, []
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False, []
+
+
+# ── Sections ─────────────────────────────────────────────────────────
+
+def setup_env() -> None:
+    banner("Intervals.icu API Credentials")
+
+    env = read_env()
+
+    print("  Get your API key from https://intervals.icu/settings (scroll to bottom)")
+    print()
+
+    env["INTERVALS_ICU_BASE_URL"] = prompt(
+        "  API Base URL", env.get("INTERVALS_ICU_BASE_URL", "https://intervals.icu")
+    )
+    env["INTERVALS_ICU_API_KEY"] = prompt(
+        "  API Key", env.get("INTERVALS_ICU_API_KEY", "")
+    )
+    h, raw = prompt_password(
+        "  API Secret", env.get("INTERVALS_ICU_API_SECRET", "")
+    )
+    env["INTERVALS_ICU_API_SECRET"] = h
+    env["INTERVALS_ICU_API_SECRET_RAW"] = raw
+    env["INTERVALS_ICU_ATHLETE_ID"] = prompt(
+        "  Athlete ID (0 = self)", env.get("INTERVALS_ICU_ATHLETE_ID", "0")
+    )
+
+    if not env["INTERVALS_ICU_API_KEY"]:
+        print(f"\n  ⚠  API Key is required. Set it later in {ENV_PATH} or re-run setup.")
+
+    banner("Garmin Connect (Optional — for HRV/RMSSD)")
+    print("  Direct Garmin Connect access pulls HRV data that the")
+    print("  data export doesn't include. Requires garminconnect package.")
+    print()
+    env["GARMIN_EMAIL"] = prompt(
+        "  Garmin email (blank to skip)", env.get("GARMIN_EMAIL", "")
+    )
+    if env["GARMIN_EMAIL"]:
+        h, raw = prompt_password(
+            "  Garmin password", env.get("GARMIN_PASSWORD", "")
+        )
+        env["GARMIN_PASSWORD"] = h
+        env["GARMIN_PASSWORD_RAW"] = raw
+        env["GARMIN_TOKENSTORE"] = prompt(
+            "  Token store path (blank for default)",
+            env.get("GARMIN_TOKENSTORE", ""),
+        )
+
+    banner("Local LLM (Ollama)")
+
+    env["LLM_ENDPOINT"] = prompt(
+        "  LLM Endpoint", env.get("LLM_ENDPOINT", "http://localhost:11434/api/generate")
+    )
+
+    # Check available models
+    running, models = check_ollama()
+    if running and models:
+        print(f"  Available Ollama models: {', '.join(models)}")
+    elif running and not models:
+        print("  ⚠  Ollama is running but no models are pulled.")
+        print("  Run: ollama pull llama3  (or your preferred model)")
+
+    env["LLM_MODEL"] = prompt(
+        "  LLM Model", env.get("LLM_MODEL", "llama3")
+    )
+    env["LLM_TIMEOUT"] = prompt(
+        "  LLM Timeout (seconds)", env.get("LLM_TIMEOUT", "120")
+    )
+
+    banner("Rider Biometrics")
+
+    env["RIDER_WEIGHT_KG"] = prompt(
+        "  Weight (kg)", env.get("RIDER_WEIGHT_KG", "")
+    )
+
+    banner("MQTT (Optional — press Enter to skip)")
+
+    env["MQTT_BROKER"] = prompt(
+        "  MQTT Broker", env.get("MQTT_BROKER", "localhost")
+    )
+    env["MQTT_PORT"] = prompt(
+        "  MQTT Port", env.get("MQTT_PORT", "1883")
+    )
+    env["MQTT_TOPIC"] = prompt(
+        "  MQTT Topic", env.get("MQTT_TOPIC", "cycling/agent/prescription")
+    )
+    env["MQTT_USERNAME"] = prompt(
+        "  MQTT Username (blank if none)", env.get("MQTT_USERNAME", "")
+    )
+    h, raw = prompt_password(
+        "  MQTT Password", env.get("MQTT_PASSWORD", "")
+    )
+    env["MQTT_PASSWORD"] = h
+    env["MQTT_PASSWORD_RAW"] = raw
+
+    write_env(env)
+    print(f"\n  ✓  Written to {ENV_PATH}")
+
+
+def setup_profile() -> None:
+    banner("User Profile")
+
+    copied = copy_template(PROFILE_TEMPLATE, PROFILE_PATH)
+    if copied:
+        print(f"  Created {PROFILE_PATH} from template.")
+    else:
+        print(f"  {PROFILE_PATH} already exists.")
+
+    print(f"\n  Edit {PROFILE_PATH} with your training goals and constraints.")
+    print("  Or press Enter to skip for now.")
+    prompt("  Press Enter to continue", "")
+
+
+def setup_garmin() -> None:
+    banner("Garmin Data (Optional)")
+    print("  Two options for getting your Garmin data:")
+    print("  1. Import a data export ZIP (historical activities + wellness)")
+    print("  2. Sync from Garmin Connect API (includes HRV/RMSSD)")
+    print()
+
+    # Option 1: Data export
+    answer = prompt("  Path to Garmin export ZIP (or Enter to skip)", "")
+    if answer:
+        path = os.path.expanduser(answer.strip())
+        if not os.path.exists(path):
+            print(f"  ⚠  File not found: {path}")
+        else:
+            print(f"  Importing {path}...")
+            from src.ingestion.garmin_export import import_garmin_export
+            counts = import_garmin_export(path)
+            print(f"  ✓  Imported {counts['wellness_records']} wellness records, {counts['activity_records']} activities")
+    else:
+        print("  No export ZIP provided.")
+
+    # Option 2: API sync
+    print()
+    email = os.getenv("GARMIN_EMAIL", "")
+    if email:
+        answer = prompt("  Sync HRV data from Garmin Connect API? [y/N]", "").lower()
+        if answer == "y":
+            try:
+                from src.ingestion.garmin_connect import sync_garmin
+                days = prompt("  Days to sync back", "90")
+                counts = sync_garmin(days=int(days))
+                print(f"  ✓  Synced {counts['wellness_records']} records ({counts['with_hrv']} with HRV)")
+            except ImportError as e:
+                print(f"  ⚠  {e}")
+                print("  Install with: pip install garminconnect curl_cffi")
+            except Exception as e:
+                print(f"  ⚠  Sync failed: {e}")
+        else:
+            print("  Skipped API sync. Run later: python -m src.ingestion.garmin_connect")
+    else:
+        print("  Garmin credentials not set. Set GARMIN_EMAIL/GARMIN_PASSWORD in config.env for API sync.")
+    print()
+
+def setup_cron() -> None:
+    banner("Daily Automation")
+
+    print("  Install a cron job to run the pipeline at 05:00 each morning?")
+    answer = prompt("  [y/N]", "").lower()
+
+    if answer == "y":
+        cron_script = os.path.join(PROJECT_ROOT, "setup_cron.sh")
+        if os.path.exists(cron_script):
+            subprocess.run(["bash", cron_script], check=False)
+        else:
+            print(f"  ⚠  {cron_script} not found. Install manually:")
+            print(f"    crontab -e")
+            print(f"    0 5 * * * cd {PROJECT_ROOT} && python -m src.main >> {VAULT}/data/pipeline.log 2>&1")
+    else:
+        print("  Skipped. Run 'bash setup_cron.sh' later to enable.")
+
+
+# ── Main ─────────────────────────────────────────────────────────────
+
+def main() -> None:
+    banner("🚴‍♂️ Cycling AI Agent — Setup Wizard")
+    print(f"  Project: {PROJECT_ROOT}")
+    print(f"  Vault:   {VAULT}")
+    print()
+
+    # Create vault directory
+    VAULT.mkdir(parents=True, exist_ok=True)
+
+    # Ensure config.env exists (copy from template if first run)
+    if not ENV_PATH.exists():
+        if os.path.exists(ENV_EXAMPLE):
+            import shutil
+            shutil.copy2(ENV_EXAMPLE, ENV_PATH)
+            print(f"  Created {ENV_PATH} from template.")
+        else:
+            ENV_PATH.touch()
+
+    setup_env()
+    setup_profile()
+    setup_garmin()
+
+    banner("Setup Complete!")
+    print()
+    print(f"  Secrets stored in: {VAULT}")
+    print(f"  - {ENV_PATH}       (API keys, LLM, MQTT)")
+    print(f"  - {PROFILE_PATH}  (training profile)")
+    print(f"  - {VAULT}/data/   (SQLite DB, logs)")
+    print()
+    print("  Next steps:")
+    print(f"  1. Edit {PROFILE_PATH} with your training goals")
+    print("  2. Make sure Ollama is running:  ollama serve")
+    print("  3. Test the pipeline:  python -m src.main")
+    print()
+
+
+if __name__ == "__main__":
+    main()
