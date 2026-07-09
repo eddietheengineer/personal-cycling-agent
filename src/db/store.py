@@ -51,6 +51,7 @@ class CyclingDB:
 
         self.conn.commit()
 
+
     def _create_tables(self):
         self._migrate_wellness()
         c = self.conn.cursor()
@@ -116,6 +117,22 @@ class CyclingDB:
                 source          TEXT    PRIMARY KEY,
                 last_synced_at  TEXT    NOT NULL,
                 details         TEXT
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS activity_metrics (
+                activity_id     TEXT    NOT NULL,
+                normalized_power REAL,
+                intensity_factor REAL,
+                tss             REAL,
+                variability_index REAL,
+                w_prime_capacity REAL,
+                w_prime_min_balance REAL,
+                decoupling_drift REAL,
+                duration_sec    REAL,
+                computed_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (activity_id)
             )
         """)
         self.conn.commit()
@@ -323,6 +340,39 @@ class CyclingDB:
             (source, ts, details),
         )
         self.conn.commit()
+
+    # -- Activity Metrics (computed, separate from raw data) --
+
+    def store_activity_metrics(self, activity_id: str, metrics: dict[str, Any]):
+        """Store computed metrics for an activity (separate from raw data)."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO activity_metrics "
+            "(activity_id, normalized_power, intensity_factor, tss, variability_index, "
+            " w_prime_capacity, w_prime_min_balance, decoupling_drift, duration_sec) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                activity_id,
+                metrics.get("normalized_power"),
+                metrics.get("intensity_factor"),
+                metrics.get("tss"),
+                metrics.get("variability_index"),
+                metrics.get("w_prime_capacity"),
+                metrics.get("w_prime_min_balance"),
+                metrics.get("decoupling_drift"),
+                metrics.get("duration_sec"),
+            ),
+        )
+        self.conn.commit()
+
+    def get_activity_metrics(self, activity_id: str) -> dict[str, Any] | None:
+        """Get computed metrics for an activity, or None if not computed."""
+        row = self.conn.execute(
+            "SELECT * FROM activity_metrics WHERE activity_id = ?",
+            (activity_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
 
     # -- Lifecycle --
 

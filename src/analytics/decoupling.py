@@ -49,11 +49,18 @@ def compute_decoupling(
     Returns:
         DecouplingResult with drift metrics and recommendation.
     """
-    if len(power_samples) != len(hr_samples):
-        raise ValueError(
-            f"Power ({len(power_samples)}) and HR ({len(hr_samples)}) "
-            f"arrays must match for {activity_id}"
+    # Trim to the shorter array length (FIT files may have slightly different sample counts)
+    min_len = min(len(power_samples), len(hr_samples))
+    if min_len < 10:
+        return DecouplingResult(
+            activity_id=activity_id,
+            first_half_pw_hr=0.0,
+            second_half_pw_hr=0.0,
+            drift_pct=0.0,
+            increase_duration_recommended=False,
         )
+    power_samples = power_samples[:min_len]
+    hr_samples = hr_samples[:min_len]
 
     if not power_samples or not hr_samples:
         return DecouplingResult(
