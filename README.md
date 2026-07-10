@@ -93,6 +93,22 @@ Install Mosquitto locally (`sudo apt install mosquitto`) or use any MQTT broker.
 
 Subscribe to `cycling/agent/prescription` from Home Assistant or another MQTT client.
 
+## Home Assistant Add-on
+
+Install as a Home Assistant add-on for automatic Garmin sync, analytics, and a live dashboard embedded in your HA interface.
+
+[![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL prefilled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Feddietheengineer%2Fpersonal-cycling-agent)
+
+**Or add manually:**
+
+1. Go to **Settings → Add-ons → Add-on Store → ⋮ (menu) → Repositories**.
+2. Add the URL: `https://github.com/eddietheengineer/personal-cycling-agent`
+3. Find **Personal Cycling Agent** in the store and install it.
+4. Configure your Garmin Connect credentials and AI API keys in the add-on configuration.
+5. Start the add-on — the dashboard appears as a panel in Home Assistant via Ingress.
+
+The add-on runs on a `ha-addon` branch. The main branch remains the standalone CLI version.
+
 ## Security
 
 All sensitive data lives in a **vault directory** outside the repository (`~/cycling-agent-data/` by default):
