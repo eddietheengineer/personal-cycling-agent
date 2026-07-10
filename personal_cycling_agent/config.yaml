@@ -61,5 +61,4 @@ schema:
   bikes: text
   power_meter: text
   hr_monitor: text
-backup: hot
-stage: stable
+backup: cold
