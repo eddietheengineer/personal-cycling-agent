@@ -1,0 +1,11 @@
+---
+configuration:
+  garmin_email: "Garmin Connect email address"
+  garmin_password: "Garmin Connect password"
+  openai_api_key: "OpenAI API key (optional)"
+  openai_model: "OpenAI model to use"
+  anthropic_api_key: "Anthropic API key (optional)"
+  anthropic_model: "Anthropic model to use"
+  sync_interval_hours: "Hours between Garmin sync attempts"
+  ftp_watts: "Functional Threshold Power in watts"
+  max_hr: "Maximum heart rate (0 to auto-detect)"

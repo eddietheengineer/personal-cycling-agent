@@ -10,3 +10,4 @@ fitparse>=1.1.0
 curl_cffi>=0.6.0
 plotly>=5.18.0
 streamlit>=1.30.0
+geopy>=2.4.0

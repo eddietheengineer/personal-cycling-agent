@@ -40,7 +40,9 @@ from src.analytics.training_load import compute_training_load_history
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
-st.set_page_config(page_title="Cycling Dashboard", layout="wide")
+# Handle Home Assistant Ingress path prefix
+# Streamlit checks HASSIO_INGRESS env var for native ingress support
+st.set_page_config(page_title="Cycling Agent", layout="wide")
 st.title("Cycling Dashboard")
 
 

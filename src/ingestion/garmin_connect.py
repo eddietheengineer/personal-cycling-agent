@@ -74,7 +74,7 @@ def _create_client(tokenstore: str) -> "garminconnect.Garmin":
     auth = GarminAuth(
         email=email,
         password=password,
-        token_dir="~/.garminconnect",
+        token_dir=tokenstore if tokenstore else "~/.garminconnect",
         prompt_mfa=lambda: _prompt_mfa_interactive(),
     )
 
