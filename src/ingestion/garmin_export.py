@@ -273,6 +273,94 @@ def import_garmin_export(
     logger.info(f"Garmin import complete: {counts}")
     return counts
 
+from fitparse import FitFile
+
+
+def sync_routes_from_fit(db: CyclingDB, raw_dir: Path | None = None) -> dict[str, int]:
+    """Parse FIT files and store GPS route data in the database.
+
+    Scans raw_dir for .fit files, extracts position_lat/position_long from
+    record messages, converts from FIT integer format (divide by 1E7), and
+    stores the route points via db.store_routes().
+
+    Args:
+        db: An open CyclingDB instance.
+        raw_dir: Directory containing FIT files. Defaults to config.raw_dir().
+
+    Returns:
+        Dict with keys "processed", "with_gps", "without_gps", "total_points".
+    """
+    if raw_dir is None:
+        raw_dir = config.raw_dir()
+    raw_dir = Path(raw_dir)
+
+    if not raw_dir.is_dir():
+        raise FileNotFoundError(f"FIT directory not found: {raw_dir}")
+
+    fit_files = sorted(raw_dir.rglob("*.fit"))
+    logger.info(f"Found {len(fit_files)} FIT files in {raw_dir}")
+
+    counts = {"processed": 0, "with_gps": 0, "without_gps": 0, "total_points": 0}
+
+    for fit_path in fit_files:
+        activity_id = fit_path.stem  # bare numeric filename, e.g. "21634975856"
+
+        # Skip if already has routes
+        existing = db.conn.execute(
+            "SELECT COUNT(*) FROM activity_routes WHERE activity_id = ?",
+            (activity_id,),
+        ).fetchone()[0]
+        if existing > 0:
+            counts["processed"] += 1
+            continue
+
+        try:
+            fit = FitFile(str(fit_path))
+        except Exception:
+            logger.warning(f"Failed to parse {fit_path.name!r}")
+            counts["processed"] += 1
+            counts["without_gps"] += 1
+            continue
+
+        records = list(fit.get_messages("record"))
+        fit.close()
+
+        if not records:
+            counts["processed"] += 1
+            counts["without_gps"] += 1
+            continue
+
+        # Check if the first record has position_lat (indicates GPS data present)
+        first = records[0]
+        if first.get_value("position_lat") is None:
+            counts["processed"] += 1
+            counts["without_gps"] += 1
+            continue
+
+        # Extract (lat, lon) pairs, converting from FIT integer format
+        points: list[tuple[float, float]] = []
+        for rec in records:
+            lat = rec.get_value("position_lat")
+            lon = rec.get_value("position_long")
+            if lat is not None and lon is not None:
+                points.append((lat / 1e7, lon / 1e7))
+
+        if not points:
+            counts["processed"] += 1
+            counts["without_gps"] += 1
+            continue
+
+        inserted = db.store_routes(activity_id, points)
+        counts["processed"] += 1
+        counts["with_gps"] += 1
+        counts["total_points"] += inserted
+        logger.info(
+            f"{activity_id}: {len(points)} GPS points "
+            f"({inserted} inserted)"
+        )
+
+    logger.info(f"Route sync complete: {counts}")
+    return counts
 
 if __name__ == "__main__":
     import sys as _sys

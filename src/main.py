@@ -36,6 +36,7 @@ from src import config
 config.setup()
 
 from src.ingestion.garmin_connect import sync_garmin, sync_activities
+from src.ingestion.garmin_export import sync_routes_from_fit
 from src.db.store import CyclingDB
 from src.analytics.readiness import assess_readiness, readiness_to_dict
 from src.analytics.threshold import analyze_thresholds, threshold_to_dict
@@ -188,7 +189,7 @@ def run_analyze() -> dict:
             wp_result = None
             if power_samples:
                 try:
-                    wp_result = estimate_w_prime_from_activity(activity_id, power_samples)
+                    wp_result = estimate_w_prime_from_activity(activity_id, power_samples, cp_estimate=current_ftp)
                     w_prime_results.append(w_prime_to_dict(wp_result))
                 except Exception as e:
                     logger.warning(f"W' estimation failed for {activity_id}: {e}")
@@ -307,11 +308,48 @@ def main():
     parser.add_argument("--ingest", action="store_true", help="Run data ingestion only")
     parser.add_argument("--analyze", action="store_true", help="Run analytics only")
     parser.add_argument("--prescribe", action="store_true", help="Generate prescription only")
+    parser.add_argument("--visualize", action="store_true", help="Launch the Streamlit dashboard")
+    parser.add_argument("--sync-routes", action="store_true", help="Sync route data from FIT files")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
     args = parser.parse_args()
 
-    # If no flags, run the full pipeline
-    run_all = not any([args.ingest, args.analyze, args.prescribe])
+    run_all = not any([args.ingest, args.analyze, args.prescribe, args.visualize, args.sync_routes])
+
+    if args.visualize:
+        import socket, subprocess
+        # Bind to first LAN interface (192.168.x.x or 10.x.x.x), not public
+        import ipaddress
+        lan_ip = "127.0.0.1"  # fallback
+        try:
+            import subprocess as sp
+            out = sp.check_output(["hostname", "-I"], text=True).strip()
+            for ip in out.split():
+                try:
+                    addr = ipaddress.ip_address(ip)
+                    if addr.is_private and not addr.is_loopback:
+                        lan_ip = ip
+                        break
+                except ValueError:
+                    pass
+        except Exception:
+            pass
+        subprocess.run([
+            sys.executable, "-m", "streamlit", "run",
+            str(PROJECT_ROOT / "src" / "visualize.py"),
+            "--server.headless", "true",
+            "--server.address", lan_ip,
+            "--browser.gatherUsageStats", "false",
+        ])
+        return
+
+    if args.sync_routes:
+        logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
+        db = CyclingDB(DB_PATH)
+        raw = config.raw_dir() / "fit"
+        counts = sync_routes_from_fit(db, raw)
+        db.close()
+        print(f"Route sync complete: {counts}")
+        return
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,

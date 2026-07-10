@@ -30,6 +30,9 @@ class CyclingDB:
     def _migrate_wellness(self):
         """Add missing columns to the wellness table."""
         c = self.conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='wellness'")
+        if c.fetchone() is None:
+            return
         c.execute("PRAGMA table_info(wellness)")
         existing = {row[1] for row in c.fetchall()}
 
@@ -54,6 +57,9 @@ class CyclingDB:
     def _migrate_activity_metrics(self):
         """Add missing columns to the activity_metrics table."""
         c = self.conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='activity_metrics'")
+        if c.fetchone() is None:
+            return
         c.execute("PRAGMA table_info(activity_metrics)")
         existing = {row[1] for row in c.fetchall()}
 
@@ -154,6 +160,16 @@ class CyclingDB:
                 PRIMARY KEY (activity_id)
             )
         """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS activity_routes (
+                activity_id TEXT NOT NULL,
+                latitude REAL NOT NULL,
+                longitude REAL NOT NULL,
+                sequence INTEGER NOT NULL,
+                PRIMARY KEY (activity_id, sequence)
+            )
+        """)
+        c.execute("CREATE INDEX IF NOT EXISTS idx_routes_activity ON activity_routes(activity_id)")
         self.conn.commit()
         self.conn.execute("PRAGMA journal_mode=WAL")
 
@@ -393,6 +409,119 @@ class CyclingDB:
         if row is None:
             return None
         return dict(row)
+
+    # -- Trend Queries --
+
+    def get_trend_data(self, table: str, columns: list[str], oldest: str | None = None, newest: str | None = None) -> list[dict[str, Any]]:
+        """Return rows for longitudinal plotting.
+
+        Args:
+            table: table name (e.g. "wellness", "activity_metrics").
+            columns: column names to SELECT.
+            oldest: inclusive start date (ISO format).
+            newest: inclusive end date (ISO format).
+        """
+        cols = ", ".join(columns)
+        query = f"SELECT {cols} FROM {table}"
+        params: list = []
+        if oldest and newest:
+            query += " WHERE date >= ? AND date <= ?"
+            params = [oldest, newest]
+        elif oldest:
+            query += " WHERE date >= ?"
+            params = [oldest]
+        elif newest:
+            query += " WHERE date <= ?"
+            params = [newest]
+        query += " ORDER BY date"
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_activity_metrics_by_date(
+        self, oldest: str | None = None, newest: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Query activity_metrics joined with activities for date filtering."""
+        query = """
+            SELECT am.*, a.start_date
+            FROM activity_metrics am
+            JOIN activities a ON a.id = am.activity_id
+        """
+        params: list = []
+        if oldest and newest:
+            query += " WHERE a.start_date >= ? AND a.start_date <= ?"
+            params = [oldest, newest]
+        elif oldest:
+            query += " WHERE a.start_date >= ?"
+            params = [oldest]
+        elif newest:
+            query += " WHERE a.start_date <= ?"
+            params = [newest]
+        query += " ORDER BY a.start_date"
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_activity_with_metrics(self, activity_id: str) -> dict[str, Any] | None:
+        """Join activities and activity_metrics for a single activity."""
+        act = self.conn.execute(
+            "SELECT * FROM activities WHERE id = ?", (activity_id,)
+        ).fetchone()
+        if act is None:
+            return None
+        result = dict(act)
+        metrics = self.get_activity_metrics(activity_id)
+        if metrics:
+            result.update(metrics)
+        return result
+
+    # -- Routes --
+
+    def store_routes(self, activity_id: str, points: list[tuple[float, float]]) -> int:
+        """Bulk-insert route points for an activity.
+
+        Args:
+            activity_id: the activity identifier.
+            points: list of (latitude, longitude) tuples.
+
+        Returns the number of points inserted. Skips if activity already has routes.
+        """
+        existing = self.conn.execute(
+            "SELECT COUNT(*) FROM activity_routes WHERE activity_id = ?",
+            (activity_id,),
+        ).fetchone()[0]
+        if existing > 0:
+            logger.info(f"Activity {activity_id} already has routes; skipping")
+            return 0
+
+        c = self.conn.cursor()
+        c.executemany(
+            "INSERT INTO activity_routes (activity_id, latitude, longitude, sequence) VALUES (?, ?, ?, ?)",
+            ((activity_id, lat, lon, seq) for seq, (lat, lon) in enumerate(points)),
+        )
+        self.conn.commit()
+        logger.info(f"Stored {len(points)} route points for {activity_id}")
+        return len(points)
+
+    def get_all_routes(self) -> list[dict[str, Any]]:
+        """Return all route points ordered by activity_id and sequence."""
+        rows = self.conn.execute(
+            "SELECT * FROM activity_routes ORDER BY activity_id, sequence"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_routes_for_activity(self, activity_id: str) -> list[dict[str, Any]]:
+        """Return route points for a specific activity, ordered by sequence."""
+        rows = self.conn.execute(
+            "SELECT * FROM activity_routes WHERE activity_id = ? ORDER BY sequence",
+            (activity_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_route_count(self) -> int:
+        """Return the number of distinct activities with route data."""
+        row = self.conn.execute(
+            "SELECT COUNT(DISTINCT activity_id) FROM activity_routes"
+        ).fetchone()
+        return row[0]
 
     # -- Lifecycle --
 

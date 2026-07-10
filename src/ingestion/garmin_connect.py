@@ -325,12 +325,12 @@ def sync_activities(
     tokenstore: str | None = None,
 ) -> dict[str, int]:
     """
-    Sync activity stream data from Garmin Connect, one day at a time.
+    Sync activity stream data from Garmin Connect, one day at a time,
+    going backwards from the last sync point until rate-limited.
 
-    Pulls activities for the single most recent day that hasn't been
-    synced yet (going backwards from the last sync point), downloads
-    and parses their FIT files. This lets cron run daily and
-    incrementally backfill without overwhelming the API.
+    Downloads and parses FIT files for each activity found on each day.
+    Stops when Garmin returns 429 Too Many Requests, saving progress
+    so the next run resumes from where it left off.
 
     Args:
         days: Unused (kept for backward compatibility).
@@ -366,59 +366,100 @@ def sync_activities(
     else:
         last_date = today - timedelta(days=1)
 
-    # Target the day before the last synced day
-    target_date = last_date - timedelta(days=1)
-    target_str = target_date.strftime("%Y-%m-%d")
-
-    logger.info(f"Syncing activities for {target_str} (last synced: {last_synced or 'never'})")
-
     client = _create_client(tokenstore)
 
-    try:
-        activities = client.get_activities_by_date(target_str, target_str)
-    except Exception as e:
-        logger.error(f"Failed to fetch activities: {type(e).__name__}")
-        return {"activities_processed": 0, "stream_records": 0}
+    total_processed = 0
+    total_stored = 0
+    current_date = last_date - timedelta(days=1)
 
-    if not activities:
-        logger.info(f"No activities found for {target_str}")
-        # Advance the sync pointer so we don't retry forever
+    while True:
+        target_str = current_date.strftime("%Y-%m-%d")
+        logger.info(f"Syncing activities for {target_str}")
+
+        try:
+            activities = client.get_activities_by_date(target_str, target_str)
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            logger.warning(f"Rate limited by Garmin Connect: {e}")
+            # Save progress so next run resumes from this day
+            # (we haven't processed this day yet, so don't advance)
+            logger.info(f"Pausing — {total_processed} activities processed, "
+                        f"{total_stored} stream records stored so far")
+            break
+        except Exception as e:
+            logger.error(f"Failed to fetch activities for {target_str}: "
+                         f"{type(e).__name__}: {e}")
+            # On non-rate-limit errors, advance to avoid infinite loop
+            db = CyclingDB(db_path)
+            db.set_last_synced("garmin_activities", target_str)
+            db.close()
+            current_date -= timedelta(days=1)
+            time.sleep(2.0)
+            continue
+
+        if not activities:
+            logger.info(f"No activities found for {target_str}")
+            # Advance the sync pointer so we don't retry forever
+            db = CyclingDB(db_path)
+            db.set_last_synced("garmin_activities", target_str)
+            db.close()
+            current_date -= timedelta(days=1)
+            time.sleep(0.5)
+            continue
+
+        day_processed = 0
+        day_stored = 0
+
+        for activity in activities:
+            activity_id = activity.get("activityId")
+            if not activity_id:
+                continue
+
+            day_processed += 1
+            logger.info(
+                f"  Fetching streams for activity {activity_id} "
+                f"({day_processed}/{len(activities)})"
+            )
+
+            try:
+                stored = _fetch_activity_streams(client, activity_id, db_path)
+                day_stored += stored
+            except garminconnect.GarminConnectTooManyRequestsError as e:
+                logger.warning(f"Rate limited during activity {activity_id}: {e}")
+                # Save progress at the activity level
+                total_processed += day_processed
+                total_stored += day_stored
+                logger.info(f"Pausing mid-day — {total_processed} activities processed, "
+                            f"{total_stored} stream records stored so far")
+                return {
+                    "activities_processed": total_processed,
+                    "stream_records": total_stored,
+                }
+            except Exception as e:
+                logger.warning(f"Failed to fetch streams for {activity_id}: "
+                               f"{type(e).__name__}: {e}")
+
+            time.sleep(1.0)
+
+        total_processed += day_processed
+        total_stored += day_stored
+
+        # Record sync timestamp for this day
         db = CyclingDB(db_path)
         db.set_last_synced("garmin_activities", target_str)
         db.close()
-        return {"activities_processed": 0, "stream_records": 0}
 
-    total_stored = 0
-    processed = 0
-
-    for activity in activities:
-        activity_id = activity.get("activityId")
-        if not activity_id:
-            continue
-
-        processed += 1
         logger.info(
-            f"  Fetching streams for activity {activity_id} "
-            f"({processed}/{len(activities)})"
+            f"Day {target_str} complete: {day_processed} activities, "
+            f"{day_stored} stream records (total: {total_processed} activities, "
+            f"{total_stored} records)"
         )
 
-        stored = _fetch_activity_streams(client, activity_id, db_path)
-        total_stored += stored
-
-        time.sleep(1.0)
-
-    # Record sync timestamp
-    db = CyclingDB(db_path)
-    db.set_last_synced("garmin_activities", target_str)
-    db.close()
-
-    logger.info(
-        f"Activity sync complete for {target_str}: "
-        f"{processed} activities, {total_stored} stream records stored"
-    )
+        # Move to the previous day
+        current_date -= timedelta(days=1)
+        time.sleep(0.5)
 
     return {
-        "activities_processed": processed,
+        "activities_processed": total_processed,
         "stream_records": total_stored,
     }
 
