@@ -61,8 +61,5 @@ schema:
   bikes: text
   power_meter: text
   hr_monitor: text
-map:
-  - type: share
-    read_only: false
 backup: hot
 stage: stable
