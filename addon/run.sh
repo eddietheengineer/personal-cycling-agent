@@ -14,6 +14,21 @@ ANTHROPIC_MODEL="$(bashio::config 'anthropic_model')"
 SYNC_INTERVAL="$(bashio::config 'sync_interval_hours')"
 FTP_WATTS="$(bashio::config 'ftp_watts')"
 MAX_HR="$(bashio::config 'max_hr')"
+RESTING_HR="$(bashio::config 'resting_hr')"
+LT1_POWER="$(bashio::config 'lt1_power')"
+LT2_POWER="$(bashio::config 'lt2_power')"
+ATHLETE_NAME="$(bashio::config 'athlete_name')"
+WEIGHT_KG="$(bashio::config 'weight_kg')"
+HEIGHT_CM="$(bashio::config 'height_cm')"
+DISCIPLINE="$(bashio::config 'discipline')"
+PRIMARY_GOAL="$(bashio::config 'primary_goal')"
+SECONDARY_GOAL="$(bashio::config 'secondary_goal')"
+TRAINING_DAYS="$(bashio::config 'training_days')"
+MAX_SESSION="$(bashio::config 'max_session_duration')"
+TERRAIN="$(bashio::config 'terrain')"
+BIKES="$(bashio::config 'bikes')"
+POWER_METER="$(bashio::config 'power_meter')"
+HR_MONITOR="$(bashio::config 'hr_monitor')"
 
 # Set up data directory
 DATA_DIR="/data"
@@ -31,15 +46,44 @@ ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
 ANTHROPIC_MODEL=${ANTHROPIC_MODEL}
 FTP_WATTS=${FTP_WATTS}
 MAX_HR=${MAX_HR}
+RESTING_HR=${RESTING_HR}
+LT1_POWER=${LT1_POWER}
+LT2_POWER=${LT2_POWER}
 SYNC_INTERVAL_HOURS=${SYNC_INTERVAL}
 EOF
 
 # Create user_profile.md from options
+# This file is read by the analytics engine and the dashboard profile tab.
+# Users can also edit their profile directly in the dashboard UI.
 cat > "${DATA_DIR}/user_profile.md" <<EOF
-# User Profile
+# Athlete Profile
 
-- FTP: ${FTP_WATTS}W
+## Identity
+- Name: ${ATHLETE_NAME}
+- Weight (kg): ${WEIGHT_KG}
+- Height (cm): ${HEIGHT_CM}
+
+## Training History
+- Primary discipline: ${DISCIPLINE}
+
+## Physiological Baselines
+- FTP (watts): ${FTP_WATTS}
 - Max HR: ${MAX_HR}
+- Resting HR (avg): ${RESTING_HR}
+- LT1 power (if known): ${LT1_POWER}
+- LT2 power (if known): ${LT2_POWER}
+
+## Goals & Constraints
+- Primary goal: ${PRIMARY_GOAL}
+- Secondary goal: ${SECONDARY_GOAL}
+- Available training days: ${TRAINING_DAYS}
+- Max session duration: ${MAX_SESSION}
+- Terrain notes: ${TERRAIN}
+
+## Equipment
+- Bike(s): ${BIKES}
+- Power meter: ${POWER_METER}
+- HR monitor: ${HR_MONITOR}
 EOF
 
 # Set environment variables for the Python app
@@ -51,6 +95,9 @@ export ANTHROPIC_API_KEY
 export ANTHROPIC_MODEL
 export FTP_WATTS
 export MAX_HR
+export RESTING_HR
+export LT1_POWER
+export LT2_POWER
 
 # Use existing CYCLING_AGENT_VAULT env var (checked by config.py _vault_dir())
 export CYCLING_AGENT_VAULT="${DATA_DIR}"

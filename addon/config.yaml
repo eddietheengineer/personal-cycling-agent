@@ -21,6 +21,21 @@ options:
   sync_interval_hours: 24
   ftp_watts: 180
   max_hr: 0
+  resting_hr: 0
+  lt1_power: 0
+  lt2_power: 0
+  athlete_name: ""
+  weight_kg: 0
+  height_cm: 0
+  discipline: "road"
+  primary_goal: ""
+  secondary_goal: ""
+  training_days: ""
+  max_session_duration: ""
+  terrain: ""
+  bikes: ""
+  power_meter: ""
+  hr_monitor: ""
 schema:
   garmin_email: email
   garmin_password: password
@@ -31,6 +46,21 @@ schema:
   sync_interval_hours: integer
   ftp_watts: integer
   max_hr: integer
+  resting_hr: integer
+  lt1_power: integer
+  lt2_power: integer
+  athlete_name: text
+  weight_kg: integer
+  height_cm: integer
+  discipline: text
+  primary_goal: text
+  secondary_goal: text
+  training_days: text
+  max_session_duration: text
+  terrain: text
+  bikes: text
+  power_meter: text
+  hr_monitor: text
 map:
   - type: share
     read_only: false

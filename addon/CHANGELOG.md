@@ -7,3 +7,6 @@
 - Power and heart rate zone analysis
 - W' capacity estimation
 - Route heatmap visualization
+- Athlete profile management via dashboard **Profile** tab and add-on configuration UI
+- Persistent Garmin token storage for seamless restarts
+- Streamlit dashboard with Ingress support for Home Assistant embedding

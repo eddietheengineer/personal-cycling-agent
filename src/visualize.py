@@ -69,7 +69,7 @@ db = st.session_state.db
 # ---------------------------------------------------------------------------
 st.sidebar.header("Dashboard")
 
-tab_detail, tab_trends, tab_map = st.tabs(["Activity Detail", "Trends", "Map"])
+tab_detail, tab_trends, tab_map, tab_profile = st.tabs(["Activity Detail", "Trends", "Map", "Profile"])
 
 
 # ---------------------------------------------------------------------------
@@ -652,6 +652,152 @@ def _render_map():
 
     st.plotly_chart(fig, use_container_width=True)
 
+
+def _render_profile():
+    """Render the athlete profile editing tab."""
+    profile_path = config.user_profile_path()
+
+    # Read existing profile into a dict
+    profile = {
+        "name": os.getenv("ATHLETE_NAME", ""),
+        "weight_kg": int(os.getenv("WEIGHT_KG", "0")),
+        "height_cm": int(os.getenv("HEIGHT_CM", "0")),
+        "discipline": os.getenv("DISCIPLINE", "road"),
+        "ftp_watts": int(os.getenv("FTP_WATTS", "0")),
+        "max_hr": int(os.getenv("MAX_HR", "0")),
+        "resting_hr": int(os.getenv("RESTING_HR", "0")),
+        "lt1_power": int(os.getenv("LT1_POWER", "0")),
+        "lt2_power": int(os.getenv("LT2_POWER", "0")),
+        "primary_goal": os.getenv("PRIMARY_GOAL", ""),
+        "secondary_goal": os.getenv("SECONDARY_GOAL", ""),
+        "training_days": os.getenv("TRAINING_DAYS", ""),
+        "max_session_duration": os.getenv("MAX_SESSION_DURATION", ""),
+        "terrain": os.getenv("TERRAIN", ""),
+        "bikes": os.getenv("BIKES", ""),
+        "power_meter": os.getenv("POWER_METER", ""),
+        "hr_monitor": os.getenv("HR_MONITOR", ""),
+    }
+
+    if profile_path.exists():
+        raw = profile_path.read_text()
+        for line in raw.splitlines():
+            line = line.strip()
+            if line.startswith("- ") and ": " in line:
+                key, val = line[2:].split(": ", 1)
+                key = key.lower().replace(" ", "_").replace("(watts)", "").replace("(if_known)", "").replace("(avg)", "").replace("(kg)", "").replace("(cm)", "")
+                # Normalize known keys
+                key_map = {
+                    "name": "name",
+                    "weight_kg": "weight_kg",
+                    "height_cm": "height_cm",
+                    "primary_discipline": "discipline",
+                    "ftp_watts": "ftp_watts",
+                    "max_hr": "max_hr",
+                    "resting_hr_avg": "resting_hr",
+                    "lt1_power_if_known": "lt1_power",
+                    "lt2_power_if_known": "lt2_power",
+                    "primary_goal": "primary_goal",
+                    "secondary_goal": "secondary_goal",
+                    "available_training_days": "training_days",
+                    "max_session_duration": "max_session_duration",
+                    "terrain_notes": "terrain",
+                    "bike(s)": "bikes",
+                    "power_meter": "power_meter",
+                    "hr_monitor": "hr_monitor",
+                }
+                k = key_map.get(key, key)
+                if k in profile:
+                    if isinstance(profile[k], int):
+                        try:
+                            profile[k] = int(val.rstrip("W").strip())
+                        except ValueError:
+                            pass
+                    else:
+                        profile[k] = val
+
+    st.subheader("Athlete Profile")
+    st.caption("Edit your profile below. Changes are saved to your vault directory and used by the analytics engine.")
+
+    with st.form("profile_form", clear_on_submit=False):
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("Identity")
+            name = st.text_input("Name", value=profile["name"], key="prof_name")
+            weight = st.number_input("Weight (kg)", min_value=0, value=profile["weight_kg"], key="prof_weight")
+            height = st.number_input("Height (cm)", min_value=0, value=profile["height_cm"], key="prof_height")
+
+            st.subheader("Training")
+            disciplines = ["road", "gravel", "MTB", "TT"]
+            discipline = st.selectbox("Primary Discipline", disciplines,
+                                      index=disciplines.index(profile["discipline"]) if profile["discipline"] in disciplines else 0,
+                                      key="prof_discipline")
+
+        with col2:
+            st.subheader("Physiological Baselines")
+            ftp = st.number_input("FTP (watts)", min_value=0, value=profile["ftp_watts"], key="prof_ftp")
+            max_hr = st.number_input("Max HR", min_value=0, value=profile["max_hr"], key="prof_max_hr")
+            resting_hr = st.number_input("Resting HR (avg)", min_value=0, value=profile["resting_hr"], key="prof_resting_hr")
+            lt1 = st.number_input("LT1 Power (watts)", min_value=0, value=profile["lt1_power"], key="prof_lt1")
+            lt2 = st.number_input("LT2 Power (watts)", min_value=0, value=profile["lt2_power"], key="prof_lt2")
+
+        st.subheader("Goals & Constraints")
+        goal_col1, goal_col2 = st.columns(2)
+        with goal_col1:
+            primary_goal = st.text_input("Primary Goal", value=profile["primary_goal"], key="prof_primary_goal")
+            training_days = st.text_input("Available Training Days", value=profile["training_days"],
+                                          placeholder="e.g., Mon,Wed,Fri", key="prof_training_days")
+        with goal_col2:
+            secondary_goal = st.text_input("Secondary Goal", value=profile["secondary_goal"], key="prof_secondary_goal")
+            max_session = st.text_input("Max Session Duration", value=profile["max_session_duration"],
+                                        placeholder="e.g., 2h", key="prof_max_session")
+
+        terrain = st.text_area("Terrain Notes", value=profile["terrain"],
+                                placeholder="e.g., flat, hilly, mountainous", key="prof_terrain")
+
+        st.subheader("Equipment")
+        equip_col1, equip_col2 = st.columns(2)
+        with equip_col1:
+            bikes = st.text_input("Bike(s)", value=profile["bikes"], key="prof_bikes")
+        with equip_col2:
+            power_meter = st.text_input("Power Meter", value=profile["power_meter"], key="prof_power_meter")
+            hr_monitor = st.text_input("HR Monitor", value=profile["hr_monitor"], key="prof_hr_monitor")
+
+        submitted = st.form_submit_button("Save Profile")
+
+        if submitted:
+            content = f"""# Athlete Profile
+
+## Identity
+- Name: {name}
+- Weight (kg): {int(weight)}
+- Height (cm): {int(height)}
+
+## Training History
+- Primary discipline: {discipline}
+
+## Physiological Baselines
+- FTP (watts): {int(ftp)}
+- Max HR: {int(max_hr)}
+- Resting HR (avg): {int(resting_hr)}
+- LT1 power (if known): {int(lt1)}
+- LT2 power (if known): {int(lt2)}
+
+## Goals & Constraints
+- Primary goal: {primary_goal}
+- Secondary goal: {secondary_goal}
+- Available training days: {training_days}
+- Max session duration: {max_session}
+- Terrain notes: {terrain}
+
+## Equipment
+- Bike(s): {bikes}
+- Power meter: {power_meter}
+- HR monitor: {hr_monitor}
+"""
+            profile_path.parent.mkdir(parents=True, exist_ok=True)
+            profile_path.write_text(content)
+            st.success("Profile saved!")
 # ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
@@ -661,3 +807,5 @@ with tab_trends:
     _render_trends()
 with tab_map:
     _render_map()
+with tab_profile:
+    _render_profile()

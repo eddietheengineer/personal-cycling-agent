@@ -1,9 +1,14 @@
-# 🚴‍♂️ Autonomous Local Cycling Agent: System Architecture & Implementation Plan
+# 🚴‍♂️ Personal Cycling Agent: System Architecture & Implementation Plan
 
 ## 1. Project Overview
-This repository contains the architecture and implementation plan for a privacy-first, locally hosted AI cycling coach. The system bypasses proprietary, black-box algorithms (e.g., Garmin Training Readiness) by directly ingesting raw telemetry (HRV, RHR, Power, DFA-a1) to calculate a rider's true physiological state. A local Large Language Model (LLM) then uses these statistical models, cross-referenced with a private user profile, to dynamically prescribe daily training.
+This repository implements a privacy-first, locally hosted AI cycling coach. The system bypasses proprietary, black-box algorithms (e.g., Garmin Training Readiness) by directly ingesting raw telemetry (HRV, RHR, Power, DFA-a1) to calculate a rider's true physiological state. An LLM then uses these statistical models, cross-referenced with a private user profile, to dynamically prescribe daily training.
 
----
+The agent is available in two deployment modes:
+
+| Mode | Description |
+|---|---|
+| **Home Assistant Add-on** | Recommended. Automatic Garmin sync, analytics, and a live dashboard embedded in HA via Ingress. Configured through the HA add-on UI. |
+| **Standalone CLI** | Full control. Run the pipeline locally with `python -m src.main`, configure via `setup.py`, and launch the Streamlit dashboard on any machine. |
 
 ## 2. Core Scientific Modules (The Analytics Engine)
 
@@ -40,14 +45,21 @@ Analyzes fractal heart rate correlation to map metabolic thresholds without form
 
 ## 3. Data Architecture & Ingestion
 
-The system prioritizes clean, pre-parsed data from cloud APIs, processed locally.
+The system ingests raw telemetry directly from Garmin Connect, processed locally.
 
 | Source | Telemetry | Ingestion Method |
 | :--- | :--- | :--- |
-| **Garmin Connect** | Overnight HRV, RHR, Daily Stress | Intervals.icu Wellness API (`/wellness`) |
-| **Polar H10** | High-fidelity RR intervals | BLE broadcast to head unit |
-| **AlphaHRV** | DFA-a1 values | Parsed from FIT developer fields via Intervals.icu |
-| **Intervals.icu** | Power/HR arrays, $W'$ balance, TSS | Python `requests` script to `/activities` |
+| **Garmin Connect API** | Activities, HRV/RMSSD, RHR, Stress, Sleep | `src/ingestion/garmin_connect.py` with `garminconnect` + `garmin-auth` |
+| **Garmin Export ZIP** | Historical activities, wellness (no HRV) | `src/ingestion/garmin_export.py` |
+
+All processed data is stored in a local SQLite database (`cycling_agent.sqlite`). Raw FIT files are archived for offline reference.
+
+**Storage locations:**
+
+| Mode | Vault Path |
+| :--- | :--- |
+| **Home Assistant Add-on** | `/data/` (persistent volume managed by HA Supervisor) |
+| **Standalone CLI** | `~/cycling-agent-data/` (override with `CYCLING_AGENT_VAULT` env var) |
 
 ---
 
@@ -56,53 +68,55 @@ The system prioritizes clean, pre-parsed data from cloud APIs, processed locally
 To ensure the repository remains open-source and generic while protecting user data, the architecture separates the *engine* from the *state*.
 
 ```text
-cycling-ai-agent/
-├── .gitignore                  # MUST block .env, USER_PROFILE.md, and *.sqlite
+personal-cycling-agent/
+├── .gitignore                  # Blocks .env, user_profile.md, *.sqlite
 ├── README.md                   # Public project description
 ├── USER_PROFILE_TEMPLATE.md    # Blank template for athlete goals/constraints
-├── .env.example                # Blank template for API keys & biometrics
 ├── requirements.txt            # Python dependencies
-├── docker-compose.yml          # Container orchestration
+├── repository.yaml             # HA add-on repository manifest
+├── setup.py                    # Interactive setup wizard (standalone)
+├── setup_cron.sh               # Daily cron automation (standalone)
+├── addon/                      # Home Assistant add-on
+│   ├── config.yaml             # Add-on manifest (ingress, options, schema)
+│   ├── Dockerfile              # Container build from HA base image
+│   ├── run.sh                  # Entrypoint: config → sync → Streamlit
+│   ├── DOCS.md                 # Add-on user documentation
+│   └── translations/           # Localized option descriptions
+├── docs/                       # Technical documentation
+│   ├── PLAN.md                 # This file
+│   └── calculations.md         # Calculation assumptions & sources
 └── src/
-    ├── ingestion/              # API scripts (intervals_api.py, garmin.py)
-    ├── analytics/              # Math models (readiness.py, threshold.py)
-    └── agent/                  # LLM integration (prompt_builder.py, llm_client.py)
-
+    ├── config.py                # Vault path resolver & env loader
+    ├── main.py                  # Pipeline orchestrator
+    ├── visualize.py             # Streamlit dashboard (ingress-compatible)
+    ├── ingestion/               # API scripts (garmin_connect.py, garmin_export.py)
+    ├── analytics/               # Math models (readiness, threshold, w_prime, etc.)
+    ├── agent/                   # LLM integration (prompt_builder, llm_client, mqtt)
+    └── db/                      # SQLite persistence (store.py)
 ```
 
 **Privacy Rules:**
 
-1. All API keys, user weight, and baseline biometrics live exclusively in `.env`.
-2. All subjective goals, training history, and schedule topologies live exclusively in `USER_PROFILE.md`.
+1. All API keys, credentials, and biometrics live exclusively in the vault directory (`config.env`).
+2. All subjective goals, training history, and schedule topologies live exclusively in `user_profile.md`.
 3. Neither file is ever committed to version control.
-
+4. In add-on mode, credentials are configured through the HA add-on UI and stored in `/data/options.json`.
 ---
 
-## 5. Development Implementation Roadmap
+## 5. Current State & Roadmap
 
-The local agent must build the system chronologically:
+### Implemented
 
-### Phase 1: The Data Layer
+* **Data ingestion:** Garmin Connect API (`garminconnect` + `garmin-auth`) and Garmin Export ZIP importer.
+* **Analytics engine:** Readiness, DFA-a1 thresholds, W' tracking, durability profiling, aerobic decoupling, training load (CTL/ATL/TSB), power zones.
+* **Dashboard:** Streamlit visualization with route heatmap, power/HR charts, training load trends, and profile editing.
+* **Home Assistant add-on:** Full add-on with Ingress dashboard, automatic sync on start, HA config UI for athlete profile, and persistent token storage.
+* **Profile management:** Athlete profile editable through the dashboard **Profile** tab or the add-on configuration UI — no manual file editing required.
+* **Standalone CLI:** `setup.py` wizard, cron automation, MQTT prescription output.
 
-* Write `src/ingestion/intervals_api.py`.
-* Authenticate using credentials from `.env`.
-* Extract the last 90 days of daily wellness data and FIT file arrays.
-* Store locally in a lightweight SQLite database.
+### Future Work
 
-### Phase 2: The Math Layer
-
-* Write `src/analytics/readiness.py` to calculate the 30-day rolling baselines, standard deviation normal bands, and output the current Coping/Sympathetic/Parasympathetic state.
-* Write `src/analytics/threshold.py` to calculate the DFA-a1/Power intercepts.
-
-### Phase 3: The Context Layer
-
-* Write `src/agent/prompt_builder.py`.
-* This script reads `USER_PROFILE.md`, reads today's output from the Math Layer, and constructs a strict system prompt.
-* *Example Prompt Injection:* "The user is in State 2 (Sympathetic Stress). Their terrain map limits today to 1 hour on the Road Bike. Generate a recovery-focused training plan."
-
-### Phase 4: The Automation Layer
-
-* Write `src/agent/llm_client.py` to post the constructed prompt to the local LLM endpoint (e.g., Ollama at `http://localhost:11434`).
-* Containerize the entire stack with Docker.
-* Set a daily cron job to run the pipeline at 05:00.
-* Push the final LLM string output via MQTT to a local dashboard (e.g., Home Assistant).
+* **AI insights integration:** Wire OpenAI/Anthropic API keys (configured in add-on or `config.env`) to generate daily training recommendations from analytics output.
+* **MQTT integration for add-on:** Publish readiness, training load, and prescriptions to MQTT for Home Assistant sensors.
+* **Scheduled sync in add-on:** Add configurable sync interval (currently syncs on every container start) to avoid Garmin rate limiting.
+* **MFA support for add-on:** Pre-auth flow for Garmin accounts with MFA enabled (currently requires manual tokenstore copy).
