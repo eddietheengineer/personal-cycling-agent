@@ -65,12 +65,24 @@ db = st.session_state.db
 
 
 # ---------------------------------------------------------------------------
-# Sidebar
+# Sidebar navigation
 # ---------------------------------------------------------------------------
 st.sidebar.header("Dashboard")
 
-tab_detail, tab_trends, tab_map, tab_profile = st.tabs(["Activity Detail", "Trends", "Map", "Profile"])
+if "nav_page" not in st.session_state:
+    st.session_state.nav_page = "Activity Detail"
 
+nav_page = st.sidebar.selectbox(
+    "Navigate",
+    ["Activity Detail", "Trends", "Map", "Profile", "Settings"],
+    index=["Activity Detail", "Trends", "Map", "Profile", "Settings"].index(
+        st.session_state.nav_page
+    ),
+    label_visibility="collapsed",
+)
+if nav_page != st.session_state.nav_page:
+    st.session_state.nav_page = nav_page
+    st.rerun()
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -798,14 +810,400 @@ def _render_profile():
             profile_path.parent.mkdir(parents=True, exist_ok=True)
             profile_path.write_text(content)
             st.success("Profile saved!")
+
+
+# ---------------------------------------------------------------------------
+# Garmin Setup tab
+# ---------------------------------------------------------------------------
+def _update_config_env(updates: dict) -> None:
+    """Update KEY=VALUE pairs in config.env and reload into os.environ."""
+    env_path = config.config_env_path()
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    if env_path.exists():
+        lines = env_path.read_text().splitlines()
+    else:
+        lines = []
+    existing_keys = {l.split("=", 1)[0] for l in lines if "=" in l}
+    for k, v in updates.items():
+        if k in existing_keys:
+            lines = [f"{k}={v}" if l.startswith(f"{k}=") else l for l in lines]
+        else:
+            lines.append(f"{k}={v}")
+    env_path.write_text("\n".join(lines) + "\n")
+    for k, v in updates.items():
+        os.environ[k] = v
+
+
+def _render_garmin_setup():
+    """Render the Garmin Connect setup and sync tab."""
+    from src.ingestion.garmin_connect import sync_garmin, sync_activities
+    from src.ingestion.garmin_export import sync_routes_from_fit
+
+    st.subheader("Garmin Connect Setup")
+    st.caption("Configure your Garmin Connect credentials and sync activities.")
+
+    # Read current email from env
+    current_email = os.environ.get("GARMIN_EMAIL", "")
+    has_credentials = bool(current_email and os.environ.get("GARMIN_PASSWORD", ""))
+
+    # Show current status
+    activities = db.get_activities()
+    wellness_rows = db.get_trend_data("wellness", ["date"])
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Activities", len(activities))
+    col2.metric("Wellness Days", len(wellness_rows))
+    col3.metric("Status", "Connected" if has_credentials else "Not configured")
+
+    if has_credentials:
+        st.success(f"Connected as: {current_email}")
+
+    # ── Credentials form ─────────────────────────────────────────────
+    with st.form("garmin_credentials", clear_on_submit=False):
+        st.subheader("Credentials")
+
+        email = st.text_input("Garmin Email", value=current_email, key="garmin_email_input")
+        password = st.text_input("Garmin Password", type="password", key="garmin_password_input")
+
+        save_clicked = st.form_submit_button("Save Credentials", type="primary")
+
+        if save_clicked:
+            if not email:
+                st.error("Email is required.")
+            elif not password:
+                st.error("Password is required.")
+            else:
+                _update_config_env({
+                    "GARMIN_EMAIL": email,
+                    "GARMIN_PASSWORD": password,
+                })
+                st.success("Credentials saved! You can now sync activities.")
+                st.rerun()
+
+    # ── Sync controls ────────────────────────────────────────────────
+    st.subheader("Sync")
+
+    days = st.number_input(
+        "Days to Sync",
+        min_value=1,
+        max_value=365,
+        value=7,
+        step=1,
+        key="sync_days",
+        help="Number of days of activity data to fetch from Garmin Connect.",
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        sync_clicked = st.button(
+            "Sync Activities",
+            type="primary",
+            disabled=not has_credentials,
+            help="Fetch wellness data and activities from Garmin Connect.",
+        )
+    with col2:
+        routes_clicked = st.button(
+            "Sync Routes",
+            disabled=not has_credentials,
+            help="Parse FIT files and extract route data.",
+        )
+
+    # ── Handle sync ──────────────────────────────────────────────────
+    if sync_clicked:
+        st.session_state.syncing = True
+        st.session_state.sync_status = "Starting sync..."
+        st.session_state.sync_result = None
+
+        try:
+            st.session_state.sync_status = "Fetching wellness data..."
+            wellness_counts = sync_garmin(db_path=str(config.db_path("cycling_agent.sqlite")))
+
+            st.session_state.sync_status = "Fetching activity streams..."
+            activity_counts = sync_activities(days=days, db_path=str(config.db_path("cycling_agent.sqlite")))
+
+            st.session_state.sync_result = {
+                "wellness": wellness_counts,
+                "activities": activity_counts,
+            }
+            st.session_state.sync_status = "Sync complete!"
+            st.session_state.syncing = False
+            st.success("Sync complete!")
+            st.rerun()
+        except Exception as exc:
+            st.session_state.syncing = False
+            st.session_state.sync_status = f"Sync failed: {exc}"
+            st.error(f"Sync failed: {exc}")
+
+    if routes_clicked:
+        try:
+            raw_dir = config.raw_dir() / "fit"
+            counts = sync_routes_from_fit(db, raw_dir)
+            st.success(f"Route sync complete: {counts}")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Route sync failed: {exc}")
+
+    # ── Show sync status ─────────────────────────────────────────────
+    if "sync_status" in st.session_state:
+        st.info(st.session_state.sync_status)
+
+    if st.session_state.get("syncing"):
+        st.warning("Sync in progress... this may take a few minutes.")
+
+    # ── Show sync results ────────────────────────────────────────────
+    if st.session_state.get("sync_result"):
+        result = st.session_state.sync_result
+        st.subheader("Sync Results")
+        if "wellness" in result:
+            st.write(f"**Wellness:** {result['wellness']}")
+        if "activities" in result:
+            st.write(f"**Activities:** {result['activities']}")
+# ---------------------------------------------------------------------------
+# Settings page
+# ---------------------------------------------------------------------------
+def _render_settings():
+    """Render the Settings page with Garmin Connect authentication."""
+    from src.ingestion.garmin_connect import authenticate_garmin
+
+    st.subheader("Garmin Connect")
+    st.caption("Connect to Garmin Connect to sync your activity and wellness data.")
+
+    # Read current email from env to show status
+    current_email = os.environ.get("GARMIN_EMAIL", "")
+    has_credentials = bool(current_email and os.environ.get("GARMIN_PASSWORD", ""))
+
+    # Show current connection status
+    if has_credentials:
+        st.success(f"Configured as: **{current_email}**")
+    else:
+        st.info("No Garmin credentials configured yet.")
+
+    # ── Auth state machine via session_state ──────────────────────────
+    # States: "idle" | "entering" | "mfa_required" | "authenticating" | "done"
+    if "garmin_auth_state" not in st.session_state:
+        st.session_state.garmin_auth_state = "idle"
+    if "garmin_auth_email" not in st.session_state:
+        st.session_state.garmin_auth_email = ""
+    if "garmin_auth_password" not in st.session_state:
+        st.session_state.garmin_auth_password = ""
+    if "garmin_auth_error" not in st.session_state:
+        st.session_state.garmin_auth_error = ""
+
+    auth_state = st.session_state.garmin_auth_state
+
+    # ── Login form ────────────────────────────────────────────────────
+    with st.form("garmin_login", clear_on_submit=False):
+        st.subheader("Sign In")
+
+        email = st.text_input(
+            "Email",
+            value=current_email if not has_credentials else "",
+            placeholder="you@garmin.com",
+            key="ga_email",
+        )
+        password = st.text_input(
+            "Password",
+            type="password",
+            placeholder="Your Garmin Connect password",
+            key="ga_password",
+        )
+
+        login_clicked = st.form_submit_button(
+            "Sign In",
+            type="primary",
+            disabled=auth_state == "authenticating",
+        )
+
+        if login_clicked:
+            if not email or not password:
+                st.error("Email and password are required.")
+            else:
+                st.session_state.garmin_auth_email = email
+                st.session_state.garmin_auth_password = password
+                st.session_state.garmin_auth_state = "authenticating"
+                st.session_state.garmin_auth_error = ""
+                st.rerun()
+
+    # ── Authenticating state: attempt login ───────────────────────────
+    if auth_state == "authenticating":
+        email = st.session_state.garmin_auth_email
+        password = st.session_state.garmin_auth_password  # stored below
+
+        with st.spinner("Connecting to Garmin Connect..."):
+            tokenstore = os.environ.get("GARMIN_TOKENSTORE", "")
+            result = authenticate_garmin(email, password, tokenstore)
+
+        if result.success:
+            # Persist credentials
+            _update_config_env({
+                "GARMIN_EMAIL": email,
+                "GARMIN_PASSWORD": password,
+            })
+            st.session_state.garmin_auth_state = "idle"
+            st.session_state.garmin_auth_email = ""
+            st.success("Connected successfully! Your Garmin account is now linked.")
+            st.rerun()
+        elif result.mfa_required:
+            st.session_state.garmin_auth_state = "mfa_required"
+            st.rerun()
+        else:
+            st.session_state.garmin_auth_state = "idle"
+            st.error(f"Login failed: {result.error}")
+
+    # ── MFA required: ask for OTP ─────────────────────────────────────
+    if auth_state == "mfa_required":
+        st.warning("Two-factor authentication required.")
+        st.caption("Enter the verification code from your authenticator app or SMS.")
+
+        with st.form("garmin_mfa", clear_on_submit=False):
+            mfa_code = st.text_input(
+                "Verification Code",
+                placeholder="Enter 6-digit code",
+            )
+
+            mfa_clicked = st.form_submit_button(
+                "Verify",
+                type="primary",
+            )
+
+            if mfa_clicked:
+                if not mfa_code:
+                    st.error("Verification code is required.")
+                else:
+                    st.session_state.garmin_auth_state = "authenticating_mfa"
+                    st.session_state.garmin_auth_mfa_code = mfa_code
+                    st.rerun()
+
+    # ── Authenticating with MFA ───────────────────────────────────────
+    if auth_state == "authenticating_mfa":
+        email = st.session_state.garmin_auth_email
+        password = st.session_state.garmin_auth_password
+        mfa_code = st.session_state.garmin_auth_mfa_code
+
+        with st.spinner("Verifying code..."):
+            tokenstore = os.environ.get("GARMIN_TOKENSTORE", "")
+            result = authenticate_garmin(email, password, tokenstore, mfa_code=mfa_code)
+
+        if result.success:
+            _update_config_env({
+                "GARMIN_EMAIL": email,
+                "GARMIN_PASSWORD": password,
+            })
+            st.session_state.garmin_auth_state = "idle"
+            st.session_state.garmin_auth_email = ""
+            st.success("Connected successfully! Your Garmin account is now linked.")
+            st.rerun()
+        elif result.mfa_required:
+            st.error("Invalid verification code. Please try again.")
+            st.session_state.garmin_auth_state = "mfa_required"
+            st.rerun()
+        else:
+            st.error(f"Authentication failed: {result.error}")
+            st.session_state.garmin_auth_state = "idle"
+            st.rerun()
+
+    # ── Sync controls (only if connected) ─────────────────────────────
+    if has_credentials:
+        st.subheader("Sync Data")
+
+        days = st.number_input(
+            "Days to Sync",
+            min_value=1,
+            max_value=365,
+            value=7,
+            step=1,
+            key="sync_days",
+            help="Number of days of activity data to fetch.",
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            sync_clicked = st.button(
+                "Sync Activities",
+                type="primary",
+                help="Fetch wellness data and activities from Garmin Connect.",
+            )
+        with col2:
+            routes_clicked = st.button(
+                "Sync Routes",
+                help="Parse FIT files and extract route data.",
+            )
+
+        if sync_clicked:
+            st.session_state.syncing = True
+            st.session_state.sync_status = "Starting sync..."
+            st.rerun()
+
+        if st.session_state.get("syncing"):
+            try:
+                from src.ingestion.garmin_connect import sync_garmin, sync_activities
+
+                st.session_state.sync_status = "Fetching wellness data..."
+                wellness_counts = sync_garmin(
+                    db_path=str(config.db_path("cycling_agent.sqlite"))
+                )
+
+                st.session_state.sync_status = "Fetching activity streams..."
+                activity_counts = sync_activities(
+                    days=days,
+                    db_path=str(config.db_path("cycling_agent.sqlite")),
+                )
+
+                st.session_state.sync_result = {
+                    "wellness": wellness_counts,
+                    "activities": activity_counts,
+                }
+                st.session_state.syncing = False
+                st.success("Sync complete!")
+            except Exception as exc:
+                st.session_state.syncing = False
+                st.error(f"Sync failed: {exc}")
+            finally:
+                st.rerun()
+
+        if routes_clicked:
+            try:
+                from src.ingestion.garmin_export import sync_routes_from_fit
+                raw_dir = config.raw_dir() / "fit"
+                counts = sync_routes_from_fit(db, raw_dir)
+                st.success(f"Route sync complete: {counts}")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Route sync failed: {exc}")
+
+        if st.session_state.get("sync_result"):
+            result = st.session_state.sync_result
+            st.subheader("Sync Results")
+            if "wellness" in result:
+                st.write(f"**Wellness:** {result['wellness']}")
+            if "activities" in result:
+                st.write(f"**Activities:** {result['activities']}")
+
+    # ── Disconnect ────────────────────────────────────────────────────
+    if has_credentials:
+        st.subheader("Account")
+        if st.button("Disconnect Account", type="secondary"):
+            _update_config_env({
+                "GARMIN_EMAIL": "",
+                "GARMIN_PASSWORD": "",
+            })
+            os.environ.pop("GARMIN_EMAIL", None)
+            os.environ.pop("GARMIN_PASSWORD", None)
+            st.session_state.garmin_auth_state = "idle"
+            st.success("Disconnected.")
+            st.rerun()
+
+
 # ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
-with tab_detail:
+if nav_page == "Activity Detail":
     _render_activity_detail()
-with tab_trends:
+elif nav_page == "Trends":
     _render_trends()
-with tab_map:
+elif nav_page == "Map":
     _render_map()
-with tab_profile:
+elif nav_page == "Profile":
     _render_profile()
+elif nav_page == "Settings":
+    _render_settings()

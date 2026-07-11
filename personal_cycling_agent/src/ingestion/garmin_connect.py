@@ -18,6 +18,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
+from typing import Any
 
 from src import config
 from src.db.store import CyclingDB
@@ -40,6 +41,106 @@ except ImportError:
     FitFile = None  # type: ignore
 
 
+class RateLimiter:
+    """Proactive rate limiting for Garmin Connect API calls.
+
+    Enforces a minimum interval between calls and adapts on 429 responses
+    with exponential backoff. Thread-safe via time.monotonic.
+
+    Default parameters are conservative for Garmin's undocumented limits:
+    - 1 second between calls (60 req/min ceiling)
+    - On 429: back off 2x the Retry-After header or 2x the current interval
+    - Cap backoff at 300s to avoid indefinite stalls
+    """
+
+    def __init__(
+        self,
+        min_interval: float = 1.0,
+        max_backoff: float = 300.0,
+        backoff_factor: float = 2.0,
+    ):
+        self.min_interval = min_interval
+        self.max_backoff = max_backoff
+        self.backoff_factor = backoff_factor
+        self._effective_interval = min_interval
+        self._last_call: float = 0.0
+
+    def wait(self) -> None:
+        """Block until the minimum interval has elapsed since the last call."""
+        now = time.monotonic()
+        if self._last_call > 0:
+            elapsed = now - self._last_call
+            sleep_time = self._effective_interval - elapsed
+            if sleep_time > 0:
+                logger.debug(
+                    f"RateLimiter: sleeping {sleep_time:.2f}s "
+                    f"(interval={self._effective_interval:.1f}s)"
+                )
+                time.sleep(sleep_time)
+        self._last_call = time.monotonic()
+
+    def record_429(self, retry_after: float | None = None) -> None:
+        """Called when a 429 is received; increases the effective interval.
+
+        Args:
+            retry_after: Optional Retry-After header value in seconds.
+        """
+        if retry_after is not None and retry_after > 0:
+            self._effective_interval = min(retry_after, self.max_backoff)
+        else:
+            self._effective_interval = min(
+                self._effective_interval * self.backoff_factor,
+                self.max_backoff,
+            )
+        logger.warning(
+            f"RateLimiter: 429 received, new interval={self._effective_interval:.1f}s"
+        )
+
+    def reset(self) -> None:
+        """Reset to the base interval. Call between sync sessions."""
+        self._effective_interval = self.min_interval
+        self._last_call = 0.0
+
+
+# Module-level rate limiter — shared across all Garmin API calls in a session.
+_rate_limiter = RateLimiter()
+
+
+def rate_limiter() -> RateLimiter:
+    """Access the module-level rate limiter."""
+    return _rate_limiter
+
+
+def reset_rate_limiter() -> None:
+    """Reset the rate limiter to base settings. Call at the start of a sync session."""
+    _rate_limiter.reset()
+
+
+def _retry_on_rate_limit(fn, max_retries: int = 3):
+    """Call *fn* with retry on 429, using the rate limiter's backoff interval.
+
+    On each 429 the rate limiter's interval is increased (exponential backoff),
+    then we sleep for that interval before retrying. After *max_retries* failures
+    the original exception is re-raised.
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            return fn()
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            if attempt == max_retries:
+                logger.warning(
+                    f"Rate limit retry exhausted after {max_retries} attempts: {e}"
+                )
+                raise
+            wait = min(_rate_limiter._effective_interval, _rate_limiter.max_backoff)
+            logger.info(
+                f"Rate limited (attempt {attempt}/{max_retries}), "
+                f"retrying in {wait:.1f}s..."
+            )
+            time.sleep(wait)
+
+
 def _get_garmin_credentials() -> tuple[str, str, str]:
     """
     Get Garmin Connect credentials from the vault.
@@ -55,7 +156,12 @@ def _get_garmin_credentials() -> tuple[str, str, str]:
 
 
 def _create_client(tokenstore: str) -> "garminconnect.Garmin":
-    """Create and return an authenticated Garmin client using garmin-auth."""
+    """Create and return an authenticated Garmin client using garmin-auth.
+
+    Reuses cached tokens when available to avoid re-authenticating (and
+    triggering MFA) on every sync. Falls back to full login only when
+    no cached tokens exist.
+    """
     if garminconnect is None:
         raise ImportError(
             "garminconnect package not installed. "
@@ -78,6 +184,15 @@ def _create_client(tokenstore: str) -> "garminconnect.Garmin":
         prompt_mfa=lambda: _prompt_mfa_interactive(),
     )
 
+    # Try to get a client from cached tokens first — avoids re-auth / MFA.
+    try:
+        client = auth.get_garmin()
+        if client is not None:
+            return client
+    except Exception:
+        pass
+
+    # No cached tokens or they're stale — do a full login.
     client = auth.login()
     if client is None:
         raise RuntimeError("Garmin login returned no client")
@@ -95,6 +210,88 @@ def _prompt_mfa_interactive() -> str:
     code = input("  Enter Garmin MFA code: ").strip()
     return code
 
+
+class GarminAuthResult:
+    """Result of a Garmin authentication attempt from the UI."""
+
+    def __init__(self, success: bool, mfa_required: bool = False, error: str = ""):
+        self.success = success
+        self.mfa_required = mfa_required
+        self.error = error
+
+
+def authenticate_garmin(
+    email: str,
+    password: str,
+    tokenstore: str,
+    mfa_code: str | None = None,
+) -> GarminAuthResult:
+    """Authenticate with Garmin Connect, optionally supplying an MFA code.
+
+    This is the UI-facing entry point. Call it first with just email/password;
+    if MFA is required, call again with the mfa_code from the user.
+
+    On success, tokens are persisted in *tokenstore* for future use.
+
+    Returns a GarminAuthResult indicating success, MFA requirement, or error.
+    """
+    if GarminAuth is None:
+        return GarminAuthResult(
+            success=False,
+            error="garmin-auth package not installed.",
+        )
+
+    # Use a mutable container so the callback can signal MFA requirement
+    # without throwing (garmin-auth catches callback exceptions and wraps them).
+    mfa_state: dict = {"triggered": False, "code": mfa_code}
+
+    def _prompt_fn() -> str:
+        if mfa_state["code"] is not None:
+            return mfa_state["code"]
+        # Signal that MFA was requested but no code available.
+        mfa_state["triggered"] = True
+        return ""  # empty string will cause garmin-auth to fail, we detect via triggered
+
+    try:
+        auth = GarminAuth(
+            email=email,
+            password=password,
+            token_dir=tokenstore if tokenstore else "~/.garminconnect",
+            prompt_mfa=_prompt_fn,
+        )
+        client = auth.login()
+
+        # If MFA was triggered but login still returned a client, tokens were cached
+        # and MFA wasn't actually needed this run.
+        if client is not None:
+            return GarminAuthResult(success=True)
+
+        # Login returned None. Check if it was because MFA was triggered.
+        if mfa_state["triggered"]:
+            return GarminAuthResult(success=False, mfa_required=True)
+
+        return GarminAuthResult(
+            success=False,
+            error="Login failed - Garmin returned no client. Check credentials.",
+        )
+
+    except Exception as e:
+        err_msg = str(e)
+        # garmin-auth wraps callback failures; detect MFA trigger through our flag
+        # or by checking if the error message mentions MFA/two-factor.
+        if mfa_state["triggered"]:
+            return GarminAuthResult(success=False, mfa_required=True)
+        if any(kw in err_msg.lower() for kw in ["mfa", "two-factor", "verification code", "second factor"]):
+            return GarminAuthResult(success=False, mfa_required=True)
+        # Garmin IP-level rate limit — give a user-friendly message
+        if "429" in err_msg or "rate limited" in err_msg.lower():
+            return GarminAuthResult(
+                success=False,
+                error="Garmin has temporarily blocked login from this IP due to too many attempts. "
+                       "Wait 30-60 minutes and try again.",
+            )
+        return GarminAuthResult(success=False, error=err_msg)
+
 def fetch_wellness_for_date(
     client: "garminconnect.Garmin", date_str: str
 ) -> dict[str, Any] | None:
@@ -104,25 +301,33 @@ def fetch_wellness_for_date(
     Returns a dict compatible with the wellness table schema, or None
     if no data is available for that date.
     """
+    rl = _rate_limiter
     try:
         # Get basic stats (RHR, steps, sleep, stress)
-        stats = client.get_stats(date_str)
+        rl.wait()
+        stats = _retry_on_rate_limit(lambda: client.get_stats(date_str))
 
         # Get HRV data
-        hrv_data = client.get_hrv_data(date_str)
+        rl.wait()
+        hrv_data = _retry_on_rate_limit(lambda: client.get_hrv_data(date_str))
 
         # Get heart rates (for RHR verification)
-        heart_rates = client.get_heart_rates(date_str)
+        rl.wait()
+        heart_rates = _retry_on_rate_limit(lambda: client.get_heart_rates(date_str))
 
         # Get body composition (for weight)
         try:
-            body = client.get_body_composition(date_str)
+            rl.wait()
+            body = _retry_on_rate_limit(lambda: client.get_body_composition(date_str))
         except Exception:
             body = None
 
         # Get weigh-ins (more reliable for weight)
         try:
-            weigh_ins = client.get_daily_weigh_ins(date_str)
+            rl.wait()
+            weigh_ins = _retry_on_rate_limit(
+                lambda: client.get_daily_weigh_ins(date_str)
+            )
         except Exception:
             weigh_ins = None
 
@@ -162,7 +367,8 @@ def fetch_wellness_for_date(
         sleep_score = None
         sleep_hours = None
         try:
-            sleep_data = client.get_sleep_data(date_str)
+            rl.wait()
+            sleep_data = _retry_on_rate_limit(lambda: client.get_sleep_data(date_str))
             if sleep_data:
                 sleep_score = sleep_data.get("sleepScore")
                 # Sleep duration in seconds -> hours
@@ -214,9 +420,12 @@ def _fetch_activity_streams(
 
         if not fit_path.exists():
             # Download original FIT from Garmin (returns a ZIP)
-            zip_bytes = client.download_activity(
-                str(activity_id),
-                garminconnect.Garmin.ActivityDownloadFormat.ORIGINAL,
+            _rate_limiter.wait()
+            zip_bytes = _retry_on_rate_limit(
+                lambda: client.download_activity(
+                    str(activity_id),
+                    garminconnect.Garmin.ActivityDownloadFormat.ORIGINAL,
+                )
             )
 
             # Extract the .fit file from the ZIP
@@ -366,6 +575,7 @@ def sync_activities(
     else:
         last_date = today - timedelta(days=1)
 
+    reset_rate_limiter()
     client = _create_client(tokenstore)
 
     total_processed = 0
@@ -376,25 +586,34 @@ def sync_activities(
         target_str = current_date.strftime("%Y-%m-%d")
         logger.info(f"Syncing activities for {target_str}")
 
-        try:
-            activities = client.get_activities_by_date(target_str, target_str)
-        except garminconnect.GarminConnectTooManyRequestsError as e:
-            logger.warning(f"Rate limited by Garmin Connect: {e}")
-            # Save progress so next run resumes from this day
-            # (we haven't processed this day yet, so don't advance)
-            logger.info(f"Pausing — {total_processed} activities processed, "
-                        f"{total_stored} stream records stored so far")
-            break
-        except Exception as e:
-            logger.error(f"Failed to fetch activities for {target_str}: "
-                         f"{type(e).__name__}: {e}")
-            # On non-rate-limit errors, advance to avoid infinite loop
-            db = CyclingDB(db_path)
-            db.set_last_synced("garmin_activities", target_str)
-            db.close()
-            current_date -= timedelta(days=1)
-            time.sleep(2.0)
-            continue
+        attempt = 0
+        activities = None
+        while activities is None:
+            try:
+                _rate_limiter.wait()
+                activities = client.get_activities_by_date(target_str, target_str)
+            except garminconnect.GarminConnectTooManyRequestsError as e:
+                _rate_limiter.record_429()
+                attempt += 1
+                if attempt >= 3:
+                    logger.warning(f"Rate limited by Garmin Connect after 3 retries: {e}")
+                    logger.info(f"Pausing — {total_processed} activities processed, "
+                                f"{total_stored} stream records stored so far")
+                    break
+                wait = min(_rate_limiter._effective_interval, _rate_limiter.max_backoff)
+                logger.info(f"Rate limited fetching activities (attempt {attempt}/3), "
+                            f"retrying in {wait:.1f}s...")
+                time.sleep(wait)
+            except Exception as e:
+                logger.error(f"Failed to fetch activities for {target_str}: "
+                             f"{type(e).__name__}: {e}")
+                # On non-rate-limit errors, advance to avoid infinite loop
+                db = CyclingDB(db_path)
+                db.set_last_synced("garmin_activities", target_str)
+                db.close()
+                current_date -= timedelta(days=1)
+                time.sleep(2.0)
+                break
 
         if not activities:
             logger.info(f"No activities found for {target_str}")
@@ -424,6 +643,7 @@ def sync_activities(
                 stored = _fetch_activity_streams(client, activity_id, db_path)
                 day_stored += stored
             except garminconnect.GarminConnectTooManyRequestsError as e:
+                _rate_limiter.record_429()
                 logger.warning(f"Rate limited during activity {activity_id}: {e}")
                 # Save progress at the activity level
                 total_processed += day_processed
@@ -516,13 +736,18 @@ def sync_garmin(
 
     logger.info(f"Syncing wellness for {target_str} (last synced: {last_synced or 'never'})")
 
+    reset_rate_limiter()
     # Create client and login
     client = _create_client(tokenstore)
     logger.info("Authenticated with Garmin Connect")
 
-    record = fetch_wellness_for_date(client, target_str)
-    time.sleep(0.5)
-
+    try:
+        record = fetch_wellness_for_date(client, target_str)
+    except garminconnect.GarminConnectTooManyRequestsError as e:
+        _rate_limiter.record_429()
+        logger.warning(f"Rate limited during wellness sync: {e}")
+        db.close()
+        return {"wellness_records": 0, "with_hrv": 0}
     if record is None:
         logger.info(f"No wellness data for {target_str}")
         # Still advance the sync pointer so we don't retry forever

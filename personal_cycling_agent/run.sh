@@ -20,18 +20,6 @@ if command -v bashio >/dev/null 2>&1; then
     RESTING_HR="$(bashio::config 'resting_hr')"
     LT1_POWER="$(bashio::config 'lt1_power')"
     LT2_POWER="$(bashio::config 'lt2_power')"
-    ATHLETE_NAME="$(bashio::config 'athlete_name')"
-    WEIGHT_KG="$(bashio::config 'weight_kg')"
-    HEIGHT_CM="$(bashio::config 'height_cm')"
-    DISCIPLINE="$(bashio::config 'discipline')"
-    PRIMARY_GOAL="$(bashio::config 'primary_goal')"
-    SECONDARY_GOAL="$(bashio::config 'secondary_goal')"
-    TRAINING_DAYS="$(bashio::config 'training_days')"
-    MAX_SESSION="$(bashio::config 'max_session_duration')"
-    TERRAIN="$(bashio::config 'terrain')"
-    BIKES="$(bashio::config 'bikes')"
-    POWER_METER="$(bashio::config 'power_meter')"
-    HR_MONITOR="$(bashio::config 'hr_monitor')"
     DATA_DIR="/data"
 else
     # Running standalone — use environment variables (from config.env or .env)
@@ -43,9 +31,30 @@ mkdir -p "${DATA_DIR}/data" "${DATA_DIR}/raw/fit"
 
 # ── Write config.env and user_profile.md (HA add-on only) ────────────
 if command -v bashio >/dev/null 2>&1; then
-    # Create config.env from options
-    # Note: passwords are stored plaintext in /data/options.json by HA already;
-    # this is the add-on trade-off. The existing pbkdf2 hashing layer is bypassed.
+    # Merge HA options into config.env without overwriting values set by the UI
+    # (e.g. GARMIN_EMAIL/GARMIN_PASSWORD saved via the Settings page).
+    # Load existing config.env if it exists.
+    if [ -f "${DATA_DIR}/config.env" ]; then
+        set -a
+        # shellcheck disable=SC1090
+        source "${DATA_DIR}/config.env"
+        set +a
+    fi
+
+    # Only set from options if not already set by the UI.
+    GARMIN_EMAIL="${GARMIN_EMAIL:-$(bashio::config 'garmin_email')}"
+    GARMIN_PASSWORD="${GARMIN_PASSWORD:-$(bashio::config 'garmin_password')}"
+    OPENAI_API_KEY="${OPENAI_API_KEY:-$(bashio::config 'openai_api_key')}"
+    OPENAI_MODEL="${OPENAI_MODEL:-$(bashio::config 'openai_model')}"
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$(bashio::config 'anthropic_api_key')}"
+    ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-$(bashio::config 'anthropic_model')}"
+    FTP_WATTS="${FTP_WATTS:-$(bashio::config 'ftp_watts')}"
+    MAX_HR="${MAX_HR:-$(bashio::config 'max_hr')}"
+    RESTING_HR="${RESTING_HR:-$(bashio::config 'resting_hr')}"
+    LT1_POWER="${LT1_POWER:-$(bashio::config 'lt1_power')}"
+    LT2_POWER="${LT2_POWER:-$(bashio::config 'lt2_power')}"
+    SYNC_INTERVAL="${SYNC_INTERVAL:-$(bashio::config 'sync_interval_hours')}"
+
     cat > "${DATA_DIR}/config.env" <<EOF
 GARMIN_EMAIL=${GARMIN_EMAIL}
 GARMIN_PASSWORD=${GARMIN_PASSWORD}
@@ -61,10 +70,22 @@ LT2_POWER=${LT2_POWER}
 SYNC_INTERVAL_HOURS=${SYNC_INTERVAL}
 EOF
 
-    # Create user_profile.md from options
-    # This file is read by the analytics engine and the dashboard profile tab.
-    # Users can also edit their profile directly in the dashboard UI.
-    cat > "${DATA_DIR}/user_profile.md" <<EOF
+    # Create user_profile.md from options only if it doesn't already exist
+    # (users can edit their profile directly in the dashboard UI).
+    if [ ! -f "${DATA_DIR}/user_profile.md" ]; then
+        ATHLETE_NAME="$(bashio::config 'athlete_name')"
+        WEIGHT_KG="$(bashio::config 'weight_kg')"
+        HEIGHT_CM="$(bashio::config 'height_cm')"
+        DISCIPLINE="$(bashio::config 'discipline')"
+        PRIMARY_GOAL="$(bashio::config 'primary_goal')"
+        SECONDARY_GOAL="$(bashio::config 'secondary_goal')"
+        TRAINING_DAYS="$(bashio::config 'training_days')"
+        MAX_SESSION="$(bashio::config 'max_session_duration')"
+        TERRAIN="$(bashio::config 'terrain')"
+        BIKES="$(bashio::config 'bikes')"
+        POWER_METER="$(bashio::config 'power_meter')"
+        HR_MONITOR="$(bashio::config 'hr_monitor')"
+        cat > "${DATA_DIR}/user_profile.md" <<EOF
 # Athlete Profile
 
 ## Identity
@@ -94,6 +115,7 @@ EOF
 - Power meter: ${POWER_METER}
 - HR monitor: ${HR_MONITOR}
 EOF
+    fi
 fi
 
 # ── Set environment variables for the Python app ─────────────────────
