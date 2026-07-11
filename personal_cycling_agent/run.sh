@@ -101,12 +101,16 @@ python3 -m streamlit run src/visualize.py \
     --browser.gatherUsageStats false &
 STREAMLIT_PID=$!
 
-# ── Run sync/analyze in background if credentials are set ────────────
-if [ -n "${GARMIN_EMAIL}" ] && [ -n "${GARMIN_PASSWORD}" ]; then
+# ── Run sync/analyze in background only if tokens are cached ─────────
+# Do NOT run sync on first boot: the user must authenticate via the UI
+# (which handles MFA/OTP). Background sync runs only when tokens exist,
+# meaning the user has already completed auth through the dashboard.
+TOKEN_DIR="${GARMIN_TOKENSTORE:-${DATA_DIR}/.garminconnect}"
+if [ -d "${TOKEN_DIR}" ] && [ -n "$(ls -A "${TOKEN_DIR}" 2>/dev/null)" ]; then
     if command -v bashio >/dev/null 2>&1; then
-        bashio::log.info "Running sync and analysis in background..."
+        bashio::log.info "Cached tokens found — running sync and analysis in background..."
     else
-        echo "Running sync and analysis in background..."
+        echo "Cached tokens found — running sync and analysis in background..."
     fi
     (
         python3 -m src.main --sync 2>&1 || {
@@ -131,6 +135,12 @@ if [ -n "${GARMIN_EMAIL}" ] && [ -n "${GARMIN_PASSWORD}" ]; then
             fi
         }
     ) &
+else
+    if command -v bashio >/dev/null 2>&1; then
+        bashio::log.info "No cached Garmin tokens — authenticate via the dashboard to enable sync."
+    else
+        echo "No cached Garmin tokens — authenticate via the dashboard to enable sync."
+    fi
 fi
 
 # Wait for Streamlit (keeps container alive)

@@ -1065,6 +1065,7 @@ def _render_settings():
             st.rerun()
         elif result.mfa_required:
             st.session_state.garmin_auth_state = "mfa_required"
+            st.rerun()
         else:
             st.session_state.garmin_auth_state = "idle"
             st.session_state.garmin_auth_password = ""
