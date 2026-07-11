@@ -841,6 +841,7 @@ def _update_config_env(updates: dict) -> None:
     existing_keys = {l.split("=", 1)[0] for l in lines if "=" in l}
     for k, v in updates.items():
         if k == "GARMIN_PASSWORD":
+            os.environ[k] = v
             hashed, _ = config.hash_password(v)
             v = hashed
         if k in existing_keys:
@@ -997,8 +998,19 @@ def _render_settings():
     else:
         st.info("No Garmin credentials configured yet.")
 
+    # ── Deferred message display ──────────────────────────────────────
+    if st.session_state.get("garmin_auth_message"):
+        msg = st.session_state.garmin_auth_message
+        msg_type = st.session_state.garmin_auth_message_type
+        if msg_type == "success":
+            st.success(msg)
+        elif msg_type == "error":
+            st.error(msg)
+        st.session_state.garmin_auth_message = ""
+        st.session_state.garmin_auth_message_type = ""
+
     # ── Auth state machine via session_state ──────────────────────────
-    # States: "idle" | "entering" | "mfa_required" | "authenticating" | "done"
+    # States: "idle" | "entering" | "mfa_required" | "authenticating" | "authenticating_mfa" | "done"
     if "garmin_auth_state" not in st.session_state:
         st.session_state.garmin_auth_state = "idle"
     if "garmin_auth_email" not in st.session_state:
@@ -1007,6 +1019,8 @@ def _render_settings():
         st.session_state.garmin_auth_password = ""
     if "garmin_auth_error" not in st.session_state:
         st.session_state.garmin_auth_error = ""
+    if "garmin_auth_instance" not in st.session_state:
+        st.session_state.garmin_auth_instance = None
 
     auth_state = st.session_state.garmin_auth_state
 
@@ -1030,7 +1044,7 @@ def _render_settings():
         login_clicked = st.form_submit_button(
             "Sign In",
             type="primary",
-            disabled=auth_state == "authenticating",
+            disabled=auth_state in ("authenticating", "authenticating_mfa"),
         )
 
         if login_clicked:
@@ -1041,19 +1055,19 @@ def _render_settings():
                 st.session_state.garmin_auth_password = password
                 st.session_state.garmin_auth_state = "authenticating"
                 st.session_state.garmin_auth_error = ""
+                st.session_state.garmin_auth_instance = None
                 st.rerun()
 
     # ── Authenticating state: attempt login ───────────────────────────
     if auth_state == "authenticating":
         email = st.session_state.garmin_auth_email
-        password = st.session_state.garmin_auth_password  # stored below
+        password = st.session_state.garmin_auth_password
 
         with st.spinner("Connecting to Garmin Connect..."):
             tokenstore = os.environ.get("GARMIN_TOKENSTORE", "")
-            result = authenticate_garmin(email, password, tokenstore)
+            result, auth_instance = authenticate_garmin(email, password, tokenstore)
 
         if result.success:
-            # Persist credentials
             _update_config_env({
                 "GARMIN_EMAIL": email,
                 "GARMIN_PASSWORD": password,
@@ -1061,15 +1075,21 @@ def _render_settings():
             st.session_state.garmin_auth_state = "idle"
             st.session_state.garmin_auth_email = ""
             st.session_state.garmin_auth_password = ""
-            st.success("Connected successfully! Your Garmin account is now linked.")
+            st.session_state.garmin_auth_instance = None
+            st.session_state.garmin_auth_message = "Connected successfully! Your Garmin account is now linked."
+            st.session_state.garmin_auth_message_type = "success"
             st.rerun()
         elif result.mfa_required:
+            st.session_state.garmin_auth_instance = auth_instance
             st.session_state.garmin_auth_state = "mfa_required"
             st.rerun()
         else:
             st.session_state.garmin_auth_state = "idle"
             st.session_state.garmin_auth_password = ""
-            st.error(f"Login failed: {result.error}")
+            st.session_state.garmin_auth_instance = None
+            st.session_state.garmin_auth_message = f"Login failed: {result.error}"
+            st.session_state.garmin_auth_message_type = "error"
+            st.rerun()
 
     # ── MFA required: ask for OTP ─────────────────────────────────────
     if auth_state == "mfa_required":
@@ -1100,10 +1120,15 @@ def _render_settings():
         email = st.session_state.garmin_auth_email
         password = st.session_state.garmin_auth_password
         mfa_code = st.session_state.garmin_auth_mfa_code
+        auth_instance = st.session_state.garmin_auth_instance
 
         with st.spinner("Verifying code..."):
             tokenstore = os.environ.get("GARMIN_TOKENSTORE", "")
-            result = authenticate_garmin(email, password, tokenstore, mfa_code=mfa_code)
+            result, auth_instance = authenticate_garmin(
+                email, password, tokenstore,
+                mfa_code=mfa_code,
+                auth_instance=auth_instance,
+            )
 
         if result.success:
             _update_config_env({
@@ -1113,16 +1138,15 @@ def _render_settings():
             st.session_state.garmin_auth_state = "idle"
             st.session_state.garmin_auth_email = ""
             st.session_state.garmin_auth_password = ""
-            st.success("Connected successfully! Your Garmin account is now linked.")
-            st.rerun()
-        elif result.mfa_required:
-            st.error("Invalid verification code. Please try again.")
-            st.session_state.garmin_auth_state = "mfa_required"
+            st.session_state.garmin_auth_instance = None
+            st.session_state.garmin_auth_message = "Connected successfully! Your Garmin account is now linked."
+            st.session_state.garmin_auth_message_type = "success"
             st.rerun()
         else:
-            st.error(f"Authentication failed: {result.error}")
-            st.session_state.garmin_auth_state = "idle"
-            st.session_state.garmin_auth_password = ""
+            error_msg = result.error or "Invalid verification code. Please try again."
+            st.session_state.garmin_auth_state = "mfa_required"
+            st.session_state.garmin_auth_message = error_msg
+            st.session_state.garmin_auth_message_type = "error"
             st.rerun()
 
     # ── Sync controls (only if connected) ─────────────────────────────

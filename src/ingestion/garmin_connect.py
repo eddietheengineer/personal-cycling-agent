@@ -225,72 +225,70 @@ def authenticate_garmin(
     password: str,
     tokenstore: str,
     mfa_code: str | None = None,
-) -> GarminAuthResult:
-    """Authenticate with Garmin Connect, optionally supplying an MFA code.
+    auth_instance: object | None = None,
+) -> tuple["GarminAuthResult", object | None]:
+    """Authenticate with Garmin Connect using garmin-auth 0.3.0 API.
 
-    This is the UI-facing entry point. Call it first with just email/password;
-    if MFA is required, call again with the mfa_code from the user.
+    Phase 1 (initial login): pass email/password only.
+        Returns (result, auth_instance). If MFA required, save auth_instance.
+
+    Phase 2 (MFA completion): pass the saved auth_instance + mfa_code.
+        Calls auth.resume_login(code) on the same instance.
 
     On success, tokens are persisted in *tokenstore* for future use.
-
-    Returns a GarminAuthResult indicating success, MFA requirement, or error.
     """
     if GarminAuth is None:
         return GarminAuthResult(
             success=False,
             error="garmin-auth package not installed.",
-        )
+        ), None
 
-    # Use a mutable container so the callback can signal MFA requirement
-    # without throwing (garmin-auth catches callback exceptions and wraps them).
-    mfa_state: dict = {"triggered": False, "code": mfa_code}
+    # ── Phase 2: resume pending MFA login ──────────────────────────────
+    if mfa_code is not None and auth_instance is not None:
+        try:
+            auth_instance.resume_login(mfa_code)
+            return GarminAuthResult(success=True), auth_instance
+        except ValueError as e:
+            return GarminAuthResult(success=False, error=str(e)), auth_instance
+        except Exception as e:
+            err_msg = str(e)
+            if any(kw in err_msg.lower() for kw in ["mfa", "two-factor", "verification", "invalid"]):
+                return GarminAuthResult(success=False, error="Invalid verification code."), auth_instance
+            if "429" in err_msg or "rate limited" in err_msg.lower():
+                return GarminAuthResult(
+                    success=False,
+                    error="Garmin has temporarily blocked login from this IP. "
+                           "Wait 30-60 minutes and try again.",
+                ), auth_instance
+            return GarminAuthResult(success=False, error=err_msg), auth_instance
 
-    def _prompt_fn() -> str:
-        if mfa_state["code"] is not None:
-            return mfa_state["code"]
-        # Signal that MFA was requested but no code available.
-        mfa_state["triggered"] = True
-        return ""  # empty string will cause garmin-auth to fail, we detect via triggered
-
+    # ── Phase 1: initial login ─────────────────────────────────────────
     try:
         auth = GarminAuth(
             email=email,
             password=password,
             token_dir=tokenstore if tokenstore else "~/.garminconnect",
-            prompt_mfa=_prompt_fn,
+            return_on_mfa=True,
         )
-        client = auth.login()
+        result = auth.login()
 
-        # If MFA was triggered but login still returned a client, tokens were cached
-        # and MFA wasn't actually needed this run.
-        if client is not None:
-            return GarminAuthResult(success=True)
+        if result == "needs_mfa":
+            return GarminAuthResult(success=False, mfa_required=True), auth
 
-        # Login returned None. Check if it was because MFA was triggered.
-        if mfa_state["triggered"]:
-            return GarminAuthResult(success=False, mfa_required=True)
-
-        return GarminAuthResult(
-            success=False,
-            error="Login failed - Garmin returned no client. Check credentials.",
-        )
+        # result is a Garmin client → success
+        return GarminAuthResult(success=True), auth
 
     except Exception as e:
         err_msg = str(e)
-        # garmin-auth wraps callback failures; detect MFA trigger through our flag
-        # or by checking if the error message mentions MFA/two-factor.
-        if mfa_state["triggered"]:
-            return GarminAuthResult(success=False, mfa_required=True)
         if any(kw in err_msg.lower() for kw in ["mfa", "two-factor", "verification code", "second factor"]):
-            return GarminAuthResult(success=False, mfa_required=True)
-        # Garmin IP-level rate limit — give a user-friendly message
+            return GarminAuthResult(success=False, mfa_required=True), None
         if "429" in err_msg or "rate limited" in err_msg.lower():
             return GarminAuthResult(
                 success=False,
                 error="Garmin has temporarily blocked login from this IP due to too many attempts. "
                        "Wait 30-60 minutes and try again.",
-            )
-        return GarminAuthResult(success=False, error=err_msg)
+            ), None
+        return GarminAuthResult(success=False, error=err_msg), None
 
 def fetch_wellness_for_date(
     client: "garminconnect.Garmin", date_str: str
