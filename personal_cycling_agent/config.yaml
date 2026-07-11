@@ -6,12 +6,13 @@ url: https://github.com/eddietheengineer/personal-cycling-agent
 arch:
   - amd64
   - aarch64
-startup: application
 ingress: true
 ingress_port: 8501
+ingress_stream: true
 panel_icon: mdi:bicycle
 panel_title: Cycling
 init: false
+hassio_api: true
 options:
   garmin_email: ""
   garmin_password: ""
@@ -38,28 +39,27 @@ options:
   power_meter: ""
   hr_monitor: ""
 schema:
-  garmin_email: email
-  garmin_password: password
+  garmin_email: email?
+  garmin_password: password?
   openai_api_key: password?
-  openai_model: text
+  openai_model: str
   anthropic_api_key: password?
-  anthropic_model: text
+  anthropic_model: str
   sync_interval_hours: int
   ftp_watts: int
   max_hr: int
   resting_hr: int
   lt1_power: int
   lt2_power: int
-  athlete_name: text
+  athlete_name: str?
   weight_kg: int
   height_cm: int
-  discipline: text
-  primary_goal: text
-  secondary_goal: text
-  training_days: text
-  max_session_duration: text
-  terrain: text
-  bikes: text
-  power_meter: text
-  hr_monitor: text
-stage: stable
+  discipline: str?
+  primary_goal: str?
+  secondary_goal: str?
+  training_days: str?
+  max_session_duration: str?
+  terrain: str?
+  bikes: str?
+  power_meter: str?
+  hr_monitor: str?
