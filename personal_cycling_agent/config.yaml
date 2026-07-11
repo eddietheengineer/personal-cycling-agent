@@ -39,21 +39,21 @@ options:
   power_meter: ""
   hr_monitor: ""
 schema:
-  garmin_email: email?
-  garmin_password: password?
+  garmin_email: email
+  garmin_password: password
   openai_api_key: password?
-  openai_model: str
+  openai_model: str?
   anthropic_api_key: password?
-  anthropic_model: str
-  sync_interval_hours: int
-  ftp_watts: int
-  max_hr: int
-  resting_hr: int
-  lt1_power: int
-  lt2_power: int
+  anthropic_model: str?
+  sync_interval_hours: int?
+  ftp_watts: int?
+  max_hr: int?
+  resting_hr: int?
+  lt1_power: int?
+  lt2_power: int?
   athlete_name: str?
-  weight_kg: int
-  height_cm: int
+  weight_kg: int?
+  height_cm: int?
   discipline: str?
   primary_goal: str?
   secondary_goal: str?
