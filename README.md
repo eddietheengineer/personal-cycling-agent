@@ -162,7 +162,7 @@ export CYCLING_AGENT_VAULT=/path/to/my/vault
 ```
 setup.py                   # Interactive setup wizard
 setup_cron.sh              # Install daily cron job
-repository.yaml            # Home Assistant add-on repository manifest
+repository.json            # Home Assistant add-on repository manifest
 requirements.txt           # Python dependencies
 addon/                     # Home Assistant add-on
 ├── config.yaml            # Add-on manifest (ingress, options schema)
