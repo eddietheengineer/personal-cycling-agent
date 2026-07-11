@@ -825,13 +825,17 @@ def _update_config_env(updates: dict) -> None:
         lines = []
     existing_keys = {l.split("=", 1)[0] for l in lines if "=" in l}
     for k, v in updates.items():
+        if k == "GARMIN_PASSWORD":
+            hashed, _ = config.hash_password(v)
+            v = hashed
         if k in existing_keys:
             lines = [f"{k}={v}" if l.startswith(f"{k}=") else l for l in lines]
         else:
             lines.append(f"{k}={v}")
     env_path.write_text("\n".join(lines) + "\n")
     for k, v in updates.items():
-        os.environ[k] = v
+        if k != "GARMIN_PASSWORD":
+            os.environ[k] = v
 
 
 def _render_garmin_setup():
@@ -1041,6 +1045,7 @@ def _render_settings():
             })
             st.session_state.garmin_auth_state = "idle"
             st.session_state.garmin_auth_email = ""
+            st.session_state.garmin_auth_password = ""
             st.success("Connected successfully! Your Garmin account is now linked.")
             st.rerun()
         elif result.mfa_required:
@@ -1048,6 +1053,7 @@ def _render_settings():
             st.rerun()
         else:
             st.session_state.garmin_auth_state = "idle"
+            st.session_state.garmin_auth_password = ""
             st.error(f"Login failed: {result.error}")
 
     # ── MFA required: ask for OTP ─────────────────────────────────────
@@ -1091,6 +1097,7 @@ def _render_settings():
             })
             st.session_state.garmin_auth_state = "idle"
             st.session_state.garmin_auth_email = ""
+            st.session_state.garmin_auth_password = ""
             st.success("Connected successfully! Your Garmin account is now linked.")
             st.rerun()
         elif result.mfa_required:
@@ -1100,6 +1107,7 @@ def _render_settings():
         else:
             st.error(f"Authentication failed: {result.error}")
             st.session_state.garmin_auth_state = "idle"
+            st.session_state.garmin_auth_password = ""
             st.rerun()
 
     # ── Sync controls (only if connected) ─────────────────────────────

@@ -58,7 +58,7 @@ def publish(prescription: str, metadata: dict[str, Any] | None = None) -> bool:
         "metadata": metadata or {},
     }
 
-    client = mqtt.Client(mqtt.CallbackAPIVersion.AUTO)  # type: ignore
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)  # type: ignore
 
     if MQTT_USERNAME:
         client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
@@ -84,11 +84,9 @@ def publish(prescription: str, metadata: dict[str, Any] | None = None) -> bool:
     try:
         client.connect(MQTT_BROKER, MQTT_PORT, 10)
         client.loop_start()
-        client.loop_wait()
+        client.loop_wait(timeout=10.0)
+    finally:
         client.loop_stop()
         client.disconnect()
-    except Exception as e:
-        logger.error(f"MQTT publish failed: {e}")
-        return False
 
     return published

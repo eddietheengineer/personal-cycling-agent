@@ -92,7 +92,7 @@ def compute_durability(
             dq.append(i)
             if dq[0] <= i - window:
                 dq.popleft()
-            if i >= window:
+            if i >= window - 1:
                 result[i] = float(arr[dq[0]])
         return result
 

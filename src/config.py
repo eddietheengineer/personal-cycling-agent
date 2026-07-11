@@ -103,7 +103,10 @@ def _resolve_hashed_passwords() -> None:
             else:
                 os.environ[var] = ""
         # If value doesn't start with 'pbkdf2:' or 'hash:', it's plaintext — leave as-is
-
+        # SECURITY NOTE: Once resolved, the plaintext password lives in os.environ for
+        # the lifetime of the process. This is a tradeoff: garminconnect needs the raw
+        # value for initial auth, but tokens are cached thereafter. The config.env file
+        # itself stores only the hash, so the plaintext is only in memory at runtime.
 
 def hash_password(plaintext: str) -> tuple[str, str]:
     """

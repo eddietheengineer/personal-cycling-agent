@@ -73,12 +73,11 @@ st.sidebar.header("Dashboard")
 if "nav_page" not in st.session_state:
     st.session_state.nav_page = "Activity Detail"
 
+pages = ["Activity Detail", "Trends", "Map", "Profile", "Settings"]
 nav_page = st.sidebar.selectbox(
     "Navigate",
-    ["Activity Detail", "Trends", "Map", "Profile", "Settings"],
-    index=["Activity Detail", "Trends", "Map", "Profile", "Settings"].index(
-        st.session_state.nav_page
-    ),
+    pages,
+    index=pages.index(st.session_state.nav_page) if st.session_state.nav_page in pages else 0,
     label_visibility="collapsed",
 )
 if nav_page != st.session_state.nav_page:
@@ -94,7 +93,7 @@ def _downsample(elapsed: list, values: list, max_points: int = 10_000) -> tuple[
     if n <= max_points:
         return elapsed, values
     step = max(1, n // max_points)
-    idx = np.arange(0, n, step)
+    idx = np.arange(0, n, step)[:max_points]
     return [elapsed[i] for i in idx], [values[i] for i in idx]
 
 
@@ -156,7 +155,7 @@ def _zone_for_value(value: float, threshold: float, ranges: list) -> int:
 
 def _zone_colors():
     """Return zone color list matching current Streamlit theme."""
-    theme = st.query_params.get("theme", "light")
+    theme = st.get_option("theme.base")
     if theme == "dark":
         return _DARK_COLORS
     return _LIGHT_COLORS
@@ -190,7 +189,7 @@ def _build_zone_chart(
     data_max = max(values) if values else 0
 
     # Detect theme for line color
-    theme = st.query_params.get("theme", "light")
+    theme = st.get_option("theme.base")
     line_color = "#f0f0f0" if theme == "dark" else "#222222"
 
     fig = go.Figure()
@@ -548,17 +547,20 @@ def _render_trends():
 # ---------------------------------------------------------------------------
 def _geocode_city(city: str) -> tuple[float, float] | None:
     """Geocode a city name to (lat, lon) using Nominatim. Cached in session_state."""
-    if city not in st.session_state:
+    cache = st.session_state.setdefault("_geocode_cache", {})
+    if city not in cache:
         from geopy.geocoders import Nominatim
         from geopy.exc import GeopyError
         try:
             geolocator = Nominatim(user_agent="personal-cycling-agent")
             location = geolocator.geocode(city)
             if location is not None:
-                st.session_state[city] = (location.latitude, location.longitude)
+                cache[city] = (location.latitude, location.longitude)
+            else:
+                cache[city] = None
         except GeopyError:
-            st.session_state[city] = None
-    return st.session_state.get(city)
+            cache[city] = None
+    return cache.get(city)
 
 
 def _render_map():
@@ -733,7 +735,10 @@ def _render_profile():
                         else:
                             m = re.search(r"(\d+)", v)
                             if m:
-                                profile[k] = int(m.group(1))
+                                try:
+                                    profile[k] = int(m.group(1))
+                                except (ValueError, OverflowError):
+                                    pass  # leave at default if conversion fails
                     else:
                         profile[k] = val
 
@@ -835,13 +840,17 @@ def _update_config_env(updates: dict) -> None:
         lines = []
     existing_keys = {l.split("=", 1)[0] for l in lines if "=" in l}
     for k, v in updates.items():
+        if k == "GARMIN_PASSWORD":
+            hashed, _ = config.hash_password(v)
+            v = hashed
         if k in existing_keys:
-            lines = [f"{k}={v}" if l.startswith(f"{k}=") else l for l in lines]
+            lines = [f'{k}="{v}"' if l.startswith(f"{k}=") else l for l in lines]
         else:
-            lines.append(f"{k}={v}")
+            lines.append(f'{k}="{v}"')
     env_path.write_text("\n".join(lines) + "\n")
     for k, v in updates.items():
-        os.environ[k] = v
+        if k != "GARMIN_PASSWORD":
+            os.environ[k] = v
 
 
 def _render_garmin_setup():
@@ -1051,13 +1060,14 @@ def _render_settings():
             })
             st.session_state.garmin_auth_state = "idle"
             st.session_state.garmin_auth_email = ""
+            st.session_state.garmin_auth_password = ""
             st.success("Connected successfully! Your Garmin account is now linked.")
             st.rerun()
         elif result.mfa_required:
             st.session_state.garmin_auth_state = "mfa_required"
-            st.rerun()
         else:
             st.session_state.garmin_auth_state = "idle"
+            st.session_state.garmin_auth_password = ""
             st.error(f"Login failed: {result.error}")
 
     # ── MFA required: ask for OTP ─────────────────────────────────────
@@ -1101,6 +1111,7 @@ def _render_settings():
             })
             st.session_state.garmin_auth_state = "idle"
             st.session_state.garmin_auth_email = ""
+            st.session_state.garmin_auth_password = ""
             st.success("Connected successfully! Your Garmin account is now linked.")
             st.rerun()
         elif result.mfa_required:
@@ -1110,6 +1121,7 @@ def _render_settings():
         else:
             st.error(f"Authentication failed: {result.error}")
             st.session_state.garmin_auth_state = "idle"
+            st.session_state.garmin_auth_password = ""
             st.rerun()
 
     # ── Sync controls (only if connected) ─────────────────────────────
@@ -1145,30 +1157,35 @@ def _render_settings():
             st.rerun()
 
         if st.session_state.get("syncing"):
-            try:
+            def _do_sync():
                 from src.ingestion.garmin_connect import sync_garmin, sync_activities
-
                 st.session_state.sync_status = "Fetching wellness data..."
                 wellness_counts = sync_garmin(
                     db_path=str(config.db_path("cycling_agent.sqlite"))
                 )
-
                 st.session_state.sync_status = "Fetching activity streams..."
                 activity_counts = sync_activities(
                     days=days,
                     db_path=str(config.db_path("cycling_agent.sqlite")),
                 )
-
                 st.session_state.sync_result = {
                     "wellness": wellness_counts,
                     "activities": activity_counts,
                 }
                 st.session_state.syncing = False
-                st.success("Sync complete!")
+                st.session_state.sync_status = "Sync complete!"
+
+            try:
+                st.background_runner(_do_sync)
             except Exception as exc:
                 st.session_state.syncing = False
-                st.error(f"Sync failed: {exc}")
-            finally:
+                st.session_state.sync_status = f"Sync failed: {exc}"
+
+            if not st.session_state.syncing:
+                if st.session_state.get("sync_result"):
+                    st.success("Sync complete!")
+                elif st.session_state.sync_status.startswith("Sync failed"):
+                    st.error(st.session_state.sync_status)
                 st.rerun()
 
         if routes_clicked:
@@ -1200,6 +1217,8 @@ def _render_settings():
             os.environ.pop("GARMIN_EMAIL", None)
             os.environ.pop("GARMIN_PASSWORD", None)
             st.session_state.garmin_auth_state = "idle"
+            if "garmin_token_cache" in st.session_state:
+                del st.session_state.garmin_token_cache
             st.success("Disconnected.")
             st.rerun()
 

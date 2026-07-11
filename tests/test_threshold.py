@@ -69,10 +69,11 @@ class TestInterpolatePowerAtDfa:
         power = [100.0, 100.0, 200.0, 300.0]
         dfa = [0.75, 0.75, 0.8, 0.7]
         result = _interpolate_power_at_dfa(power, dfa, 0.75)
-        # Flat segment (0.75, 0.75) is skipped; next pair (0.75, 0.8) brackets target
-        # at dfa=0.75 exactly, so interpolation yields power=100.0
+        # Flat segment (0.75, 0.75) is skipped; two crossings found:
+        # (0.75, 0.8) → power=100.0, (0.8, 0.7) → power=250.0
+        # Mean of all crossings = 175.0
         assert result is not None
-        assert result == pytest.approx(100.0)
+        assert result == pytest.approx(175.0)
 
     def test_single_sample(self):
         """Only one sample → no pair to cross → None."""

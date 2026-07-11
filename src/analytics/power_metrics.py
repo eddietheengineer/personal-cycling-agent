@@ -41,19 +41,18 @@ class PowerMetricsResult:
 
 
 def _moving_average(arr: np.ndarray, window: int) -> np.ndarray:
-    """Compute a centered moving average; edges use whatever is available."""
+    """Compute a trailing moving average; edges use whatever is available."""
     n = len(arr)
     if window <= 1:
         return arr.copy()
     # cumsum-based moving average for speed
     cumsum = np.cumsum(arr)
     cumsum = np.insert(cumsum, 0, 0.0)
-    # For each position i, average over [max(0, i - window//2), min(n, i + window//2 + 1))
+    # For each position i, average over [max(0, i - window + 1), i + 1)
     result = np.empty(n, dtype=np.float64)
-    half = window // 2
     for i in range(n):
-        lo = max(0, i - half)
-        hi = min(n, i + half + 1)
+        lo = max(0, i - window + 1)
+        hi = i + 1
         result[i] = (cumsum[hi] - cumsum[lo]) / (hi - lo)
     return result
 
@@ -109,15 +108,17 @@ def _compute_time_in_zones(power: np.ndarray, ftp: float) -> dict[str, float]:
       Z4:  91-105%
       Z5:  > 105%
     """
-    n = len(power)
+    # Filter out zero-power samples
+    valid = [p for p in power if p > 0]
+    n = len(valid)
     if n == 0:
         return {zone: 0.0 for zone in _ZONE_NAMES}
 
-    # Fraction of FTP for each sample
-    fractions = power / ftp if ftp > 0 else np.zeros_like(power)
+    # Fraction of FTP for each valid sample
+    fractions = np.array(valid) / ftp if ftp > 0 else np.zeros(len(valid))
 
     zone_counts = np.zeros(5, dtype=np.float64)
-    for i, frac in enumerate(fractions):
+    for frac in fractions:
         if frac < _ZONE_BOUNDARIES[1]:
             zone_counts[0] += 1
         elif frac < _ZONE_BOUNDARIES[2]:
@@ -134,14 +135,16 @@ def _compute_time_in_zones(power: np.ndarray, ftp: float) -> dict[str, float]:
         for zone, count in zip(_ZONE_NAMES, zone_counts)
     }
 
-
 def _compute_power_duration_curve(power: np.ndarray) -> dict[int, float]:
     """
     Compute the best N-second average power for a set of standard durations.
 
     Uses rolling max of 1-second power, then averages over the window.
+    Filters out zero-power samples before computing rolling averages.
     """
-    n = len(power)
+    # Filter out zero-power samples
+    valid = np.array([p for p in power if p > 0])
+    n = len(valid)
     curve: dict[int, float] = {}
 
     for dur in _PDC_DURATIONS:
@@ -150,14 +153,13 @@ def _compute_power_duration_curve(power: np.ndarray) -> dict[int, float]:
             continue
         # Rolling mean over `dur` seconds; take the max
         # Use cumsum for O(n) rolling mean
-        cumsum = np.cumsum(power)
+        cumsum = np.cumsum(valid)
         cumsum = np.insert(cumsum, 0, 0.0)
         window_sums = cumsum[dur:] - cumsum[:-dur]
         best_avg = float(np.max(window_sums) / dur)
         curve[dur] = best_avg
 
     return curve
-
 
 def compute_power_metrics(
     activity_id: str,

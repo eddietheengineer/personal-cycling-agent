@@ -36,11 +36,13 @@ def _interpolate_power_at_dfa(
     """
     Find the power output where DFA-a1 crosses a target value.
 
-    Uses linear interpolation between consecutive samples that bracket the target.
+    Collects all crossings and returns the mean interpolated power.
     Returns None if the target is never crossed.
     """
     if len(power_values) != len(dfa_values):
         raise ValueError("Power and DFA arrays must have the same length")
+
+    crossings: list[float] = []
 
     for i in range(len(dfa_values) - 1):
         d1 = dfa_values[i]
@@ -52,9 +54,12 @@ def _interpolate_power_at_dfa(
                 continue
             # Linear interpolation
             t = (target_dfa - d1) / (d2 - d1)
-            return float(power_values[i] + t * (power_values[i + 1] - power_values[i]))
+            crossings.append(float(power_values[i] + t * (power_values[i + 1] - power_values[i])))
 
-    return None
+    if not crossings:
+        return None
+
+    return sum(crossings) / len(crossings)
 
 
 def analyze_thresholds(
@@ -67,7 +72,6 @@ def analyze_thresholds(
 ) -> ThresholdResult:
     """
     Analyze DFA-a1 vs power to find metabolic thresholds.
-
     Args:
         activity_id: Intervals.icu activity ID for logging.
         power_samples: Power values in watts (aligned with dfa_samples).

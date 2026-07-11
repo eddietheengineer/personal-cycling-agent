@@ -412,6 +412,8 @@ class CyclingDB:
 
     # -- Trend Queries --
 
+    ALLOWED_TABLES = {"wellness", "activity_metrics", "activity_streams"}
+
     def get_trend_data(self, table: str, columns: list[str], oldest: str | None = None, newest: str | None = None) -> list[dict[str, Any]]:
         """Return rows for longitudinal plotting.
 
@@ -421,6 +423,8 @@ class CyclingDB:
             oldest: inclusive start date (ISO format).
             newest: inclusive end date (ISO format).
         """
+        if table not in self.ALLOWED_TABLES:
+            raise ValueError(f"Table '{table}' is not allowed. Allowed: {self.ALLOWED_TABLES}")
         cols = ", ".join(columns)
         query = f"SELECT {cols} FROM {table}"
         params: list = []

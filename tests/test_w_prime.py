@@ -80,9 +80,9 @@ class TestBurstAboveCP:
             "burst", _steady(300, 100), cp_estimate=200, w_prime_capacity=20.0
         )
         # Recovery model (tau=240s) partially recovers during drawdown;
-        # actual min_balance_pct ≈ 0.62
-        assert result.min_balance_pct == pytest.approx(0.6207, abs=0.01)
-        assert result.final_balance_pct == pytest.approx(0.6207, abs=0.01)
+        # true min_balance_pct ≈ 0.59 (tracked across all iterations)
+        assert result.min_balance_pct == pytest.approx(0.5904, abs=0.01)
+        assert result.final_balance_pct == pytest.approx(0.5904, abs=0.01)
 
     def test_sustained_above_cp_depletes_to_zero(self):
         """Long enough effort above CP drains W' to zero."""
@@ -98,8 +98,9 @@ class TestBurstAboveCP:
         result = estimate_w_prime_from_activity(
             "short", _steady(300, 10), cp_estimate=200, w_prime_capacity=20.0
         )
-        # With recovery model (tau=240s), actual min_balance_pct ≈ 0.995
-        assert result.min_balance_pct == pytest.approx(0.995, abs=0.01)
+        # With recovery model (tau=240s), true min_balance_pct ≈ 0.95
+        # (tracked across all iterations, not just 10s intervals)
+        assert result.min_balance_pct == pytest.approx(0.9509, abs=0.01)
         assert bool(result.progression_recommended) is True
 
 
@@ -158,16 +159,17 @@ class TestKnownValues:
             "exact", _steady(400, 5), cp_estimate=200, w_prime_capacity=20.0
         )
         # Recovery model (tau=240s) recovers during short burst;
-        # actual min_balance_pct ≈ 0.99
-        assert result.min_balance_pct == pytest.approx(0.99, abs=0.01)
+        # true min_balance_pct ≈ 0.95 (tracked across all iterations)
+        assert result.min_balance_pct == pytest.approx(0.9504, abs=0.01)
 
     def test_zero_cp_estimate(self):
         """When CP=0, all power is excess → rapid depletion with recovery."""
         result = estimate_w_prime_from_activity(
             "zero_cp", _steady(200, 100), cp_estimate=0, w_prime_capacity=20.0
         )
-        # Recovery model partially recovers; actual min_balance_pct ≈ 0.24
-        assert result.min_balance_pct == pytest.approx(0.2413, abs=0.01)
+        # Recovery model partially recovers; true min_balance_pct ≈ 0.18
+        # (tracked across all iterations)
+        assert result.min_balance_pct == pytest.approx(0.1808, abs=0.01)
 
 
 # ── Progression recommendation ───────────────────────────────────────────

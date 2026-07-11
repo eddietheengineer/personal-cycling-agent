@@ -73,20 +73,36 @@ def compute_training_load(
     # Sort by date to ensure chronological order
     sorted_records = sorted(tss_records, key=lambda r: r["date"])
 
-    tss_values = [r["tss"] for r in sorted_records]
-    dates = [r["date"] for r in sorted_records]
+    # Build a date-indexed TSS map and zero-fill calendar gaps
+    start_date = date.fromisoformat(sorted_records[0]["date"])
+    end_date = date.fromisoformat(sorted_records[-1]["date"])
 
-    ctl = _ema(tss_values, half_life=18.0)
-    atl = _ema(tss_values, half_life=7.0)
+    tss_by_date: dict[date, float] = {}
+    for r in sorted_records:
+        tss_by_date[date.fromisoformat(r["date"])] = r["tss"]
 
-    last_idx = len(sorted_records) - 1
+    # Build daily TSS series (zero-fill gaps)
+    delta = (end_date - start_date).days
+    daily_tss = []
+    daily_dates = []
+
+    current = start_date
+    for _ in range(delta + 1):
+        daily_tss.append(tss_by_date.get(current, 0.0))
+        daily_dates.append(current.isoformat())
+        current += timedelta(days=1)
+
+    ctl = _ema(daily_tss, half_life=18.0)
+    atl = _ema(daily_tss, half_life=7.0)
+
+    last_idx = len(daily_dates) - 1
     ctl_val = ctl[last_idx]
     atl_val = atl[last_idx]
     tsb_val = ctl_val - atl_val
     fb_val = ctl_val / atl_val if atl_val > 0 else 0.0
 
     return TrainingLoadResult(
-        date=dates[last_idx],
+        date=daily_dates[last_idx],
         ctl=ctl_val,
         atl=atl_val,
         tsb=tsb_val,

@@ -14,6 +14,8 @@ from typing import Any
 
 import numpy as np
 
+from .power_metrics import _compute_normalized_power
+
 logger = logging.getLogger(__name__)
 
 
@@ -66,10 +68,8 @@ def estimate_w_prime_from_activity(
 
     power = np.array(power_samples)
     duration = len(power)
-
-    # Estimate CP from normalized power if not provided
     if cp_estimate is None:
-        cp_estimate = float(np.mean(power[power > 0])) if np.any(power > 0) else 0.0
+        cp_estimate = _compute_normalized_power(power)
 
     # Estimate W' capacity if not provided (max excess power integral over short bursts)
     if w_prime_capacity is None:
@@ -94,6 +94,7 @@ def estimate_w_prime_from_activity(
     # Track W' balance over time
     balance = w_prime_capacity  # start full
     balance_samples = [(0.0, balance)]
+    min_balance = w_prime_capacity  # track true minimum across ALL iterations
 
     for i, p in enumerate(power):
         excess = max(p - cp_estimate, 0.0)  # watts above CP
@@ -105,11 +106,13 @@ def estimate_w_prime_from_activity(
         balance = balance - drawdown + recovery
         balance = max(0.0, min(balance, w_prime_capacity))
 
+        if balance < min_balance:
+            min_balance = balance
+
         if i % 10 == 0:  # sample every 10 seconds for storage
             balance_samples.append((float(i), balance))
 
-    min_balance = min(b for _, b in balance_samples)
-    final_balance = balance_samples[-1][1] if balance_samples else w_prime_capacity
+    final_balance = balance  # use actual last balance from the loop
 
     min_balance_pct = min_balance / w_prime_capacity if w_prime_capacity > 0 else 1.0
     final_balance_pct = final_balance / w_prime_capacity if w_prime_capacity > 0 else 1.0

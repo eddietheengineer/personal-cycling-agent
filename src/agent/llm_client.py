@@ -112,7 +112,11 @@ def _openai_generate(prompt: str, stream: bool) -> str:
 
 def _openai_blocking(url: str, headers: dict, payload: dict, timeout: int) -> str:
     resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
-    resp.raise_for_status()
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        logger.error(f"LLM HTTP error: {exc}. Response body: {resp.text[:500]}")
+        raise
     data = resp.json()
     content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
     logger.info(f"Received {len(content)} characters from LLM")
@@ -137,10 +141,11 @@ def _openai_stream(url: str, headers: dict, payload: dict, timeout: int) -> str:
                 token = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
                 if token:
                     full_response.append(token)
-                    print(token, end="", flush=True)
-            except (json.JSONDecodeError, IndexError, KeyError):
+                    logger.info(token, extra={"streaming": True})
+            except json.JSONDecodeError:
+                logger.warning(f"Malformed JSON in stream: {data[:100]}")
+            except (IndexError, KeyError):
                 continue
-    print()
     response = "".join(full_response)
     logger.info(f"Received {len(response)} characters from LLM (streamed)")
     return response

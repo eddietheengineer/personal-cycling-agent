@@ -35,7 +35,7 @@ else
 
     cat > "${DATA_DIR}/config.env" <<EOF
 GARMIN_EMAIL=${GARMIN_EMAIL}
-GARMIN_PASSWORD=${GARMIN_PASSWORD}
+# GARMIN_PASSWORD= (set via UI)
 FTP_WATTS=${FTP_WATTS}
 MAX_HR=${MAX_HR}
 RESTING_HR=${RESTING_HR}
@@ -79,7 +79,7 @@ from src.db.store import CyclingDB
 db = CyclingDB(str(config.db_path('cycling_agent.sqlite')))
 db.close()
 print('Database initialized')
-"
+" || true
 
 # ── Start Streamlit ──────────────────────────────────────────────────
 if command -v bashio >/dev/null 2>&1; then
@@ -88,11 +88,16 @@ else
     echo "Starting dashboard on port 8501..."
 fi
 
+if command -v bashio >/dev/null 2>&1; then
+    xsrf_flag=""
+else
+    xsrf_flag="--server.enableXsrfProtection true"
+fi
 python3 -m streamlit run src/visualize.py \
     --server.headless true \
     --server.address 0.0.0.0 \
     --server.port 8501 \
-    --server.enableXsrfProtection false \
+    ${xsrf_flag} \
     --browser.gatherUsageStats false &
 STREAMLIT_PID=$!
 
