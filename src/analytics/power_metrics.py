@@ -201,8 +201,9 @@ def compute_power_metrics(
     # Intensity Factor
     if_val = np_val / ftp
 
-    # TSS = duration_sec * NP * IF^2 / (FTP * 3600) * 100
-    tss_val = duration * np_val * if_val ** 2 / (ftp * 3600) * 100
+    # TSS = duration_sec * NP * IF / (FTP * 3600) * 100
+    # Since IF = NP/FTP, this is equivalent to (NP^2 / FTP^2) * (duration_hr) * 100
+    tss_val = duration * np_val * if_val / (ftp * 3600) * 100
 
     # Variability Index
     vi_val = avg_power / np_val if np_val > 0 else 0.0

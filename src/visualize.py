@@ -16,6 +16,7 @@ NOTE on units from Garmin Connect:
 """
 
 import os
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -696,8 +697,14 @@ def _render_profile():
             line = line.strip()
             if line.startswith("- ") and ": " in line:
                 key, val = line[2:].split(": ", 1)
-                key = key.lower().replace(" ", "_").replace("(watts)", "").replace("(if_known)", "").replace("(avg)", "").replace("(kg)", "").replace("(cm)", "")
-                # Normalize known keys
+                # Normalize: lower-case, strip parenthetical suffixes, replace spaces,
+                # then clean up trailing underscores so "Weight (kg)" -> "weight_kg".
+                key = key.lower()
+                for old, new in (("(watts)", "_watts"), ("(if known)", "_if_known"),
+                                  ("(avg)", "_avg"), ("(kg)", "_kg"), ("(cm)", "_cm")):
+                    key = key.replace(" " + old, new)
+                key = key.replace(" ", "_").rstrip("_")
+                # Map to profile dict keys
                 key_map = {
                     "name": "name",
                     "weight_kg": "weight_kg",
@@ -720,10 +727,13 @@ def _render_profile():
                 k = key_map.get(key, key)
                 if k in profile:
                     if isinstance(profile[k], int):
-                        try:
-                            profile[k] = int(val.rstrip("W").strip())
-                        except ValueError:
-                            pass
+                        v = val.strip()
+                        if v.startswith("["):
+                            pass  # placeholder like "[Insert ...]" — leave at 0
+                        else:
+                            m = re.search(r"(\d+)", v)
+                            if m:
+                                profile[k] = int(m.group(1))
                     else:
                         profile[k] = val
 
