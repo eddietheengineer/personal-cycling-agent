@@ -1178,30 +1178,45 @@ def _render_settings():
                 st.session_state.sync_status = "Fetching activity streams..."
                 activity_counts = sync_activities(
                     days=days,
-                    db_path=str(config.db_path("cycling_agent.sqlite")),
+                    db_path=str(config.db_path("cycling_agent.sqlite"))
                 )
 
                 st.session_state.sync_result = {
                     "wellness": wellness_counts,
                     "activities": activity_counts,
                 }
-                st.session_state.syncing = False
-                st.success("Sync complete!")
+                st.session_state.sync_message = "Sync complete!"
+                st.session_state.sync_message_type = "success"
             except Exception as exc:
-                st.session_state.syncing = False
-                st.error(f"Sync failed: {exc}")
+                st.session_state.sync_message = f"Sync failed: {exc}"
+                st.session_state.sync_message_type = "error"
             finally:
+                st.session_state.syncing = False
                 st.rerun()
+
+        # Display deferred sync message
+        if st.session_state.get("sync_message"):
+            msg = st.session_state.sync_message
+            msg_type = st.session_state.sync_message_type
+            if msg_type == "success":
+                st.success(msg)
+            elif msg_type == "error":
+                st.error(msg)
+            st.session_state.sync_message = ""
+            st.session_state.sync_message_type = ""
 
         if routes_clicked:
             try:
                 from src.ingestion.garmin_export import sync_routes_from_fit
                 raw_dir = config.raw_dir() / "fit"
                 counts = sync_routes_from_fit(db, raw_dir)
-                st.success(f"Route sync complete: {counts}")
+                st.session_state.sync_message = f"Route sync complete: {counts}"
+                st.session_state.sync_message_type = "success"
                 st.rerun()
             except Exception as exc:
-                st.error(f"Route sync failed: {exc}")
+                st.session_state.sync_message = f"Route sync failed: {exc}"
+                st.session_state.sync_message_type = "error"
+                st.rerun()
 
         if st.session_state.get("sync_result"):
             result = st.session_state.sync_result

@@ -155,7 +155,7 @@ def _get_garmin_credentials() -> tuple[str, str, str]:
     return email, password, tokenstore
 
 
-def _create_client(tokenstore: str) -> "garminconnect.Garmin":
+def _create_client(tokenstore: str | None = None) -> "garminconnect.Garmin":
     """Create and return an authenticated Garmin client using garmin-auth.
 
     Reuses cached tokens when available to avoid re-authenticating (and
@@ -174,6 +174,10 @@ def _create_client(tokenstore: str) -> "garminconnect.Garmin":
         )
 
     email, password, _ = _get_garmin_credentials()
+
+    # Use GARMIN_TOKENSTORE env var if not explicitly provided
+    if tokenstore is None:
+        tokenstore = os.getenv("GARMIN_TOKENSTORE", "")
 
     # Use garmin-auth for token persistence and rate-limit-aware auth.
     # Tokens are cached in the vault directory so cron runs don't re-auth.

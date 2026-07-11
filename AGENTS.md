@@ -102,6 +102,33 @@ client = result
 - Not checking for `result == "needs_mfa"` — will treat the sentinel string as a valid client
 - Calling `auth.login()` twice without saving the instance — triggers multiple login attempts to Garmin servers, may cause rate limiting
 
+### Tokenstore Path Consistency
+
+**CRITICAL:** The `token_dir` parameter must be consistent across all authentication calls.
+
+- The UI login (Settings page) uses `os.environ.get("GARMIN_TOKENSTORE", "")` to get the token directory
+- The sync functions (`sync_garmin()`, `sync_activities()`) call `_create_client()` which must use the **same** token directory
+- If the paths differ, tokens saved during UI login won't be found during sync, causing fresh login attempts and MFA emails
+
+**Solution:** `_create_client()` should default to `os.getenv("GARMIN_TOKENSTORE", "")` when `tokenstore` parameter is `None`:
+
+```python
+def _create_client(tokenstore: str | None = None) -> "garminconnect.Garmin":
+    ...
+    if tokenstore is None:
+        tokenstore = os.getenv("GARMIN_TOKENSTORE", "")
+    
+    auth = GarminAuth(
+        email=email,
+        password=password,
+        token_dir=tokenstore if tokenstore else "~/.garminconnect",
+        return_on_mfa=True,
+    )
+    ...
+```
+
+This ensures both UI login and background sync use the same token directory.
+
 ### Files to Update
 
 When modifying Garmin authentication code, update BOTH versions:
