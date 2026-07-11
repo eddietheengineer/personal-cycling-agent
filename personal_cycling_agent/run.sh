@@ -1,43 +1,52 @@
-#!/usr/bin/env bashio
+#!/usr/bin/env bash
 
-# Personal Cycling Agent - Home Assistant Add-on entrypoint
+# Personal Cycling Agent - Entrypoint
+# Works both as a Home Assistant add-on (with bashio) and standalone.
 
 set -e
 
-# Read configuration from /data/options.json
-GARMIN_EMAIL="$(bashio::config 'garmin_email')"
-GARMIN_PASSWORD="$(bashio::config 'garmin_password')"
-OPENAI_API_KEY="$(bashio::config 'openai_api_key')"
-OPENAI_MODEL="$(bashio::config 'openai_model')"
-ANTHROPIC_API_KEY="$(bashio::config 'anthropic_api_key')"
-ANTHROPIC_MODEL="$(bashio::config 'anthropic_model')"
-SYNC_INTERVAL="$(bashio::config 'sync_interval_hours')"
-FTP_WATTS="$(bashio::config 'ftp_watts')"
-MAX_HR="$(bashio::config 'max_hr')"
-RESTING_HR="$(bashio::config 'resting_hr')"
-LT1_POWER="$(bashio::config 'lt1_power')"
-LT2_POWER="$(bashio::config 'lt2_power')"
-ATHLETE_NAME="$(bashio::config 'athlete_name')"
-WEIGHT_KG="$(bashio::config 'weight_kg')"
-HEIGHT_CM="$(bashio::config 'height_cm')"
-DISCIPLINE="$(bashio::config 'discipline')"
-PRIMARY_GOAL="$(bashio::config 'primary_goal')"
-SECONDARY_GOAL="$(bashio::config 'secondary_goal')"
-TRAINING_DAYS="$(bashio::config 'training_days')"
-MAX_SESSION="$(bashio::config 'max_session_duration')"
-TERRAIN="$(bashio::config 'terrain')"
-BIKES="$(bashio::config 'bikes')"
-POWER_METER="$(bashio::config 'power_meter')"
-HR_MONITOR="$(bashio::config 'hr_monitor')"
+# ── Detect environment ───────────────────────────────────────────────
+if command -v bashio >/dev/null 2>&1; then
+    # Running inside a Home Assistant add-on container
+    GARMIN_EMAIL="$(bashio::config 'garmin_email')"
+    GARMIN_PASSWORD="$(bashio::config 'garmin_password')"
+    OPENAI_API_KEY="$(bashio::config 'openai_api_key')"
+    OPENAI_MODEL="$(bashio::config 'openai_model')"
+    ANTHROPIC_API_KEY="$(bashio::config 'anthropic_api_key')"
+    ANTHROPIC_MODEL="$(bashio::config 'anthropic_model')"
+    SYNC_INTERVAL="$(bashio::config 'sync_interval_hours')"
+    FTP_WATTS="$(bashio::config 'ftp_watts')"
+    MAX_HR="$(bashio::config 'max_hr')"
+    RESTING_HR="$(bashio::config 'resting_hr')"
+    LT1_POWER="$(bashio::config 'lt1_power')"
+    LT2_POWER="$(bashio::config 'lt2_power')"
+    ATHLETE_NAME="$(bashio::config 'athlete_name')"
+    WEIGHT_KG="$(bashio::config 'weight_kg')"
+    HEIGHT_CM="$(bashio::config 'height_cm')"
+    DISCIPLINE="$(bashio::config 'discipline')"
+    PRIMARY_GOAL="$(bashio::config 'primary_goal')"
+    SECONDARY_GOAL="$(bashio::config 'secondary_goal')"
+    TRAINING_DAYS="$(bashio::config 'training_days')"
+    MAX_SESSION="$(bashio::config 'max_session_duration')"
+    TERRAIN="$(bashio::config 'terrain')"
+    BIKES="$(bashio::config 'bikes')"
+    POWER_METER="$(bashio::config 'power_meter')"
+    HR_MONITOR="$(bashio::config 'hr_monitor')"
+    DATA_DIR="/data"
+else
+    # Running standalone — use environment variables (from config.env or .env)
+    DATA_DIR="${CYCLING_AGENT_VAULT:-${HOME}/cycling-agent-data}"
+fi
 
-# Set up data directory
-DATA_DIR="/data"
+# ── Set up data directory ────────────────────────────────────────────
 mkdir -p "${DATA_DIR}/data" "${DATA_DIR}/raw/fit"
 
-# Create config.env from options
-# Note: passwords are stored plaintext in /data/options.json by HA already;
-# this is the add-on trade-off. The existing pbkdf2 hashing layer is bypassed.
-cat > "${DATA_DIR}/config.env" <<EOF
+# ── Write config.env and user_profile.md (HA add-on only) ────────────
+if command -v bashio >/dev/null 2>&1; then
+    # Create config.env from options
+    # Note: passwords are stored plaintext in /data/options.json by HA already;
+    # this is the add-on trade-off. The existing pbkdf2 hashing layer is bypassed.
+    cat > "${DATA_DIR}/config.env" <<EOF
 GARMIN_EMAIL=${GARMIN_EMAIL}
 GARMIN_PASSWORD=${GARMIN_PASSWORD}
 OPENAI_API_KEY=${OPENAI_API_KEY}
@@ -52,10 +61,10 @@ LT2_POWER=${LT2_POWER}
 SYNC_INTERVAL_HOURS=${SYNC_INTERVAL}
 EOF
 
-# Create user_profile.md from options
-# This file is read by the analytics engine and the dashboard profile tab.
-# Users can also edit their profile directly in the dashboard UI.
-cat > "${DATA_DIR}/user_profile.md" <<EOF
+    # Create user_profile.md from options
+    # This file is read by the analytics engine and the dashboard profile tab.
+    # Users can also edit their profile directly in the dashboard UI.
+    cat > "${DATA_DIR}/user_profile.md" <<EOF
 # Athlete Profile
 
 ## Identity
@@ -85,8 +94,9 @@ cat > "${DATA_DIR}/user_profile.md" <<EOF
 - Power meter: ${POWER_METER}
 - HR monitor: ${HR_MONITOR}
 EOF
+fi
 
-# Set environment variables for the Python app
+# ── Set environment variables for the Python app ─────────────────────
 export GARMIN_EMAIL
 export GARMIN_PASSWORD
 export OPENAI_API_KEY
@@ -111,7 +121,7 @@ if [ -n "${HASSIO_INGRESS_ENTRY}" ]; then
     export HASSIO_INGRESS="${HASSIO_INGRESS_ENTRY}"
 fi
 
-# Initialize database if needed
+# ── Initialize database if needed ────────────────────────────────────
 cd /app
 python3 -c "
 from src import config
@@ -122,8 +132,13 @@ db.close()
 print('Database initialized')
 "
 
-# Start Streamlit in background first so Ingress panel becomes available immediately
-bashio::log.info "Starting dashboard on port 8501..."
+# ── Start Streamlit ──────────────────────────────────────────────────
+if command -v bashio >/dev/null 2>&1; then
+    bashio::log.info "Starting dashboard on port 8501..."
+else
+    echo "Starting dashboard on port 8501..."
+fi
+
 python3 -m streamlit run src/visualize.py \
     --server.headless true \
     --server.address 0.0.0.0 \
@@ -133,13 +148,35 @@ python3 -m streamlit run src/visualize.py \
     --browser.gatherUsageStats false &
 STREAMLIT_PID=$!
 
-# Run sync/analyze in background if credentials are set
+# ── Run sync/analyze in background if credentials are set ────────────
 if [ -n "${GARMIN_EMAIL}" ] && [ -n "${GARMIN_PASSWORD}" ]; then
-    bashio::log.info "Running sync and analysis in background..."
+    if command -v bashio >/dev/null 2>&1; then
+        bashio::log.info "Running sync and analysis in background..."
+    else
+        echo "Running sync and analysis in background..."
+    fi
     (
-        python3 -m src.main --sync 2>&1 || bashio::log.warning "Sync failed or rate-limited"
-        python3 -m src.main --sync-routes 2>&1 || bashio::log.warning "Route sync failed"
-        python3 -m src.main --analyze 2>&1 || bashio::log.warning "Analysis failed"
+        python3 -m src.main --sync 2>&1 || {
+            if command -v bashio >/dev/null 2>&1; then
+                bashio::log.warning "Sync failed or rate-limited"
+            else
+                echo "Warning: Sync failed or rate-limited"
+            fi
+        }
+        python3 -m src.main --sync-routes 2>&1 || {
+            if command -v bashio >/dev/null 2>&1; then
+                bashio::log.warning "Route sync failed"
+            else
+                echo "Warning: Route sync failed"
+            fi
+        }
+        python3 -m src.main --analyze 2>&1 || {
+            if command -v bashio >/dev/null 2>&1; then
+                bashio::log.warning "Analysis failed"
+            else
+                echo "Warning: Analysis failed"
+            fi
+        }
     ) &
 fi
 
