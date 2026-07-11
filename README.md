@@ -164,7 +164,7 @@ setup.py                   # Interactive setup wizard
 setup_cron.sh              # Install daily cron job
 repository.json            # Home Assistant add-on repository manifest
 requirements.txt           # Python dependencies
-addon/                     # Home Assistant add-on
+personal_cycling_agent/  # Home Assistant add-on
 ├── config.yaml            # Add-on manifest (ingress, options schema)
 ├── Dockerfile             # Container build
 ├── run.sh                 # Entrypoint (config, sync, Streamlit)
