@@ -839,15 +839,23 @@ def _update_config_env(updates: dict) -> None:
     else:
         lines = []
     existing_keys = {l.split("=", 1)[0] for l in lines if "=" in l}
+    raw_lines_to_add = []
     for k, v in updates.items():
         if k == "GARMIN_PASSWORD":
             os.environ[k] = v
+            raw_lines_to_add.append(f'{k}_RAW="{v}"')
             hashed, _ = config.hash_password(v)
             v = hashed
         if k in existing_keys:
             lines = [f'{k}="{v}"' if l.startswith(f"{k}=") else l for l in lines]
         else:
             lines.append(f'{k}="{v}"')
+    for raw_line in raw_lines_to_add:
+        raw_key = raw_line.split("=", 1)[0]
+        if raw_key in existing_keys:
+            lines = [raw_line if l.startswith(f"{raw_key}=") else l for l in lines]
+        else:
+            lines.append(raw_line)
     env_path.write_text("\n".join(lines) + "\n")
     for k, v in updates.items():
         if k != "GARMIN_PASSWORD":

@@ -273,7 +273,10 @@ def import_garmin_export(
     logger.info(f"Garmin import complete: {counts}")
     return counts
 
-from fitparse import FitFile
+try:
+    from fitparse import FitFile
+except ImportError:
+    FitFile = None  # type: ignore
 
 
 def sync_routes_from_fit(db: CyclingDB, raw_dir: Path | None = None) -> dict[str, int]:

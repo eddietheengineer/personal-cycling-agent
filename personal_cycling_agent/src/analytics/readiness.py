@@ -10,6 +10,7 @@ then classifies the rider's current autonomic state:
 
 import logging
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum
 from typing import Any
 

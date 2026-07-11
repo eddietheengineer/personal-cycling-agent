@@ -113,7 +113,7 @@ if [ -d "${TOKEN_DIR}" ] && [ -n "$(ls -A "${TOKEN_DIR}" 2>/dev/null)" ]; then
         echo "Cached tokens found — running sync and analysis in background..."
     fi
     (
-        python3 -m src.main --sync 2>&1 || {
+        python3 -m src.main --ingest 2>&1 || {
             if command -v bashio >/dev/null 2>&1; then
                 bashio::log.warning "Sync failed or rate-limited"
             else
