@@ -7,124 +7,51 @@ set -e
 
 # ── Detect environment ───────────────────────────────────────────────
 if command -v bashio >/dev/null 2>&1; then
-    # Running inside a Home Assistant add-on container
-    GARMIN_EMAIL="$(bashio::config 'garmin_email')"
-    GARMIN_PASSWORD="$(bashio::config 'garmin_password')"
-    OPENAI_API_KEY="$(bashio::config 'openai_api_key')"
-    OPENAI_MODEL="$(bashio::config 'openai_model')"
-    ANTHROPIC_API_KEY="$(bashio::config 'anthropic_api_key')"
-    ANTHROPIC_MODEL="$(bashio::config 'anthropic_model')"
-    SYNC_INTERVAL="$(bashio::config 'sync_interval_hours')"
-    FTP_WATTS="$(bashio::config 'ftp_watts')"
-    MAX_HR="$(bashio::config 'max_hr')"
-    RESTING_HR="$(bashio::config 'resting_hr')"
-    LT1_POWER="$(bashio::config 'lt1_power')"
-    LT2_POWER="$(bashio::config 'lt2_power')"
     DATA_DIR="/data"
 else
-    # Running standalone — use environment variables (from config.env or .env)
     DATA_DIR="${CYCLING_AGENT_VAULT:-${HOME}/cycling-agent-data}"
 fi
 
 # ── Set up data directory ────────────────────────────────────────────
 mkdir -p "${DATA_DIR}/data" "${DATA_DIR}/raw/fit"
 
-# ── Write config.env and user_profile.md (HA add-on only) ────────────
-if command -v bashio >/dev/null 2>&1; then
-    # Merge HA options into config.env without overwriting values set by the UI
-    # (e.g. GARMIN_EMAIL/GARMIN_PASSWORD saved via the Settings page).
-    # Load existing config.env if it exists.
-    if [ -f "${DATA_DIR}/config.env" ]; then
-        set -a
-        # shellcheck disable=SC1090
-        source "${DATA_DIR}/config.env"
-        set +a
-    fi
-
-    # Only set from options if not already set by the UI.
-    GARMIN_EMAIL="${GARMIN_EMAIL:-$(bashio::config 'garmin_email')}"
-    GARMIN_PASSWORD="${GARMIN_PASSWORD:-$(bashio::config 'garmin_password')}"
-    OPENAI_API_KEY="${OPENAI_API_KEY:-$(bashio::config 'openai_api_key')}"
-    OPENAI_MODEL="${OPENAI_MODEL:-$(bashio::config 'openai_model')}"
-    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-$(bashio::config 'anthropic_api_key')}"
-    ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-$(bashio::config 'anthropic_model')}"
-    FTP_WATTS="${FTP_WATTS:-$(bashio::config 'ftp_watts')}"
-    MAX_HR="${MAX_HR:-$(bashio::config 'max_hr')}"
-    RESTING_HR="${RESTING_HR:-$(bashio::config 'resting_hr')}"
-    LT1_POWER="${LT1_POWER:-$(bashio::config 'lt1_power')}"
-    LT2_POWER="${LT2_POWER:-$(bashio::config 'lt2_power')}"
-    SYNC_INTERVAL="${SYNC_INTERVAL:-$(bashio::config 'sync_interval_hours')}"
+# ── Load or bootstrap config.env ─────────────────────────────────────
+if [ -f "${DATA_DIR}/config.env" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${DATA_DIR}/config.env"
+    set +a
+else
+    # First run — bootstrap config.env with defaults.
+    # The UI (Settings page) is where users enter their actual values.
+    GARMIN_EMAIL=""
+    GARMIN_PASSWORD=""
+    FTP_WATTS=180
+    MAX_HR=0
+    RESTING_HR=0
+    LT1_POWER=0
+    LT2_POWER=0
+    SYNC_INTERVAL_HOURS=24
 
     cat > "${DATA_DIR}/config.env" <<EOF
 GARMIN_EMAIL=${GARMIN_EMAIL}
 GARMIN_PASSWORD=${GARMIN_PASSWORD}
-OPENAI_API_KEY=${OPENAI_API_KEY}
-OPENAI_MODEL=${OPENAI_MODEL}
-ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-ANTHROPIC_MODEL=${ANTHROPIC_MODEL}
 FTP_WATTS=${FTP_WATTS}
 MAX_HR=${MAX_HR}
 RESTING_HR=${RESTING_HR}
 LT1_POWER=${LT1_POWER}
 LT2_POWER=${LT2_POWER}
-SYNC_INTERVAL_HOURS=${SYNC_INTERVAL}
+SYNC_INTERVAL_HOURS=${SYNC_INTERVAL_HOURS}
 EOF
-
-    # Create user_profile.md from options only if it doesn't already exist
-    # (users can edit their profile directly in the dashboard UI).
-    if [ ! -f "${DATA_DIR}/user_profile.md" ]; then
-        ATHLETE_NAME="$(bashio::config 'athlete_name')"
-        WEIGHT_KG="$(bashio::config 'weight_kg')"
-        HEIGHT_CM="$(bashio::config 'height_cm')"
-        DISCIPLINE="$(bashio::config 'discipline')"
-        PRIMARY_GOAL="$(bashio::config 'primary_goal')"
-        SECONDARY_GOAL="$(bashio::config 'secondary_goal')"
-        TRAINING_DAYS="$(bashio::config 'training_days')"
-        MAX_SESSION="$(bashio::config 'max_session_duration')"
-        TERRAIN="$(bashio::config 'terrain')"
-        BIKES="$(bashio::config 'bikes')"
-        POWER_METER="$(bashio::config 'power_meter')"
-        HR_MONITOR="$(bashio::config 'hr_monitor')"
-        cat > "${DATA_DIR}/user_profile.md" <<EOF
-# Athlete Profile
-
-## Identity
-- Name: ${ATHLETE_NAME}
-- Weight (kg): ${WEIGHT_KG}
-- Height (cm): ${HEIGHT_CM}
-
-## Training History
-- Primary discipline: ${DISCIPLINE}
-
-## Physiological Baselines
-- FTP (watts): ${FTP_WATTS}
-- Max HR: ${MAX_HR}
-- Resting HR (avg): ${RESTING_HR}
-- LT1 power (if known): ${LT1_POWER}
-- LT2 power (if known): ${LT2_POWER}
-
-## Goals & Constraints
-- Primary goal: ${PRIMARY_GOAL}
-- Secondary goal: ${SECONDARY_GOAL}
-- Available training days: ${TRAINING_DAYS}
-- Max session duration: ${MAX_SESSION}
-- Terrain notes: ${TERRAIN}
-
-## Equipment
-- Bike(s): ${BIKES}
-- Power meter: ${POWER_METER}
-- HR monitor: ${HR_MONITOR}
-EOF
-    fi
+    set -a
+    # shellcheck disable=SC1090
+    source "${DATA_DIR}/config.env"
+    set +a
 fi
 
 # ── Set environment variables for the Python app ─────────────────────
 export GARMIN_EMAIL
 export GARMIN_PASSWORD
-export OPENAI_API_KEY
-export OPENAI_MODEL
-export ANTHROPIC_API_KEY
-export ANTHROPIC_MODEL
 export FTP_WATTS
 export MAX_HR
 export RESTING_HR
