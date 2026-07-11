@@ -12,4 +12,5 @@
   "panel_title": "Cycling",
   "init": false,
   "hassio_api": true,
+  "options": {}
 }
