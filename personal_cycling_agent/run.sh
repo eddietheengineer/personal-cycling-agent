@@ -137,14 +137,12 @@ if command -v bashio >/dev/null 2>&1; then
     bashio::log.info "Starting dashboard on port 8501..."
 else
     echo "Starting dashboard on port 8501..."
-fi
 
 python3 -m streamlit run src/visualize.py \
     --server.headless true \
     --server.address 0.0.0.0 \
     --server.port 8501 \
-    --server.enableCORS false \
-    --server.enableXSSProtection false \
+    --server.enableXsrfProtection false \
     --browser.gatherUsageStats false &
 STREAMLIT_PID=$!
 
