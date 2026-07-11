@@ -13,7 +13,7 @@ RUN pip3 install --no-cache-dir -r /tmp/requirements.txt && \
 
 WORKDIR /app
 COPY src/ ./src/
-COPY personal_cycling_agent/run.sh /run.sh
+COPY run.sh /run.sh
 RUN chmod a+x /run.sh
 
 CMD [ "/run.sh" ]

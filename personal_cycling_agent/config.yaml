@@ -12,7 +12,6 @@ ingress_port: 8501
 panel_icon: mdi:bicycle
 panel_title: Cycling
 init: false
-build: true
 options:
   garmin_email: ""
   garmin_password: ""
