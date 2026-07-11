@@ -177,27 +177,26 @@ def _create_client(tokenstore: str) -> "garminconnect.Garmin":
 
     # Use garmin-auth for token persistence and rate-limit-aware auth.
     # Tokens are cached in the vault directory so cron runs don't re-auth.
+    # Use return_on_mfa=True to avoid interactive prompts in non-interactive contexts.
     auth = GarminAuth(
         email=email,
         password=password,
         token_dir=tokenstore if tokenstore else "~/.garminconnect",
-        prompt_mfa=lambda: _prompt_mfa_interactive(),
+        return_on_mfa=True,
     )
 
-    # Try to get a client from cached tokens first — avoids re-auth / MFA.
-    try:
-        client = auth.get_garmin()
-        if client is not None:
-            return client
-    except Exception:
-        pass
+    # auth.login() tries cached tokens first (via _try_cached_login internally),
+    # then falls back to fresh login if needed. If MFA is required, it returns
+    # "needs_mfa" instead of prompting interactively.
+    result = auth.login()
 
-    # No cached tokens or they're stale — do a full login.
-    client = auth.login()
-    if client is None:
-        raise RuntimeError("Garmin login returned no client")
+    if result == "needs_mfa":
+        raise RuntimeError(
+            "Garmin login requires MFA but running non-interactively. "
+            "Please log in via the Settings page first to cache tokens."
+        )
 
-    return client
+    return result
 
 
 def _prompt_mfa_interactive() -> str:
