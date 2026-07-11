@@ -1,5 +1,5 @@
 name: Personal Cycling Agent
-version: "0.0.5"
+version: "0.0.6"
 slug: personal_cycling_agent
 description: Cycling telemetry analytics with Garmin Connect sync and AI insights
 url: https://github.com/eddietheengineer/personal-cycling-agent

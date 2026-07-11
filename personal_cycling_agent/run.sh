@@ -137,6 +137,7 @@ if command -v bashio >/dev/null 2>&1; then
     bashio::log.info "Starting dashboard on port 8501..."
 else
     echo "Starting dashboard on port 8501..."
+fi
 
 python3 -m streamlit run src/visualize.py \
     --server.headless true \
