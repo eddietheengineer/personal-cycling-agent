@@ -1017,11 +1017,15 @@ def _render_garmin_setup():
             st.session_state.sync_result = snap["result"]
             st.session_state.syncing = False
             st.success("Sync complete!")
-            st.rerun()
+            if st.session_state.get("_sync_prev_status") != "completed":
+                st.session_state._sync_prev_status = "completed"
+                st.rerun()
         elif snap["status"] == "failed":
             st.session_state.syncing = False
             st.error(snap.get("error", "Sync failed"))
-            st.rerun()
+            if st.session_state.get("_sync_prev_status") != "failed":
+                st.session_state._sync_prev_status = "failed"
+                st.rerun()
     elif st.session_state.get("syncing"):
         st.warning("Sync in progress... refresh to check status.")
 
@@ -1047,13 +1051,12 @@ elif nav_page == "Map":
 elif nav_page == "Profile":
     _render_profile()
 elif nav_page == "Settings":
-    _render_garmin_setup()
-
-# Auto-refresh when sync is running in background
-sync = st.session_state.get("_bg_sync")
-if sync is not None:
-    snap = sync.snapshot()
-    if snap["status"] == "running":
-        import time as _time
-        _time.sleep(3)
-        st.rerun()
+# Auto-refresh when sync is running in background (Settings page only)
+if nav_page == "Settings":
+    sync = st.session_state.get("_bg_sync")
+    if sync is not None:
+        snap = sync.snapshot()
+        if snap["status"] == "running":
+            import time as _time
+            _time.sleep(3)
+            st.rerun()
