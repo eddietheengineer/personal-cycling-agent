@@ -579,7 +579,7 @@ def sync_activities(
     today = datetime.now().date()
 
     if unbounded:
-        # For unbounded sync, continue from last sync point
+        # Continue from last sync point, going back indefinitely
         if last_synced:
             try:
                 last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
@@ -590,15 +590,28 @@ def sync_activities(
         else:
             last_date = today - timedelta(days=1)
     else:
-        # For incremental sync, always start from yesterday
-        last_date = today - timedelta(days=1)
+        # Incremental: sync from day after last sync up to today
+        # The loop goes backward, so we set last_date=today and compute days to cover the gap
+        if last_synced:
+            try:
+                last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
+            except ValueError:
+                logger.warning(f"Unparseable last_synced value '{last_synced}', "
+                               "starting from yesterday")
+                last_date = today - timedelta(days=1)
+        else:
+            last_date = today - timedelta(days=1)
+        # days = gap from last sync to today (at least 1)
+        days = max(days, (today - last_date).days)
+        # Set last_date to today so the backward loop covers today -> last_sync+1
+        last_date = today
 
     reset_rate_limiter()
     client = _create_client(tokenstore)
 
     total_processed = 0
     total_stored = 0
-    current_date = last_date - timedelta(days=1)
+    current_date = last_date
     days_synced = 0
     consecutive_empty = 0  # track consecutive days with no activities
 
@@ -775,7 +788,18 @@ def sync_garmin(
         else:
             last_date = today - timedelta(days=1)
     else:
-        last_date = today - timedelta(days=1)
+        # Incremental: sync from day after last sync up to today
+        if last_synced:
+            try:
+                last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
+            except ValueError:
+                logger.warning(f"Unparseable last_synced value '{last_synced}', "
+                               "starting from yesterday")
+                last_date = today - timedelta(days=1)
+        else:
+            last_date = today - timedelta(days=1)
+        days = max(days, (today - last_date).days)
+        last_date = today
 
     reset_rate_limiter()
     client = _create_client(tokenstore)
