@@ -909,33 +909,53 @@ def _render_garmin_setup():
                 st.success("Credentials saved! You can now sync activities.")
                 st.rerun()
 
-    # ── Sync controls ────────────────────────────────────────────────
-    st.subheader("Sync")
+    # ── Sync state ───────────────────────────────────────────────────
+    from src.db.store import CyclingDB
+    db_sync = CyclingDB(str(config.db_path("cycling_agent.sqlite")))
+    last_wellness = db_sync.get_last_synced("garmin_wellness")
+    last_activities = db_sync.get_last_synced("garmin_activities")
+    wellness_count = db_sync.conn.execute("SELECT COUNT(*) FROM wellness").fetchone()[0]
+    activities_count = db_sync.conn.execute("SELECT COUNT(*) FROM activities").fetchone()[0]
+    routes_count = db_sync.conn.execute(
+        "SELECT COUNT(DISTINCT activity_id) FROM activity_routes"
+    ).fetchone()[0]
+    db_sync.close()
 
-    days = st.number_input(
-        "Days to Sync",
-        min_value=1,
-        max_value=365,
-        value=7,
-        step=1,
-        key="sync_days",
-        help="Number of days of activity data to fetch from Garmin Connect.",
+    col_w1, col_w2, col_w3 = st.columns(3)
+    with col_w1:
+        st.metric("Wellness Days", wellness_count)
+    with col_w2:
+        st.metric("Activities", activities_count)
+    with col_w3:
+        st.metric("Routes", routes_count)
+
+    st.caption(
+        f"Last wellness sync: {last_wellness or 'never'} · "
+        f"Last activity sync: {last_activities or 'never'}"
     )
 
-    col1, col2 = st.columns(2)
+    # ── Sync controls ────────────────────────────────────────────────
+    col1, col2, col3 = st.columns(3)
     with col1:
         sync_clicked = st.button(
-            "Sync Activities",
+            "Sync Since Last",
             type="primary",
             disabled=not has_credentials,
-            help="Fetch wellness data and activities from Garmin Connect.",
+            help="Sync new data since the last sync.",
         )
     with col2:
+        sync_all_clicked = st.button(
+            "Sync All Historical",
+            disabled=not has_credentials,
+            help="Re-sync all historical data from Garmin (may take a while).",
+        )
+    with col3:
         routes_clicked = st.button(
             "Sync Routes",
             disabled=not has_credentials,
             help="Parse FIT files and extract route data.",
         )
+
     # ── Handle sync (background) ─────────────────────────────────────
     if sync_clicked:
         sync = st.session_state.setdefault("_bg_sync", BackgroundSync())
@@ -947,6 +967,7 @@ def _render_garmin_setup():
                     setattr(st.session_state, "_sync_progress", p),
                     setattr(st.session_state, "_sync_stage", s),
                 ),
+                unbounded=False,
             )
             st.session_state.syncing = True
             st.session_state.sync_status = "Sync started in background..."
@@ -955,45 +976,24 @@ def _render_garmin_setup():
         else:
             st.info("Sync already running in background...")
 
-    if routes_clicked:
-        try:
-            raw_dir = config.raw_dir() / "fit"
-            counts = sync_routes_from_fit(db, raw_dir)
-            st.success(f"Route sync complete: {counts}")
+    if sync_all_clicked:
+        sync = st.session_state.setdefault("_bg_sync", BackgroundSync())
+        if not sync.is_running:
+            sync.start(
+                days=3650,
+                db_path=str(config.db_path("cycling_agent.sqlite")),
+                progress_callback=lambda p, s: (
+                    setattr(st.session_state, "_sync_progress", p),
+                    setattr(st.session_state, "_sync_stage", s),
+                ),
+                unbounded=True,
+            )
+            st.session_state.syncing = True
+            st.session_state.sync_status = "Full historical sync started..."
+            st.session_state.sync_result = None
             st.rerun()
-        except Exception as exc:
-            st.error(f"Route sync failed: {exc}")
-
-
-    # ── Show sync status ─────────────────────────────────────────────
-    sync = st.session_state.get("_bg_sync")
-    if sync is not None:
-        snap = sync.snapshot()
-        if snap["status"] == "running":
-            st.progress(snap["progress"] / 100)
-            st.info(snap["stage"])
-        elif snap["status"] == "completed":
-            st.session_state.sync_result = snap["result"]
-            st.session_state.syncing = False
-            st.success("Sync complete!")
-            st.rerun()
-        elif snap["status"] == "failed":
-            st.session_state.syncing = False
-            st.error(snap.get("error", "Sync failed"))
-            st.rerun()
-    elif "sync_status" in st.session_state:
-        st.info(st.session_state.sync_status)
-    if st.session_state.get("syncing") and (sync is None or not sync.is_running):
-        st.warning("Sync in progress... this may take a few minutes.")
-
-    # ── Show sync results ────────────────────────────────────────────
-    if st.session_state.get("sync_result"):
-        result = st.session_state.sync_result
-        st.subheader("Sync Results")
-        if "wellness" in result:
-            st.write(f"**Wellness:** {result['wellness']}")
-        if "activities" in result:
-            st.write(f"**Activities:** {result['activities']}")
+        else:
+            st.info("Sync already running in background...")
     st.caption("Connect to Garmin Connect to sync your activity and wellness data.")
 
     # Read current email from env to show status

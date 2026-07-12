@@ -100,6 +100,7 @@ class BackgroundSync:
         db_path: str | None = None,
         tokenstore: str | None = None,
         progress_callback: Callable[[int, str], None] | None = None,
+        unbounded: bool = False,
     ) -> None:
         """Start a background sync task.
 
@@ -108,6 +109,7 @@ class BackgroundSync:
             db_path: Optional database path override.
             tokenstore: Optional token store path override.
             progress_callback: Optional callback(progress_percent, stage_text).
+            unbounded: If True, sync all historical data until rate-limited.
         """
         with self._lock:
             if self._result.status == TaskStatus.RUNNING:
@@ -119,13 +121,12 @@ class BackgroundSync:
 
             self._thread = threading.Thread(
                 target=self._run_sync,
-                args=(days, db_path, tokenstore),
+                args=(days, db_path, tokenstore, unbounded),
                 daemon=True,
                 name="bg-sync",
             )
             self._thread.start()
-
-    def _run_sync(self, days: int, db_path: str | None, tokenstore: str | None) -> None:
+    def _run_sync(self, days: int, db_path: str | None, tokenstore: str | None, unbounded: bool = False) -> None:
         """Worker thread that runs the actual sync."""
         from src.ingestion.garmin_connect import sync_garmin, sync_activities
 
@@ -142,6 +143,7 @@ class BackgroundSync:
                 days=1,
                 db_path=db_path,
                 tokenstore=tokenstore,
+                unbounded=unbounded,
             )
             self._result.update(progress=40, stage="Wellness sync complete")
             self._notify(40, "Wellness sync complete")
@@ -157,6 +159,7 @@ class BackgroundSync:
                 days=days,
                 db_path=db_path,
                 tokenstore=tokenstore,
+                unbounded=unbounded,
             )
             self._result.update(progress=90, stage="Activity sync complete")
             self._notify(90, "Activity sync complete")
