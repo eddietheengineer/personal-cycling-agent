@@ -16,6 +16,7 @@ NOTE on units from Garmin Connect:
 """
 
 import os
+import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -72,12 +73,11 @@ st.sidebar.header("Dashboard")
 if "nav_page" not in st.session_state:
     st.session_state.nav_page = "Activity Detail"
 
+pages = ["Activity Detail", "Trends", "Map", "Profile", "Settings"]
 nav_page = st.sidebar.selectbox(
     "Navigate",
-    ["Activity Detail", "Trends", "Map", "Profile", "Settings"],
-    index=["Activity Detail", "Trends", "Map", "Profile", "Settings"].index(
-        st.session_state.nav_page
-    ),
+    pages,
+    index=pages.index(st.session_state.nav_page) if st.session_state.nav_page in pages else 0,
     label_visibility="collapsed",
 )
 if nav_page != st.session_state.nav_page:
@@ -93,7 +93,7 @@ def _downsample(elapsed: list, values: list, max_points: int = 10_000) -> tuple[
     if n <= max_points:
         return elapsed, values
     step = max(1, n // max_points)
-    idx = np.arange(0, n, step)
+    idx = np.arange(0, n, step)[:max_points]
     return [elapsed[i] for i in idx], [values[i] for i in idx]
 
 
@@ -155,7 +155,7 @@ def _zone_for_value(value: float, threshold: float, ranges: list) -> int:
 
 def _zone_colors():
     """Return zone color list matching current Streamlit theme."""
-    theme = st.query_params.get("theme", "light")
+    theme = st.get_option("theme.base")
     if theme == "dark":
         return _DARK_COLORS
     return _LIGHT_COLORS
@@ -189,7 +189,7 @@ def _build_zone_chart(
     data_max = max(values) if values else 0
 
     # Detect theme for line color
-    theme = st.query_params.get("theme", "light")
+    theme = st.get_option("theme.base")
     line_color = "#f0f0f0" if theme == "dark" else "#222222"
 
     fig = go.Figure()
@@ -547,17 +547,20 @@ def _render_trends():
 # ---------------------------------------------------------------------------
 def _geocode_city(city: str) -> tuple[float, float] | None:
     """Geocode a city name to (lat, lon) using Nominatim. Cached in session_state."""
-    if city not in st.session_state:
+    cache = st.session_state.setdefault("_geocode_cache", {})
+    if city not in cache:
         from geopy.geocoders import Nominatim
         from geopy.exc import GeopyError
         try:
             geolocator = Nominatim(user_agent="personal-cycling-agent")
             location = geolocator.geocode(city)
             if location is not None:
-                st.session_state[city] = (location.latitude, location.longitude)
+                cache[city] = (location.latitude, location.longitude)
+            else:
+                cache[city] = None
         except GeopyError:
-            st.session_state[city] = None
-    return st.session_state.get(city)
+            cache[city] = None
+    return cache.get(city)
 
 
 def _render_map():
@@ -696,8 +699,14 @@ def _render_profile():
             line = line.strip()
             if line.startswith("- ") and ": " in line:
                 key, val = line[2:].split(": ", 1)
-                key = key.lower().replace(" ", "_").replace("(watts)", "").replace("(if_known)", "").replace("(avg)", "").replace("(kg)", "").replace("(cm)", "")
-                # Normalize known keys
+                # Normalize: lower-case, strip parenthetical suffixes, replace spaces,
+                # then clean up trailing underscores so "Weight (kg)" -> "weight_kg".
+                key = key.lower()
+                for old, new in (("(watts)", "_watts"), ("(if known)", "_if_known"),
+                                  ("(avg)", "_avg"), ("(kg)", "_kg"), ("(cm)", "_cm")):
+                    key = key.replace(" " + old, new)
+                key = key.replace(" ", "_").rstrip("_")
+                # Map to profile dict keys
                 key_map = {
                     "name": "name",
                     "weight_kg": "weight_kg",
@@ -720,10 +729,16 @@ def _render_profile():
                 k = key_map.get(key, key)
                 if k in profile:
                     if isinstance(profile[k], int):
-                        try:
-                            profile[k] = int(val.rstrip("W").strip())
-                        except ValueError:
-                            pass
+                        v = val.strip()
+                        if v.startswith("["):
+                            pass  # placeholder like "[Insert ...]" — leave at 0
+                        else:
+                            m = re.search(r"(\d+)", v)
+                            if m:
+                                try:
+                                    profile[k] = int(m.group(1))
+                                except (ValueError, OverflowError):
+                                    pass  # leave at default if conversion fails
                     else:
                         profile[k] = val
 
@@ -828,13 +843,13 @@ def _update_config_env(updates: dict) -> None:
     for k, v in updates.items():
         if k == "GARMIN_PASSWORD":
             os.environ[k] = v
-            raw_lines_to_add.append(f"{k}_RAW={v}")
+            raw_lines_to_add.append(f'{k}_RAW="{v}"')
             hashed, _ = config.hash_password(v)
             v = hashed
         if k in existing_keys:
-            lines = [f"{k}={v}" if l.startswith(f"{k}=") else l for l in lines]
+            lines = [f'{k}="{v}"' if l.startswith(f"{k}=") else l for l in lines]
         else:
-            lines.append(f"{k}={v}")
+            lines.append(f'{k}="{v}"')
     for raw_line in raw_lines_to_add:
         raw_key = raw_line.split("=", 1)[0]
         if raw_key in existing_keys:
@@ -1186,7 +1201,7 @@ def _render_settings():
                 st.session_state.sync_status = "Fetching activity streams..."
                 activity_counts = sync_activities(
                     days=days,
-                    db_path=str(config.db_path("cycling_agent.sqlite"))
+                    db_path=str(config.db_path("cycling_agent.sqlite")),
                 )
 
                 st.session_state.sync_result = {
@@ -1245,6 +1260,8 @@ def _render_settings():
             os.environ.pop("GARMIN_EMAIL", None)
             os.environ.pop("GARMIN_PASSWORD", None)
             st.session_state.garmin_auth_state = "idle"
+            if "garmin_token_cache" in st.session_state:
+                del st.session_state.garmin_token_cache
             st.success("Disconnected.")
             st.rerun()
 

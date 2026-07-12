@@ -400,7 +400,7 @@ def fetch_wellness_for_date(
 def _fetch_activity_streams(
     client: "garminconnect.Garmin",
     activity_id: int,
-    db_path: str,
+    db: CyclingDB,
 ) -> int:
     """
     Download the original FIT file for an activity, save it locally,
@@ -502,7 +502,6 @@ def _fetch_activity_streams(
             logger.debug(f"No stream data in FIT file for activity {activity_id}")
             return 0
 
-        db = CyclingDB(db_path)
         total_stored = 0
 
         for metric, values in [
@@ -514,8 +513,6 @@ def _fetch_activity_streams(
         ]:
             if values:
                 total_stored += db.store_activity_streams(str(activity_id), metric, values)
-
-        db.close()
         logger.info(
             f"Parsed FIT for activity {activity_id}: "
             f"{len(power_values)} power, {len(hr_values)} HR, "
@@ -533,19 +530,24 @@ def sync_activities(
     days: int = 1,
     db_path: str | None = None,
     tokenstore: str | None = None,
+    unbounded: bool = False,
 ) -> dict[str, int]:
     """
-    Sync activity stream data from Garmin Connect, one day at a time,
-    going backwards from the last sync point until rate-limited.
+    Sync activity stream data from Garmin Connect, processing up to
+    *days* days going backwards from the last sync point.
+
+    When *unbounded* is True, syncs continuously until rate-limited
+    (no day limit).
 
     Downloads and parses FIT files for each activity found on each day.
     Stops when Garmin returns 429 Too Many Requests, saving progress
     so the next run resumes from where it left off.
 
     Args:
-        days: Unused (kept for backward compatibility).
+        days: Number of days to sync (default 1). Ignored if *unbounded* is True.
         db_path: Optional override for the database path.
         tokenstore: Unused (kept for backward compatibility).
+        unbounded: If True, sync indefinitely until rate-limited.
 
     Returns:
         Dict with counts of activities processed and stream records stored.
@@ -563,7 +565,6 @@ def sync_activities(
 
     db = CyclingDB(db_path)
     last_synced = db.get_last_synced("garmin_activities")
-    db.close()
 
     today = datetime.now().date()
     if last_synced:
@@ -582,8 +583,9 @@ def sync_activities(
     total_processed = 0
     total_stored = 0
     current_date = last_date - timedelta(days=1)
+    days_synced = 0
 
-    while True:
+    while unbounded or days_synced < days:
         target_str = current_date.strftime("%Y-%m-%d")
         logger.info(f"Syncing activities for {target_str}")
 
@@ -600,6 +602,9 @@ def sync_activities(
                     logger.warning(f"Rate limited by Garmin Connect after 3 retries: {e}")
                     logger.info(f"Pausing — {total_processed} activities processed, "
                                 f"{total_stored} stream records stored so far")
+                    # Save sync state before returning
+                    db.set_last_synced("garmin_activities", target_str)
+                    db.close()
                     break
                 wait = min(_rate_limiter._effective_interval, _rate_limiter.max_backoff)
                 logger.info(f"Rate limited fetching activities (attempt {attempt}/3), "
@@ -609,20 +614,25 @@ def sync_activities(
                 logger.error(f"Failed to fetch activities for {target_str}: "
                              f"{type(e).__name__}: {e}")
                 # On non-rate-limit errors, advance to avoid infinite loop
-                db = CyclingDB(db_path)
                 db.set_last_synced("garmin_activities", target_str)
-                db.close()
                 current_date -= timedelta(days=1)
+                days_synced += 1
                 time.sleep(2.0)
                 break
+
+        if activities is None and attempt >= 3:
+            # We broke out of the inner loop due to rate limiting
+            return {
+                "activities_processed": total_processed,
+                "stream_records": total_stored,
+            }
 
         if not activities:
             logger.info(f"No activities found for {target_str}")
             # Advance the sync pointer so we don't retry forever
-            db = CyclingDB(db_path)
             db.set_last_synced("garmin_activities", target_str)
-            db.close()
             current_date -= timedelta(days=1)
+            days_synced += 1
             time.sleep(0.5)
             continue
 
@@ -641,7 +651,7 @@ def sync_activities(
             )
 
             try:
-                stored = _fetch_activity_streams(client, activity_id, db_path)
+                stored = _fetch_activity_streams(client, activity_id, db)
                 day_stored += stored
             except garminconnect.GarminConnectTooManyRequestsError as e:
                 _rate_limiter.record_429()
@@ -649,8 +659,10 @@ def sync_activities(
                 # Save progress at the activity level
                 total_processed += day_processed
                 total_stored += day_stored
+                db.set_last_synced("garmin_activities", target_str)
                 logger.info(f"Pausing mid-day — {total_processed} activities processed, "
                             f"{total_stored} stream records stored so far")
+                db.close()
                 return {
                     "activities_processed": total_processed,
                     "stream_records": total_stored,
@@ -665,9 +677,7 @@ def sync_activities(
         total_stored += day_stored
 
         # Record sync timestamp for this day
-        db = CyclingDB(db_path)
         db.set_last_synced("garmin_activities", target_str)
-        db.close()
 
         logger.info(
             f"Day {target_str} complete: {day_processed} activities, "
@@ -677,8 +687,10 @@ def sync_activities(
 
         # Move to the previous day
         current_date -= timedelta(days=1)
+        days_synced += 1
         time.sleep(0.5)
 
+    db.close()
     return {
         "activities_processed": total_processed,
         "stream_records": total_stored,
@@ -689,19 +701,24 @@ def sync_garmin(
     days: int = 1,
     db_path: str | None = None,
     tokenstore: str | None = None,
+    unbounded: bool = False,
 ) -> dict[str, int]:
     """
-    Sync wellness data from Garmin Connect, one day at a time.
+    Sync wellness data from Garmin Connect, processing up to *days* days
+    going backwards from the last sync point.
 
-    Pulls the single most recent day that hasn't been synced yet
-    (going backwards from the last sync point). On first run with no
-    prior sync, pulls yesterday. This lets cron run daily and
+    When *unbounded* is True, syncs continuously until rate-limited
+    (no day limit).
+
+    Pulls days going backwards from the last sync point. On first run with no
+    prior sync, starts from yesterday. This lets cron run daily and
     incrementally backfill historical data without overwhelming the API.
 
     Args:
-        days: Unused (kept for backward compatibility).
+        days: Number of days to sync (default 1). Ignored if *unbounded* is True.
         db_path: Optional override for the database path.
         tokenstore: Unused (kept for backward compatibility).
+        unbounded: If True, sync indefinitely until rate-limited.
 
     Returns:
         Dict with counts of new/updated records.
@@ -731,45 +748,58 @@ def sync_garmin(
     else:
         last_date = today - timedelta(days=1)
 
-    # Target the day before the last synced day
-    target_date = last_date - timedelta(days=1)
-    target_str = target_date.strftime("%Y-%m-%d")
-
-    logger.info(f"Syncing wellness for {target_str} (last synced: {last_synced or 'never'})")
-
     reset_rate_limiter()
-    # Create client and login
     client = _create_client(tokenstore)
     logger.info("Authenticated with Garmin Connect")
 
-    try:
-        record = fetch_wellness_for_date(client, target_str)
-    except garminconnect.GarminConnectTooManyRequestsError as e:
-        _rate_limiter.record_429()
-        logger.warning(f"Rate limited during wellness sync: {e}")
-        db.close()
-        return {"wellness_records": 0, "with_hrv": 0}
-    if record is None:
-        logger.info(f"No wellness data for {target_str}")
-        # Still advance the sync pointer so we don't retry forever
+    total_stored = 0
+    total_with_hrv = 0
+    current_date = last_date - timedelta(days=1)
+    days_synced = 0
+
+    while unbounded or days_synced < days:
+        target_str = current_date.strftime("%Y-%m-%d")
+
+        logger.info(f"Syncing wellness for {target_str} (last synced: {last_synced or 'never'})")
+
+        try:
+            record = fetch_wellness_for_date(client, target_str)
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during wellness sync: {e}")
+            db.set_last_synced("garmin_wellness", target_str)
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+
+        if record is None:
+            logger.info(f"No wellness data for {target_str}")
+            # Still advance the sync pointer so we don't retry forever
+            db.set_last_synced("garmin_wellness", target_str)
+            current_date -= timedelta(days=1)
+            days_synced += 1
+            time.sleep(0.5)
+            continue
+
+        stored = db.store_wellness([record])
         db.set_last_synced("garmin_wellness", target_str)
-        db.close()
-        return {"wellness_records": 0, "with_hrv": 0}
 
-    stored = db.store_wellness([record])
-    db.set_last_synced("garmin_wellness", target_str)
+        with_hrv = 1 if record.get("rmssd") is not None else 0
+        total_stored += stored
+        total_with_hrv += with_hrv
+
+        logger.info(
+            f"Sync complete for {target_str}: {stored} record(s) stored, "
+            f"{with_hrv} with HRV data"
+        )
+
+        current_date -= timedelta(days=1)
+        days_synced += 1
+        time.sleep(0.5)
+
     db.close()
-
-    with_hrv = 1 if record.get("rmssd") is not None else 0
-
-    logger.info(
-        f"Sync complete for {target_str}: {stored} record(s) stored, "
-        f"{with_hrv} with HRV data"
-    )
-
     return {
-        "wellness_records": stored,
-        "with_hrv": with_hrv,
+        "wellness_records": total_stored,
+        "with_hrv": total_with_hrv,
     }
 
 

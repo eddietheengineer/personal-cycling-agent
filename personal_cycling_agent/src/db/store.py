@@ -23,7 +23,7 @@ class CyclingDB:
         if not db_path:
             raise ValueError('db_path must not be empty')
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._create_tables()
 
@@ -135,6 +135,7 @@ class CyclingDB:
 
         c.execute("CREATE INDEX IF NOT EXISTS idx_streams_activity ON activity_streams(activity_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_streams_metric ON activity_streams(metric)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_streams_activity_metric ON activity_streams(activity_id, metric)")
 
         c.execute("""
             CREATE TABLE IF NOT EXISTS sync_state (
@@ -177,7 +178,8 @@ class CyclingDB:
 
     def store_wellness(self, records: list[dict[str, Any]]) -> int:
         """
-        Upsert wellness records. Uses INSERT OR REPLACE keyed on date.
+        Upsert wellness records. Uses INSERT ... ON CONFLICT(date) DO UPDATE SET
+        to preserve the updated_at timestamp on existing rows.
 
         Returns the number of records processed.
         """
@@ -190,11 +192,27 @@ class CyclingDB:
 
             c.execute(
                 """
-                INSERT OR REPLACE INTO wellness
+                INSERT INTO wellness
                     (date, weight, resting_hr, rmssd, stress, sleep_score, sleep_hours, steps,
                      spo2, body_battery_start, body_battery_end, calories, active_calories,
                      distance_m, min_hr, max_hr)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(date) DO UPDATE SET
+                    weight = excluded.weight,
+                    resting_hr = excluded.resting_hr,
+                    rmssd = excluded.rmssd,
+                    stress = excluded.stress,
+                    sleep_score = excluded.sleep_score,
+                    sleep_hours = excluded.sleep_hours,
+                    steps = excluded.steps,
+                    spo2 = excluded.spo2,
+                    body_battery_start = excluded.body_battery_start,
+                    body_battery_end = excluded.body_battery_end,
+                    calories = excluded.calories,
+                    active_calories = excluded.active_calories,
+                    distance_m = excluded.distance_m,
+                    min_hr = excluded.min_hr,
+                    max_hr = excluded.max_hr
                 """,
                 (
                     date,
@@ -524,6 +542,13 @@ class CyclingDB:
         """Return the number of distinct activities with route data."""
         row = self.conn.execute(
             "SELECT COUNT(DISTINCT activity_id) FROM activity_routes"
+        ).fetchone()
+        return row[0]
+    def get_route_count_for_activity(self, activity_id: str) -> int:
+        """Return the number of route points for a specific activity."""
+        row = self.conn.execute(
+            "SELECT COUNT(*) FROM activity_routes WHERE activity_id = ?",
+            (activity_id,),
         ).fetchone()
         return row[0]
 

@@ -530,19 +530,24 @@ def sync_activities(
     days: int = 1,
     db_path: str | None = None,
     tokenstore: str | None = None,
+    unbounded: bool = False,
 ) -> dict[str, int]:
     """
     Sync activity stream data from Garmin Connect, processing up to
     *days* days going backwards from the last sync point.
+
+    When *unbounded* is True, syncs continuously until rate-limited
+    (no day limit).
 
     Downloads and parses FIT files for each activity found on each day.
     Stops when Garmin returns 429 Too Many Requests, saving progress
     so the next run resumes from where it left off.
 
     Args:
-        days: Number of days to sync (default 1).
+        days: Number of days to sync (default 1). Ignored if *unbounded* is True.
         db_path: Optional override for the database path.
         tokenstore: Unused (kept for backward compatibility).
+        unbounded: If True, sync indefinitely until rate-limited.
 
     Returns:
         Dict with counts of activities processed and stream records stored.
@@ -580,7 +585,7 @@ def sync_activities(
     current_date = last_date - timedelta(days=1)
     days_synced = 0
 
-    while days_synced < days:
+    while unbounded or days_synced < days:
         target_str = current_date.strftime("%Y-%m-%d")
         logger.info(f"Syncing activities for {target_str}")
 
@@ -696,19 +701,24 @@ def sync_garmin(
     days: int = 1,
     db_path: str | None = None,
     tokenstore: str | None = None,
+    unbounded: bool = False,
 ) -> dict[str, int]:
     """
     Sync wellness data from Garmin Connect, processing up to *days* days
     going backwards from the last sync point.
+
+    When *unbounded* is True, syncs continuously until rate-limited
+    (no day limit).
 
     Pulls days going backwards from the last sync point. On first run with no
     prior sync, starts from yesterday. This lets cron run daily and
     incrementally backfill historical data without overwhelming the API.
 
     Args:
-        days: Number of days to sync (default 1).
+        days: Number of days to sync (default 1). Ignored if *unbounded* is True.
         db_path: Optional override for the database path.
         tokenstore: Unused (kept for backward compatibility).
+        unbounded: If True, sync indefinitely until rate-limited.
 
     Returns:
         Dict with counts of new/updated records.
@@ -747,7 +757,7 @@ def sync_garmin(
     current_date = last_date - timedelta(days=1)
     days_synced = 0
 
-    while days_synced < days:
+    while unbounded or days_synced < days:
         target_str = current_date.strftime("%Y-%m-%d")
 
         logger.info(f"Syncing wellness for {target_str} (last synced: {last_synced or 'never'})")

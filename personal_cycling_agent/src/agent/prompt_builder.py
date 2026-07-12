@@ -61,7 +61,7 @@ def build_system_prompt(
     """
     profile = load_user_profile()
     today = datetime.now().strftime("%Y-%m-%d")
-    rider_weight = os.getenv("RIDER_WEIGHT_KG", "unknown")
+    rider_weight = os.getenv("WEIGHT_KG", "unknown")
 
     # Build sections
     sections = [

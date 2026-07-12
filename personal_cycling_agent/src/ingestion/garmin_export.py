@@ -293,6 +293,10 @@ def sync_routes_from_fit(db: CyclingDB, raw_dir: Path | None = None) -> dict[str
     Returns:
         Dict with keys "processed", "with_gps", "without_gps", "total_points".
     """
+    if FitFile is None:
+        logger.warning("fitparse not installed — cannot parse FIT files")
+        return {"processed": 0, "with_gps": 0, "without_gps": 0, "total_points": 0}
+
     if raw_dir is None:
         raw_dir = config.raw_dir()
     raw_dir = Path(raw_dir)
@@ -309,11 +313,7 @@ def sync_routes_from_fit(db: CyclingDB, raw_dir: Path | None = None) -> dict[str
         activity_id = fit_path.stem  # bare numeric filename, e.g. "21634975856"
 
         # Skip if already has routes
-        existing = db.conn.execute(
-            "SELECT COUNT(*) FROM activity_routes WHERE activity_id = ?",
-            (activity_id,),
-        ).fetchone()[0]
-        if existing > 0:
+        if db.get_route_count_for_activity(activity_id) > 0:
             counts["processed"] += 1
             continue
 

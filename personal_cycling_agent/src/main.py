@@ -26,10 +26,12 @@ import numpy as np
 PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VENV_DIR = PROJECT_ROOT / ".venv"
 
-# Use venv Python if available
+# Use venv Python if available (guard against infinite re-exec loop)
 _venv_python = VENV_DIR / "bin" / "python"
 if _venv_python.exists() and _venv_python != Path(sys.executable):
-    os.execv(str(_venv_python), [str(_venv_python), "-m", "src.main"] + sys.argv[1:])
+    if not os.environ.get("_CYCLING_REEXEC"):
+        os.environ["_CYCLING_REEXEC"] = "1"
+        os.execv(str(_venv_python), [str(_venv_python), "-m", "src.main"] + sys.argv[1:])
 
 from src import config
 
@@ -151,12 +153,13 @@ def run_analyze() -> dict:
                 if days_gap > 0 and current_ftp > 0:
                     # Exponential decay: FTP_new = FTP_old * 0.5^(days/half_life)
                     decay = 0.5 ** (days_gap / _CP_HALF_LIFE_DAYS)
-                    current_ftp = current_ftp * decay
+                    current_ftp = max(current_ftp * decay, 50.0)
 
-            # Add this activity to CP data pool (if it has power)
-            if power_samples and duration >= 60:
-                avg_pwr = float(np.mean(power_samples))
-                cp_data_points.append({"duration": duration, "avg_power": avg_pwr})
+            # Add this activity to CP data pool (if it has power and within 90 days)
+            if power_samples and duration >= 60 and act_date is not None:
+                if (datetime.now() - act_date).days <= 90:
+                    avg_pwr = float(np.mean(power_samples))
+                    cp_data_points.append({"duration": duration, "avg_power": avg_pwr})
 
                 # Re-estimate CP from all activities seen so far
                 new_cp = estimate_critical_power(cp_data_points)

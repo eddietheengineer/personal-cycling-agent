@@ -10,8 +10,8 @@ then classifies the rider's current autonomic state:
 
 import logging
 from dataclasses import dataclass
-from datetime import date
 from enum import Enum
+from datetime import date
 from typing import Any
 
 import numpy as np
@@ -103,10 +103,12 @@ def assess_readiness(
             f"At least one is required for readiness assessment."
         )
 
-    # Build baseline from the N days BEFORE today (not including today)
+    # Build baseline from the N calendar days BEFORE today (not including today)
+    from datetime import timedelta
+    cutoff = date.fromisoformat(target_date) - timedelta(days=window)
     baseline_records = [
-        r for r in records if r.get("date", "") < target_date
-    ][:window]
+        r for r in records if cutoff <= date.fromisoformat(r.get("date", "")) < date.fromisoformat(target_date)
+    ]
 
     rmssd_values = [
         r["rmssd"] for r in baseline_records if r.get("rmssd") is not None
@@ -143,6 +145,30 @@ def assess_readiness(
         recommendation = (
             "Parasympathetic hyperactivity: HRV abnormally high AND RHR abnormally low. "
             "Indicates deep systemic exhaustion. Cap intensity; permit steady endurance only."
+        )
+    elif rmssd_below and (resting_hr is None or not rhr_above) and rmssd_std > 0:
+        state = ReadinessState.SYMPATHETIC_STRESS
+        recommendation = (
+            "RMSSD below baseline (single-metric deviation). "
+            "Consider reducing intensity; monitor closely."
+        )
+    elif rmssd_above and (resting_hr is None or not rhr_below) and rmssd_std > 0:
+        state = ReadinessState.PARASYMPATHETIC_HYPERACTIVITY
+        recommendation = (
+            "RMSSD above baseline (single-metric deviation). "
+            "May indicate deep exhaustion; cap intensity."
+        )
+    elif rhr_above and (rmssd is None or not rmssd_below) and rhr_std > 0:
+        state = ReadinessState.SYMPATHETIC_STRESS
+        recommendation = (
+            "RHR above baseline (single-metric deviation). "
+            "Consider reducing intensity; monitor closely."
+        )
+    elif rhr_below and (rmssd is None or not rmssd_above) and rhr_std > 0:
+        state = ReadinessState.PARASYMPATHETIC_HYPERACTIVITY
+        recommendation = (
+            "RHR below baseline (single-metric deviation). "
+            "May indicate deep exhaustion; cap intensity."
         )
     elif rmssd is None and rhr_above:
         state = ReadinessState.SYMPATHETIC_STRESS
