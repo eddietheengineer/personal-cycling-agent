@@ -1937,8 +1937,297 @@ Day N check-in missed?
 3. **Historical analysis** — How to review past prescriptions and outcomes to improve the model
 4. **Nutrition tracking UI** — Streamlit form for daily food log entry
 5. **Weekly report generation** — Automated weekly summary email or dashboard
-6. **Knowledge graph construction** — Build cycling-specific SSKG with contraindications
+6. ~~**Knowledge graph construction**~~ — ✅ Complete (KnowledgeGraph: SSKG entity/relation schema, contraindication triples, GraphRAG retrieval)
 7. **Individual recovery curves** — ML model for personalized recovery per edge case type
 8. **Integration testing** — End-to-end test of the full prescription pipeline
 9. **Streamlit UI implementation** — Morning check-in form + daily prescription dashboard
-10. **SQLite schema finalization** — Complete schema for all tables (daily_readiness, morning_checkin, sync_log, workout_library, validation_log)
+10. ~~**SQLite schema finalization**~~ — ✅ Complete (SchemaDesign: 7 new tables DDL, migration strategy, index/query patterns)
+
+---
+
+## Part 29: Knowledge Graph Construction for Cycling Sports Science
+
+**Research date:** 2026-07-12 (Round 9)
+
+### 29.1 LLM-SPTRec's Sports Science Knowledge Graph (SSKG)
+
+**Source:** He et al. 2026, Scientific Reports 16:6793 [link](https://www.nature.com/articles/s41598-026-37075-z)
+
+**Entity types:** Exercise, Muscle_Group, Energy_System, Fitness_Component, Physiological_Marker, Training_Phase, Injury_Risk, Recovery_Method, User_State
+
+**Relation types:** targets, engages, develops, requires, indicated_for, contraindicated_by, causes, alleviates, measures, belongs_to
+
+**Retrieval:** Top-K entity retrieval + 1-hop subgraph. Ablation shows removing KG drops Plan Coherence Score by 31.8% — the KG is the scientific backbone preventing hallucination.
+
+### 29.2 Cycling-Specific Entity Schema
+
+**Sources:** He et al. 2026 [link](https://www.nature.com/articles/s41598-026-37075-z); Li et al. 2026 [link](https://www.nature.com/articles/s41598-026-38066-w); Kontro et al. 2026 [link](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0341721); TrainingPeaks zones [link](https://www.trainingpeaks.com/blog/power-training-levels/)
+
+| Entity Type | Cycling Instances |
+|---|---|
+| **Workout_Type** | zone2_endurance, tempo, sweet_spot, threshold, over_under, vo2max_intervals, vo2_short, ronnestad, microburst, anaerobic_capacity, neuromuscular_power, ladder_vo2, ladder_threshold, endurance_strides, recovery_ride, ftp_test |
+| **Energy_System** | aerobic_oxidative, anaerobic_glycolytic, atp_cp_alactic |
+| **Physiological_Marker** | FTP, CP, W_prime, Pmax, HRV_rmssd, RHR, lactate_threshold, VO2max, TSS, CTL, ATL, TSB |
+| **Contraindication** | high_DOMS, acute_fatigue, illness, knee_pain, low_HRV, poor_sleep, elevated_RHR, overreaching, dehydration |
+| **Training_Phase** | base, build1, build2, peak, taper, consolidation, recovery |
+| **Recovery_Method** | easy_ride, foam_rolling, sleep_extension, cold_therapy, massage, nutrition_repair |
+
+### 29.3 Contraindication Triples (Signed Edge Weights)
+
+**Source:** Huang et al. 2021, medical KG with signed weights [link](https://pmc.ncbi.nlm.nih.gov/articles/PMC8444078/)
+
+```
+(vo2max_intervals, contraindicated_by, high_DOMS, -1.0)
+(vo2max_intervals, contraindicated_by, acute_fatigue, -1.0)
+(vo2max_intervals, contraindicated_by, low_HRV, -0.8)
+(ronnestad, contraindicated_by, high_DOMS, -1.0)
+(microburst, contraindicated_by, knee_pain, -1.0)
+(threshold, contraindicated_by, illness, -1.0)
+(recovery_ride, indicated_for, high_DOMS, +1.0)
+(recovery_ride, indicated_for, low_HRV, +0.9)
+(foam_rolling, alleviates, DOMS, +0.8)
+(sleep_extension, alleviates, low_HRV, +0.9)
+```
+
+### 29.4 Retrieval Strategy: Top-K + 1-Hop + Contraindication Filter
+
+**Sources:** KG-RAG4SM (Ma et al. 2025) [link](https://arxiv.org/html/2501.08686v1); GraphRAG survey (Han et al. 2025) [link](https://arxiv.org/html/2501.00309v2); Microsoft GraphRAG [link](https://github.com/microsoft/GraphRAG)
+
+```
+1. Map user state to KG entities (e.g., {high_DOMS, low_HRV})
+2. Retrieve candidate workouts by goal (e.g., develops → aerobic_capacity)
+3. Filter: exclude any workout with contraindicated_by edge to user state
+4. Rank by relevance weight + safety margin
+5. Serialize top-3 with 1-hop context → inject into LLM prompt
+```
+
+### 29.5 Tool Stack: SQLite + PyKEEN + NetworkX
+
+**Sources:** PyKEEN [link](https://pykeen.readthedocs.io/); NetworkX [link](https://networkx.org/); Neo4j GraphRAG [link](https://neo4j.com/developer/genai-ecosystem/importing-graph-from-unstructured-data/)
+
+```sql
+-- Storage: SQLite adjacency tables
+CREATE TABLE kg_entity (id INTEGER PRIMARY KEY, name TEXT UNIQUE, type TEXT, description TEXT);
+CREATE TABLE kg_relation (id INTEGER PRIMARY KEY, name TEXT UNIQUE, description TEXT);
+CREATE TABLE kg_triple (
+    head_id INTEGER REFERENCES kg_entity(id),
+    relation_id INTEGER REFERENCES kg_relation(id),
+    tail_id INTEGER REFERENCES kg_entity(id),
+    weight REAL DEFAULT 1.0,
+    PRIMARY KEY (head_id, relation_id, tail_id)
+);
+```
+
+**Embedding:** PyKEEN with RotatE (same as He et al. 2026). **Traversal:** NetworkX for 1-hop BFS. **Why:** Zero-dependency, works on Raspberry Pi, no server needed.
+
+---
+
+## Part 30: SQLite Schema Finalization
+
+**Research date:** 2026-07-12 (Round 9)
+
+### 30.1 Architecture: Single File, `athlete_id` Column
+
+**Sources:** 37signals multi-tenancy [link](https://dev.37signals.com/rails-multi-tenancy/); Azure SQL multi-tenant [link](https://learn.microsoft.com/en-us/azure/azure-sql/database/saas-tenancy-app-design-patterns)
+
+Every table includes `athlete_id TEXT NOT NULL DEFAULT 'default'` as first column. All queries filter by `athlete_id`.
+
+### 30.2 WAL Mode and Performance Prag+
+
+**Sources:** SQLite WAL [link](https://sqlite.org/pragma.html#pragma_journal_mode); SQLite synchronous [link](https://sqlite.org/pragma.html#pragma_synchronous); SQLite query optimizer [link](https://micahkepe.com/blog/sqlite-query-optimizer/)
+
+```sql
+PRAGMA journal_mode = WAL;          -- Readers never block writers
+PRAGMA synchronous = NORMAL;        -- Balance durability/performance
+PRAGMA cache_size = -64000;         -- 64MB cache
+PRAGMA temp_store = MEMORY;         -- Temp sorts in RAM
+PRAGMA foreign_keys = ON;           -- Referential integrity
+```
+
+### 30.3 Table: `daily_readiness`
+
+**Sources:** Alfonso et al. 2025 [link](https://www.nature.com/articles/s41598-025-08340-5); Rothschild et al. 2024 [link](https://pmc.ncbi.nlm.nih.gov/articles/PMC11519101/); Gabbett 2016 ACWR [link](https://bjsm.bmj.com/content/50/11/675)
+
+```sql
+CREATE TABLE daily_readiness (
+    athlete_id TEXT NOT NULL DEFAULT 'default',
+    date TEXT NOT NULL,
+    rmssd REAL, resting_hr REAL,
+    rmssd_mean_30d REAL, rmssd_std_30d REAL,
+    rhr_mean_30d REAL, rhr_std_30d REAL,
+    sleep_hours REAL, sleep_score REAL,
+    perceived_readiness REAL, soreness REAL, life_stress REAL, mood REAL,
+    readiness_score REAL, readiness_state TEXT, recommendation TEXT,
+    ctl REAL, atl REAL, tsb REAL, acwr REAL,
+    computed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (athlete_id, date)
+);
+CREATE INDEX idx_readiness_date ON daily_readiness(athlete_id, date);
+CREATE INDEX idx_readiness_state ON daily_readiness(athlete_id, readiness_state, date);
+```
+
+### 30.4 Table: `morning_checkin`
+
+**Sources:** Saw et al. 2016 [link](https://bjsm.bmj.com/content/50/4/281); Figueiredo et al. 2022 [link](https://www.tandfonline.com/doi/abs/10.1080/02640414.2022.2053905); SQLite partial indexes [link](https://sqlite.org/skipscan.html)
+
+```sql
+CREATE TABLE morning_checkin (
+    athlete_id TEXT NOT NULL DEFAULT 'default',
+    date TEXT NOT NULL,
+    perceived_readiness REAL, soreness REAL, life_stress REAL,
+    sleep_quality REAL, mood REAL, energy REAL, motivation REAL,
+    pain_score REAL, pain_location TEXT, notes TEXT,
+    recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (athlete_id, date)
+);
+CREATE INDEX idx_checkin_date ON morning_checkin(athlete_id, date);
+CREATE INDEX idx_checkin_pain ON morning_checkin(athlete_id, date) WHERE pain_score > 0;
+```
+
+### 30.5 Table: `workout_library`
+
+**Source:** SQLite JSON1 [link](https://sqlite.org/json1.html)
+
+```sql
+CREATE TABLE workout_library (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    athlete_id TEXT NOT NULL DEFAULT 'default',
+    name TEXT NOT NULL, description TEXT,
+    workout_type TEXT NOT NULL, energy_system TEXT,
+    target_duration REAL, target_tss REAL,
+    target_zones TEXT, interval_structure TEXT,
+    min_readiness REAL, max_readiness REAL, min_ctl REAL,
+    pdc_shape_hint TEXT,
+    times_prescribed INTEGER DEFAULT 0, last_prescribed TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_workout_selection ON workout_library(athlete_id, workout_type, energy_system);
+CREATE INDEX idx_workout_pdc ON workout_library(athlete_id, pdc_shape_hint);
+```
+
+### 30.6 Table: `sync_log`
+
+```sql
+CREATE TABLE sync_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    athlete_id TEXT NOT NULL DEFAULT 'default',
+    source TEXT NOT NULL, sync_type TEXT NOT NULL,
+    start_time TEXT NOT NULL, end_time TEXT,
+    status TEXT NOT NULL, records_fetched INTEGER DEFAULT 0,
+    records_stored INTEGER DEFAULT 0, error_message TEXT,
+    date_range_start TEXT, date_range_end TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_sync_log_recent ON sync_log(athlete_id, created_at DESC);
+```
+
+### 30.7 Table: `validation_log`
+
+```sql
+CREATE TABLE validation_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    athlete_id TEXT NOT NULL DEFAULT 'default',
+    check_name TEXT NOT NULL, target_date TEXT, target_activity_id TEXT,
+    severity TEXT NOT NULL, message TEXT,
+    raw_value REAL, expected_min REAL, expected_max REAL,
+    action_taken TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_validation_severity ON validation_log(athlete_id, severity, created_at DESC);
+```
+
+### 30.8 Table: `edge_cases`
+
+```sql
+CREATE TABLE edge_cases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    athlete_id TEXT NOT NULL DEFAULT 'default',
+    case_type TEXT NOT NULL, start_date TEXT NOT NULL, end_date TEXT,
+    description TEXT, training_impact TEXT, resolution TEXT,
+    resolved INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_edge_cases_active ON edge_cases(athlete_id, resolved, start_date) WHERE resolved = 0;
+```
+
+### 30.9 Table: `training_log`
+
+```sql
+CREATE TABLE training_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    athlete_id TEXT NOT NULL DEFAULT 'default',
+    planned_date TEXT NOT NULL, workout_id INTEGER,
+    planned_type TEXT, planned_duration REAL, planned_tss REAL,
+    planned_zones TEXT, readiness_at_plan REAL,
+    actual_activity_id TEXT, actual_duration REAL, actual_tss REAL,
+    actual_np REAL, actual_ifr REAL, actual_rpe REAL,
+    completed INTEGER DEFAULT 0, modification_reason TEXT,
+    post_ride_notes TEXT,
+    decoupling_drift REAL, w_prime_min_balance REAL, dfa_a1_lt1_cross REAL,
+    planned_at TEXT NOT NULL DEFAULT (datetime('now')), completed_at TEXT,
+    FOREIGN KEY (workout_id) REFERENCES workout_library(id)
+);
+CREATE INDEX idx_training_log_date ON training_log(athlete_id, planned_date);
+CREATE INDEX idx_training_log_feedback ON training_log(athlete_id, planned_date, actual_tss, planned_tss) WHERE completed = 1;
+```
+
+### 30.10 Migration Strategy
+
+**Sources:** SQLite migrations [link](https://www.sqliteforum.com/p/managing-database-versions-and-migrations); Atlas Migrate [link](https://atlasgo.io/blog/2024/04/01/migrate-down); SQLite ALTER TABLE [link](https://www.sqlite.org/lang_altertable.html)
+
+```
+src/db/migrations/
+├── 001_create_schema_migrations.sql
+├── 002_add_athlete_id_to_existing.sql
+├── 003_create_daily_readiness.sql
+├── 004_create_morning_checkin.sql
+├── 005_create_workout_library.sql
+├── 006_create_sync_log.sql
+├── 007_create_validation_log.sql
+├── 008_create_edge_cases.sql
+└── 009_create_training_log.sql
+```
+
+Each migration wrapped in transaction. Idempotent DDL (`CREATE TABLE IF NOT EXISTS`). Two-phase deployment: additive first, cutover later.
+
+### 30.11 Query Patterns
+
+**Sources:** SQLite window functions [link](https://www.sqlite.org/windowfunctions.html); Kiviniemi et al. 2007 [link](https://link.springer.com/article/10.1007/s00421-007-0543-5)
+
+**Rolling average (7-day readiness trend):**
+```sql
+SELECT date, readiness_score,
+    AVG(readiness_score) OVER (ORDER BY date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW) AS rolling_avg_7d
+FROM daily_readiness WHERE athlete_id = ? AND date >= date(?, '-90 days') ORDER BY date;
+```
+
+**Anomaly detection (z-score from 14-day baseline):**
+```sql
+WITH baseline AS (
+    SELECT date, readiness_score,
+        AVG(readiness_score) OVER (ORDER BY date ROWS BETWEEN 13 PRECEDING AND CURRENT ROW) AS mean,
+        STDDEV(readiness_score) OVER (ORDER BY date ROWS BETWEEN 13 PRECEDING AND CURRENT ROW) AS std
+    FROM daily_readiness WHERE athlete_id = ?
+)
+SELECT date, readiness_score, (readiness_score - mean) / NULLIF(std, 0) AS z_score
+FROM baseline WHERE ABS(readiness_score - mean) > std AND std > 0;
+```
+
+---
+
+## Part 31: Round 10 Deep-Dive Areas
+
+**Research date:** 2026-07-12 (Round 10 planning)
+
+### 31.1 Areas Identified for Round 10
+
+1. **MQTT integration** — How to publish prescription to smart devices (bike computer, phone)
+2. **Multi-athlete support** — How to extend the model for family/team use
+3. **Historical analysis** — How to review past prescriptions and outcomes to improve the model
+4. **Nutrition tracking UI** — Streamlit form for daily food log entry
+5. **Weekly report generation** — Automated weekly summary email or dashboard
+6. **Individual recovery curves** — ML model for personalized recovery per edge case type
+7. **Integration testing** — End-to-end test of the full prescription pipeline
+8. **Streamlit UI implementation** — Morning check-in form + daily prescription dashboard
+9. **Garmin data field inventory** — Complete catalog of all available Garmin Connect API endpoints
+10. **Prompt template library** — Pre-built prompt templates for different prescription scenarios
