@@ -594,6 +594,7 @@ def sync_activities(
     total_stored = 0
     current_date = last_date - timedelta(days=1)
     days_synced = 0
+    consecutive_empty = 0  # track consecutive days with no activities
 
     while unbounded or days_synced < days:
         target_str = current_date.strftime("%Y-%m-%d")
@@ -639,13 +640,21 @@ def sync_activities(
 
         if not activities:
             logger.info(f"No activities found for {target_str}")
-            # Advance the sync pointer so we don't retry forever
+            consecutive_empty += 1
+            if unbounded and consecutive_empty >= 365:
+                logger.info(
+                    f"Hit {consecutive_empty} consecutive empty days — "
+                    "stopping unbounded sync."
+                )
+                db.set_last_synced("garmin_activities", target_str)
+                break
             db.set_last_synced("garmin_activities", target_str)
             current_date -= timedelta(days=1)
             days_synced += 1
             time.sleep(0.5)
             continue
 
+        consecutive_empty = 0
         day_processed = 0
         day_stored = 0
 
