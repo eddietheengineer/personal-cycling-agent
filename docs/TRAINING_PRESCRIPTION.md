@@ -1774,10 +1774,171 @@ Output as JSON matching the provided schema.
 1. **MQTT integration** — How to publish prescription to smart devices (bike computer, phone)
 2. **Multi-athlete support** — How to extend the model for family/team use
 3. **Historical analysis** — How to review past prescriptions and outcomes to improve the model
-4. **Automated daily sync** — Background job architecture for daily Garmin + subjective data collection
-5. **Workout classification system** — Content-based classification for our workout library
+4. ~~**Automated daily sync**~~ — ✅ Complete (DailySync: APScheduler, Garmin API, morning check-in, missed day handling)
+5. ~~**Workout classification system**~~ — ✅ Complete (WorkoutClassification: 17 Domestique classes, Coggan zones, 3D IR mapping)
 6. **Nutrition tracking UI** — Streamlit form for daily food log entry
 7. **Weekly report generation** — Automated weekly summary email or dashboard
 8. **Knowledge graph construction** — Build cycling-specific SSKG with contraindications
 9. **Individual recovery curves** — ML model for personalized recovery per edge case type
 10. **Integration testing** — End-to-end test of the full prescription pipeline
+
+---
+
+## Part 26: Workout Classification System
+
+**Research date:** 2026-07-12 (Round 8)
+
+### 26.1 Domestique's 17 Canonical Workout Classes
+
+**Source:** Domestique GitHub [link](https://github.com/platypus45/domestique) (Apache 2.0). Content-based classification from parsed interval structure, not filename.
+
+| # | Class | IF Range | Energy System | Description |
+|---|-------|----------|---------------|-------------|
+| 1 | Recovery | <0.55 | Aerobic (Z1) | Active recovery, very low intensity |
+| 2 | Endurance | 0.55-0.75 | Aerobic (Z2) | Steady aerobic base building |
+| 3 | Endurance + Strides | 0.55-0.75 + spikes | Aerobic + Alactic | Z2 base with short neuromuscular pops |
+| 4 | Tempo | 0.76-0.90 | Aerobic (Z3) | Sustained moderate effort |
+| 5 | Sweet Spot | 0.88-0.94 | Aerobic (Z3-Z4) | High efficiency, threshold-adjacent |
+| 6 | Threshold | 0.91-1.05 | Aerobic+Glycolytic (Z4) | FTP-anchored intervals (2x20, 3x15, 4x10) |
+| 7 | Over-Under | 0.85-1.15 | Glycolytic (Z3-Z5) | Alternating above/below FTP |
+| 8 | VO2max | 1.06-1.20 | Glycolytic+Aerobic (Z5) | 3-8 min intervals at 106-120% FTP |
+| 9 | VO2-Short | 1.06-1.30 | Glycolytic (Z5-Z6) | Shorter VO2 intervals (30s-3min) |
+| 10 | Rønnestad 30/15 | 1.06-1.30 | Glycolytic (Z5-Z6) | 30s on/15s off intervals |
+| 11 | Microburst Ladder | 0.55-1.30 | All three systems | Progressive microburst intervals |
+| 12 | Anaerobic | 1.21-1.50 | Glycolytic (Z6) | 30s-3min max efforts |
+| 13 | Neuromuscular | >1.50 | Alactic (Z7) | Very short sprints (<30s) |
+| 14 | FTP Test | Variable | All systems | 20-min test or ramp test |
+| 15 | Ladder (VO2) | 0.55-1.20 | Glycolytic+Aerobic | Ascending/descending interval ladders |
+| 16 | Ladder (Threshold) | 0.76-1.05 | Aerobic+Glycolytic | Threshold-intensity ladder progressions |
+| 17 | Ladder (Anaerobic) | 0.76-1.50 | Glycolytic+Alactic | Anaerobic-intensity ladder progressions |
+
+### 26.2 Coggan's 7-Zone Training Model
+
+**Source:** Coggan 2016, TrainingPeaks [link](https://www.trainingpeaks.com/blog/power-training-levels/)
+
+| Zone | Name | % FTP | Adaptation |
+|------|------|-------|------------|
+| Z1 | Active Recovery | <55% | Blood flow, recovery |
+| Z2 | Endurance | 56-75% | Mitochondrial density, fat oxidation |
+| Z3 | Tempo | 76-90% | Muscular endurance, lactate clearance |
+| Z4 | Lactate Threshold | 91-105% | Raises FTP |
+| Z5 | VO2 Max | 106-120% | Increases VO2max ceiling |
+| Z6 | Anaerobic Capacity | >121% | Anaerobic power, buffering |
+| Z7 | Neuromuscular Power | N/A | Neuromuscular recruitment |
+
+### 26.3 Mapping to Kontro 2026 3D IR Model
+
+**Source:** Kontro et al. 2026 [link](https://doi.org/10.1371/journal.pone.0341721) (PMC12880663)
+
+| Workout Class | SSCP (Aerobic) | SSW' (Glycolytic) | SSPmax (Alactic) |
+|--------------|----------------|-------------------|-----------------|
+| Endurance | High | None | None |
+| Tempo | Moderate-High | Low | None |
+| Sweet Spot | High | Low | None |
+| Threshold | High | Moderate | None |
+| Over-Under | Moderate | High | Low |
+| VO2max | Moderate | High | Low |
+| Rønnestad 30/15 | Low | Very High | Low |
+| Anaerobic | None | Very High | Low |
+| Neuromuscular | None | None | High |
+
+### 26.4 Workout Library Metadata Schema
+
+```json
+{
+  "id": "string",
+  "name": "string",
+  "class": {enum: recovery|endurance|tempo|sweet_spot|threshold|over_under|vo2max|vo2_short|ronnestad|microburst|anaerobic|neuromuscular|ftp_test|ladder_vo2|ladder_threshold|ladder_anaerobic|endurance_strides},
+  "duration_min": {integer, 5-300},
+  "tss_estimate": {number},
+  "energy_systems": {"aerobic_pct": {number}, "glycolytic_pct": {number}, "alactic_pct": {number}},
+  "zones": {"z1_pct": {number}, "z2_pct": {number}, ... "z7_pct": {number}},
+  "phase_affinity": {array: base|build1|build2|peak|taper|consolidation},
+  "contraindications": {array: knee_pain|illness|acute_fatigue|...},
+  "literature_ref": {string|null}
+}
+```
+
+---
+
+## Part 27: Automated Daily Sync Architecture
+
+**Research date:** 2026-07-12 (Round 8)
+
+### 27.1 Scheduling: APScheduler with CronTrigger
+
+**Source:** APScheduler docs [link](https://apscheduler.readthedocs.io/en/3.x/modules/triggers/cron.html)
+
+```python
+scheduler = BackgroundScheduler(timezone="America/New_York")
+scheduler.add_job(
+    daily_sync,
+    CronTrigger(hour=6, minute=30, jitter=300),  # 5min jitter
+    misfire_grace_time=3600,  # allow 1hr drift
+)
+```
+
+### 27.2 Garmin API: Auth and Rate Limits
+
+**Sources:** python-garminconnect [link](https://github.com/cyberjunky/python-garminconnect); garmin-health-data [link](https://github.com/diegoscarabelli/garmin-health-data)
+
+- **Token storage:** `~/.garminconnect/<user_id>/garmin_tokens.json` with `0o600` permissions
+- **Auto-refresh:** Tokens refresh transparently; re-login needed after 30+ days inactivity
+- **Rate limiting:** 30-45s delay between API calls; 429 → defer to next day; 401 → re-auth; 5xx → retry 3x with exponential backoff
+
+### 27.3 Morning Check-In Flow
+
+**Sources:** Hooper Index [link](https://ascendperform.com/monitoring-stress-and-fatigue-with-the-hooper-mackinnon-questionnaire/); PRS + Hooper (Perazzetti et al.) [link](https://pmc.ncbi.nlm.nih.gov/articles/PMC12473293/)
+
+| Field | Scale | Direction |
+|-------|-------|-----------|
+| PRS | 0-10 | 0=poorly recovered, 10=well recovered |
+| Fatigue | 1-7 | 1=low, 7=high |
+| DOMS | 1-7 | 1=low, 7=high |
+| Stress | 1-7 | 1=low, 7=high |
+| Sleep Quality | 1-7 | 1=bad, 7=good |
+
+### 27.4 Missed Day Handling
+
+**Sources:** LOCF in athlete monitoring [link](https://pmc.ncbi.nlm.nih.gov/articles/PMC5169162/); EMA missing data (Fibion) [link](https://web.fibion.com/articles/handle-missing-ema-data/)
+
+```
+Day N check-in missed?
+  ├── Within grace (06:30-12:00) → use late submission
+  ├── Past grace → LOCF (use Day N-1 values, tag as "imputed_locf")
+  ├── No prior data → population median defaults (PRS=5, fatigue=3, DOMS=3, stress=3, sleep=4)
+  └── Always include Garmin data (objective fills the gap)
+```
+
+### 27.5 Optimal Sync Timing
+
+**Source:** HRV circadian rhythm (Vitale et al.) [link](https://pmc.ncbi.nlm.nih.gov/articles/PMC6571903/)
+
+```
+05:30-06:30  User wakes, Garmin syncs overnight data
+06:30        Sync job triggers (5-min jitter)
+06:30-06:35  Pull Garmin data (sleep, HRV, stress, body battery)
+06:35-07:00  Wait for subjective check-in (grace window)
+07:00        If no check-in, apply LOCF/default
+07:00-07:05  Merge data, compute readiness
+07:05        Training prescription available
+```
+
+---
+
+## Part 28: Round 9 Deep-Dive Areas
+
+**Research date:** 2026-07-12 (Round 9 planning)
+
+### 28.1 Areas Identified for Round 9
+
+1. **MQTT integration** — How to publish prescription to smart devices (bike computer, phone)
+2. **Multi-athlete support** — How to extend the model for family/team use
+3. **Historical analysis** — How to review past prescriptions and outcomes to improve the model
+4. **Nutrition tracking UI** — Streamlit form for daily food log entry
+5. **Weekly report generation** — Automated weekly summary email or dashboard
+6. **Knowledge graph construction** — Build cycling-specific SSKG with contraindications
+7. **Individual recovery curves** — ML model for personalized recovery per edge case type
+8. **Integration testing** — End-to-end test of the full prescription pipeline
+9. **Streamlit UI implementation** — Morning check-in form + daily prescription dashboard
+10. **SQLite schema finalization** — Complete schema for all tables (daily_readiness, morning_checkin, sync_log, workout_library, validation_log)
