@@ -155,25 +155,7 @@ def run_analyze() -> dict:
                     decay = 0.5 ** (days_gap / _CP_HALF_LIFE_DAYS)
                     current_ftp = max(current_ftp * decay, 50.0)
 
-            # Add this activity to CP data pool (if it has power and within 90 days)
-            if power_samples and duration >= 60 and act_date is not None:
-                if (datetime.now() - act_date).days <= 90:
-                    avg_pwr = float(np.mean(power_samples))
-                    cp_data_points.append({"duration": duration, "avg_power": avg_pwr})
-
-                # Re-estimate CP from all activities seen so far
-                new_cp = estimate_critical_power(cp_data_points)
-                if new_cp > current_ftp:
-                    current_ftp = new_cp
-                    logger.info(
-                        f"FTP advanced to {current_ftp:.0f}W "
-                        f"(from {len(cp_data_points)} activities)"
-                    )
-
-            if act_date is not None:
-                last_activity_date = act_date
-
-            # Use current FTP for this activity's metrics
+            # Compute power metrics first — we need PDC for CP estimation
             pm_result = None
             if power_samples:
                 try:
@@ -188,11 +170,48 @@ def run_analyze() -> dict:
                 except Exception as e:
                     logger.warning(f"Power metrics failed for {activity_id}: {e}")
 
-            # W' (needs power)
+            # Add this activity's PDC efforts to CP data pool
+            # PDC gives best-effort power at standard durations (3m, 5m, 8m, 20m)
+            # which captures threshold capacity even from rides with short hard efforts
+            current_w_prime = 0.0  # W' from CP regression, in joules
+            if pm_result is not None and act_date is not None:
+                if (datetime.now() - act_date).days <= 90:
+                    pdc = pm_result.power_duration_curve
+                    pdc_efforts = []
+                    for dur_s in [180, 300, 480, 1200]:  # 3m, 5m, 8m, 20m
+                        pwr = pdc.get(dur_s, 0)
+                        if pwr > 0:
+                            pdc_efforts.append({"duration": dur_s, "avg_power": pwr})
+                    if pdc_efforts:
+                        cp_data_points.append({"pdc_efforts": pdc_efforts})
+
+                # Re-estimate CP from all activities seen so far
+                new_cp, new_w_prime = estimate_critical_power(cp_data_points)
+
+                # EWMA blend: allows FTP to adjust gradually in both directions
+                # alpha = 1 - 0.5^(1/28) ≈ 0.0247 per day (same as decay rate)
+                if new_cp > 0:
+                    alpha = _CP_DECAY_FACTOR
+                    current_ftp = current_ftp * (1 - alpha) + new_cp * alpha
+                    current_w_prime = new_w_prime
+                    logger.info(
+                        f"FTP updated to {current_ftp:.0f}W, W'={current_w_prime:.0f}J "
+                        f"(from {len(cp_data_points)} activities)"
+                    )
+
+            if act_date is not None:
+                last_activity_date = act_date
+
+            # W' (needs power) — use W' capacity from CP regression if available
             wp_result = None
             if power_samples:
                 try:
-                    wp_result = estimate_w_prime_from_activity(activity_id, power_samples, cp_estimate=current_ftp)
+                    wp_cap = current_w_prime / 1000.0 if current_w_prime > 0 else None
+                    wp_result = estimate_w_prime_from_activity(
+                        activity_id, power_samples,
+                        cp_estimate=current_ftp,
+                        w_prime_capacity=wp_cap,
+                    )
                     w_prime_results.append(w_prime_to_dict(wp_result))
                 except Exception as e:
                     logger.warning(f"W' estimation failed for {activity_id}: {e}")

@@ -77,7 +77,8 @@ class TestBurstAboveCP:
     def test_burst_depletes_w_prime(self):
         """100s at 300 W with CP=200 → W' balance depletes with recovery model."""
         result = estimate_w_prime_from_activity(
-            "burst", _steady(300, 100), cp_estimate=200, w_prime_capacity=20.0
+            "burst", _steady(300, 100), cp_estimate=200, w_prime_capacity=20.0,
+            tau=240.0,  # fixed tau for deterministic test
         )
         # Recovery model (tau=240s) partially recovers during drawdown;
         # true min_balance_pct ≈ 0.59 (tracked across all iterations)
@@ -87,7 +88,8 @@ class TestBurstAboveCP:
     def test_sustained_above_cp_depletes_to_zero(self):
         """Long enough effort above CP drains W' to zero."""
         result = estimate_w_prime_from_activity(
-            "long_burst", _steady(300, 3600), cp_estimate=200, w_prime_capacity=20.0
+            "long_burst", _steady(300, 3600), cp_estimate=200, w_prime_capacity=20.0,
+            tau=240.0,  # fixed tau for deterministic test
         )
         assert result.min_balance_pct == pytest.approx(0.0, abs=0.01)
         assert result.final_balance_pct == pytest.approx(0.0, abs=0.01)
@@ -96,7 +98,8 @@ class TestBurstAboveCP:
     def test_short_burst_preserves_most_w_prime(self):
         """10s at 300 W with CP=200 → minimal drawdown, most W' preserved."""
         result = estimate_w_prime_from_activity(
-            "short", _steady(300, 10), cp_estimate=200, w_prime_capacity=20.0
+            "short", _steady(300, 10), cp_estimate=200, w_prime_capacity=20.0,
+            tau=240.0,  # fixed tau for deterministic test
         )
         # With recovery model (tau=240s), true min_balance_pct ≈ 0.95
         # (tracked across all iterations, not just 10s intervals)
@@ -114,7 +117,8 @@ class TestRecovery:
         # 30s at 300W (drawdown), then 600s at 150W (recovery)
         power = _steady(300, 30) + _steady(150, 600)
         result = estimate_w_prime_from_activity(
-            "recover", power, cp_estimate=200, w_prime_capacity=20.0
+            "recover", power, cp_estimate=200, w_prime_capacity=20.0,
+            tau=240.0,  # fixed tau for deterministic test
         )
         # Recovery model (tau=240s) partially recovers during burst;
         # actual min_balance_pct ≈ 0.8593. Recovery phase should increase it.
@@ -156,7 +160,8 @@ class TestKnownValues:
     def test_exact_drawdown(self):
         """5s at 400W, CP=200, W'=20kJ → small drawdown with recovery."""
         result = estimate_w_prime_from_activity(
-            "exact", _steady(400, 5), cp_estimate=200, w_prime_capacity=20.0
+            "exact", _steady(400, 5), cp_estimate=200, w_prime_capacity=20.0,
+            tau=240.0,  # fixed tau for deterministic test
         )
         # Recovery model (tau=240s) recovers during short burst;
         # true min_balance_pct ≈ 0.95 (tracked across all iterations)
@@ -165,7 +170,8 @@ class TestKnownValues:
     def test_zero_cp_estimate(self):
         """When CP=0, all power is excess → rapid depletion with recovery."""
         result = estimate_w_prime_from_activity(
-            "zero_cp", _steady(200, 100), cp_estimate=0, w_prime_capacity=20.0
+            "zero_cp", _steady(200, 100), cp_estimate=0, w_prime_capacity=20.0,
+            tau=240.0,  # fixed tau for deterministic test
         )
         # Recovery model partially recovers; true min_balance_pct ≈ 0.18
         # (tracked across all iterations)
@@ -180,7 +186,8 @@ class TestProgression:
     def test_progression_true_when_high(self):
         """Short burst leaves >40% → progression recommended."""
         result = estimate_w_prime_from_activity(
-            "prog", _steady(250, 20), cp_estimate=200, w_prime_capacity=20.0
+            "prog", _steady(250, 20), cp_estimate=200, w_prime_capacity=20.0,
+            tau=240.0,  # fixed tau for deterministic test
         )
         # 20s * 50W = 1 kJ drawdown → 19/20 = 95%
         assert bool(result.progression_recommended) is True
@@ -188,7 +195,8 @@ class TestProgression:
     def test_progression_false_when_depleted(self):
         """Long effort drains below 40% → no progression."""
         result = estimate_w_prime_from_activity(
-            "no_prog", _steady(300, 200), cp_estimate=200, w_prime_capacity=20.0
+            "no_prog", _steady(300, 200), cp_estimate=200, w_prime_capacity=20.0,
+            tau=240.0,  # fixed tau for deterministic test
         )
         # 200s * 100W = 20 kJ → fully depleted
         assert bool(result.progression_recommended) is False
@@ -197,6 +205,7 @@ class TestProgression:
         """Custom threshold changes progression boundary."""
         result = estimate_w_prime_from_activity(
             "custom", _steady(250, 20), cp_estimate=200, w_prime_capacity=20.0,
+            tau=240.0,  # fixed tau for deterministic test
             min_balance_threshold=0.99,
         )
         # 95% < 99% → no progression
@@ -258,6 +267,56 @@ class TestBalanceSamples:
         )
         for _, b in result.balance_samples:
             assert 0.0 <= b <= 20.0
+
+
+# ── Adaptive tau (Skiba & Clarke 2021) ──────────────────────────────────
+
+class TestAdaptiveTau:
+    """Verify adaptive tau behavior from Skiba & Clarke 2021."""
+
+    def test_adaptive_tau_default(self):
+        """Default (tau=None) uses adaptive tau, not fixed 240s."""
+        # At steady 300W above CP=200, adaptive tau is computed each second
+        # and will differ from fixed 240s
+        result_adaptive = estimate_w_prime_from_activity(
+            "adaptive", _steady(300, 100), cp_estimate=200, w_prime_capacity=20.0,
+        )
+        result_fixed = estimate_w_prime_from_activity(
+            "fixed", _steady(300, 100), cp_estimate=200, w_prime_capacity=20.0,
+            tau=240.0,
+        )
+        # Adaptive tau should differ from fixed tau
+        assert result_adaptive.min_balance_pct != result_fixed.min_balance_pct
+
+    def test_adaptive_tau_faster_recovery_far_below_cp(self):
+        """Recovery far below CP uses smaller tau → faster recovery."""
+        # 30s burst at 300W, then 300s recovery at 50W (150W below CP=200)
+        power = _steady(300, 30) + _steady(50, 300)
+        result = estimate_w_prime_from_activity(
+            "deep_recovery", power, cp_estimate=200, w_prime_capacity=20.0,
+        )
+        # With adaptive tau, deep recovery (D_CP=150) gives tau ≈ 316s
+        # Fixed tau=240s would recover faster; adaptive should be slower
+        result_fixed = estimate_w_prime_from_activity(
+            "fixed_deep", power, cp_estimate=200, w_prime_capacity=20.0,
+            tau=240.0,
+        )
+        # Both should recover, but adaptive tau is more conservative
+        assert result.final_balance_pct > result.min_balance_pct
+        assert result_fixed.final_balance_pct > result.min_balance_pct
+
+    def test_tau_formula_at_cp(self):
+        """At CP exactly, tau should be ~862s (546*exp(0)+316)."""
+        from src.analytics.w_prime import _compute_tau
+        tau = _compute_tau(200.0, 200.0)
+        assert tau == pytest.approx(862.0, abs=1.0)
+
+    def test_tau_formula_far_below_cp(self):
+        """200W below CP, tau should be ~316s."""
+        from src.analytics.w_prime import _compute_tau
+        tau = _compute_tau(200.0, 0.0)
+        # tau = 546*exp(-0.01*200) + 316 = 546*exp(-2) + 316 ≈ 546*0.135 + 316 ≈ 390
+        assert 350 < tau < 450
 
 
 # ── w_prime_to_dict serialization ────────────────────────────────────────

@@ -10,14 +10,21 @@ avg_power = CP + W' / duration
 
 Plotting `avg_power` vs `1/duration` gives a line with intercept = CP and slope = W'.
 
+**Data source:** Best-effort power at standard durations (3min, 5min, 8min, 20min) extracted
+from each activity's power-duration curve. This captures threshold capacity from short hard
+efforts within longer rides, rather than diluting with whole-ride averages.
+
+**Regression:** Weighted least squares where weight = duration (longer efforts have lower
+variance in their power estimate). Normal equations: `(W^T W) beta = W^T y`.
+
 **Source:**
 - Monod, H., & Scherrer, J. (1965). *The critical power. Concepts and applications for training and physiological functions.* Journal of Physiology, 56, 238-244.
 - Hill, D. W., et al. (1999). *Critical power: review of the concept and methods.* Exercise and Sport Sciences Reviews, 27(2), 105-114.
 
 **Assumptions:**
-- Requires ≥2 activities with duration ≥60s.
-- CP is estimated from all activities seen so far (chronological walk).
+- Requires ≥2 efforts with duration ≥180s (3min). Below this, power is dominated by anaerobic capacity (PP/W'), not CP.
 - CP estimate clamped to 95% of max observed power if regression gives implausible result.
+- W' estimated from regression slope (in joules).
 
 ## CP Decay (Detraining)
 
@@ -27,6 +34,10 @@ Plotting `avg_power` vs `1/duration` gives a line with intercept = CP and slope 
 FTP_new = FTP_old × 0.5^(days_gap / 28)
 ```
 
+**EWMA Blend:** After re-estimating CP from new data, FTP is blended via exponential
+weighted moving average: `ftp = ftp·(1-α) + new_cp·α` where `α = 1 - 0.5^(1/28) ≈ 0.0247`.
+This allows gradual adjustment in both directions (up or down) rather than monotonic-up.
+
 **Source:**
 - Coyle, E. F., et al. (1988). *Detraining: Loss of peak oxygen uptake and maximal cardiac output.* Journal of Applied Physiology, 64(6), 2622-2627. — VO2max half-life ~28 days with complete detraining.
 - Burgies, M., et al. (2006). *Effect of detraining on critical power and W' in trained cyclists.* — CP declines ~10-15% per week of complete detraining, consistent with ~28-day half-life.
@@ -35,9 +46,8 @@ FTP_new = FTP_old × 0.5^(days_gap / 28)
 **Assumptions:**
 - Half-life of 28 days matches VO2max detraining literature.
 - Decay applied between consecutive activities (by date), not calendar days.
-- Recent high-intensity data can raise CP again (new estimate > decayed value).
+- EWMA blend allows FTP to adjust gradually in both directions.
 - Equivalent to TrainingPeaks CTL decay time constant (τ=42 days EWMA → half-life ~29 days).
-
 ## Normalized Power (NP)
 
 **Formula:**
@@ -126,22 +136,30 @@ Fitness-Fatigue = CTL / ATL
 
 ## W' (Functional Reserve Capacity)
 
-**Formula:** First-order differential equation for W' balance.
+**Formula:** W'BAL-ODE model (differential form) — Skiba & Clarke 2021.
 
 ```
-dW'/dt = -excess_power + (W'_balance / τ) × recovery_rate
+dW'/dt = -excess_power + (W'_max - W') / τ
 ```
 
-Where `excess_power = max(power - CP, 0)` and `τ = 240s` (recovery time constant).
+Where `excess_power = max(power - CP, 0)` and `τ` is adaptive:
+
+```
+τ = 546 · exp(-0.01 · D_CP) + 316
+```
+
+Where `D_CP = CP - current_power` (how far below CP you're recovering).
+At CP (D_CP=0): τ ≈ 862s. At 200W below CP: τ ≈ 390s.
 
 **Source:**
-- Skiba, P. F., & Jones, A. M. (2012). *A conceptual model of the power-duration relationship and metabolic power regulation.* European Journal of Applied Physiology, 112(11), 3803-3812.
-- Ross, M., et al. (2016). *The power-duration relationship and W' in endurance athletes.* — W' recovery time constant τ ≈ 240s.
-- Burgies, M., et al. (2019). *Estimation of W' from field data.* — W' capacity estimation from excess power integral.
+- Skiba, P. F., & Jones, A. M. (2012). *A conceptual model of the power-duration relationship and metabolic power regulation.* European Journal of Applied Physiology, 112(11), 3803-3812. — Original W' balance (integral form).
+- Clarke, D. C., & Skiba, P. F. (2016). *The W' balance model: mathematical and methodological considerations.* Medicine & Science in Sports & Exercise, 48(11), 2171-2179. — Differential (ODE) form.
+- Skiba, P. F., & Clarke, D. C. (2021). *The W' Balance Model: Mathematical and Methodological Considerations.* International Journal of Sports Physiology and Performance, 16(11), 1561-1572. — Adaptive τ formula and comprehensive review. **Open access.**
+- Ross, M., et al. (2016). *The power-duration relationship and W' in endurance athletes.* — W' recovery time constant τ ≈ 240s (fixed, pre-adaptive).
 
 **Assumptions:**
-- W' capacity estimated from peak 30s excess power integral if not provided.
-- Recovery time constant τ = 240 seconds (4 minutes).
+- W' capacity from CP regression slope (in joules) when available.
+- Adaptive τ from Skiba & Clarke 2021 formula (default). Fixed τ available for backward compatibility.
 - W' starts full at beginning of activity.
 
 ## Power Duration Curve (PDC)

@@ -2,10 +2,15 @@
 Dynamic FRC (W') Tracking.
 
 Models the kilojoule drawdown and reconstitution of Functional Reserve Capacity
-during high-intensity efforts.
+during high-intensity efforts using the W'BAL-ODE model.
 
 Progression trigger: if minimum W' balance during a sprint session stays above 40%,
 increase wattage or rep count for the next session.
+
+Sources:
+- W'BAL-ODE: Skiba & Clarke (2021) Int J Sports Physiol Perform 16(11):1561-1572
+- Adaptive tau: Skiba & Clarke (2021) tau = 546*exp(-0.01*D_CP) + 316
+- Original W'bal-INT: Skiba & Jones (2012) Eur J Appl Physiol 112(11):3803-3812
 """
 
 import logging
@@ -17,6 +22,14 @@ import numpy as np
 from .power_metrics import _compute_normalized_power
 
 logger = logging.getLogger(__name__)
+
+# Skiba & Clarke 2021: adaptive tau based on recovery intensity
+# tau = 546 * exp(-0.01 * D_CP) + 316, where D_CP = CP - recovery_power
+# At CP (D_CP=0): tau ≈ 862s. At 200W below CP: tau ≈ 316s.
+def _compute_tau(cp_estimate: float, current_power: float) -> float:
+    """Compute adaptive W' recovery time constant (Skiba & Clarke 2021)."""
+    d_cp = max(cp_estimate - current_power, 0.0)
+    return 546.0 * np.exp(-0.01 * d_cp) + 316.0
 
 
 @dataclass
@@ -36,21 +49,24 @@ def estimate_w_prime_from_activity(
     power_samples: list[float],
     cp_estimate: float | None = None,
     w_prime_capacity: float | None = None,
-    tau: float = 240.0,
+    tau: float | None = None,
     min_balance_threshold: float = 0.40,
 ) -> WPrimeResult:
     """
     Track W' balance over the course of an activity.
 
-    Uses a first-order recovery model:
-      dW'/dt = -excess_power + (W'_balance / tau) * recovery_rate
+    Uses the W'BAL-ODE model (Skiba & Clarke 2021):
+      dW'/dt = -excess_power + (W'_max - W') / tau
+    where tau is adaptive based on recovery intensity:
+      tau = 546 * exp(-0.01 * (CP - power)) + 316
 
     Args:
-        activity_id: Intervals.icu activity ID.
+        activity_id: Unique identifier for the activity.
         power_samples: Power in watts at each second.
         cp_estimate: Critical power estimate in watts. If None, uses NP.
         w_prime_capacity: Estimated W' capacity in kJ. If None, estimated from data.
-        tau: W' recovery time constant in seconds (default 240s).
+        tau: Deprecated. If provided, used as fixed tau (for backward compatibility).
+             If None (default), uses adaptive tau from Skiba & Clarke 2021.
         min_balance_threshold: Min balance % to trigger progression.
 
     Returns:
@@ -96,12 +112,19 @@ def estimate_w_prime_from_activity(
     balance_samples = [(0.0, balance)]
     min_balance = w_prime_capacity  # track true minimum across ALL iterations
 
+    # Use adaptive tau (Skiba & Clarke 2021) unless explicitly overridden
+    adaptive = tau is None
+
     for i, p in enumerate(power):
         excess = max(p - cp_estimate, 0.0)  # watts above CP
         drawdown = excess / 1000.0  # convert to kJ per second
 
-        # Recovery: exponential reconstitution
-        recovery = (w_prime_capacity - balance) / tau
+        # Recovery: exponential reconstitution with adaptive or fixed tau
+        if adaptive:
+            current_tau = _compute_tau(cp_estimate, p)
+        else:
+            current_tau = tau
+        recovery = (w_prime_capacity - balance) / current_tau
 
         balance = balance - drawdown + recovery
         balance = max(0.0, min(balance, w_prime_capacity))
@@ -111,7 +134,6 @@ def estimate_w_prime_from_activity(
 
         if i % 10 == 0:  # sample every 10 seconds for storage
             balance_samples.append((float(i), balance))
-
     final_balance = balance  # use actual last balance from the loop
 
     min_balance_pct = min_balance / w_prime_capacity if w_prime_capacity > 0 else 1.0
