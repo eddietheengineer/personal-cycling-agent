@@ -144,6 +144,7 @@ class BackgroundSync:
                 db_path=db_path,
                 tokenstore=tokenstore,
                 unbounded=unbounded,
+                progress_callback=lambda p, s: self._result.update(progress=p, stage=s),
             )
             self._result.update(progress=40, stage="Wellness sync complete")
             self._notify(40, "Wellness sync complete")
@@ -160,6 +161,7 @@ class BackgroundSync:
                 db_path=db_path,
                 tokenstore=tokenstore,
                 unbounded=unbounded,
+                progress_callback=lambda p, s: self._result.update(progress=p, stage=s),
             )
             self._result.update(progress=90, stage="Activity sync complete")
             self._notify(90, "Activity sync complete")

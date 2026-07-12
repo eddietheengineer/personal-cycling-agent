@@ -541,6 +541,7 @@ def sync_activities(
     db_path: str | None = None,
     tokenstore: str | None = None,
     unbounded: bool = False,
+    progress_callback: "Callable[[int, str], None] | None" = None,
 ) -> dict[str, int]:
     """
     Sync activity stream data from Garmin Connect, processing up to
@@ -723,6 +724,10 @@ def sync_activities(
             f"{total_stored} records)"
         )
 
+        if progress_callback is not None:
+            pct = min(95, 50 + int(days_synced / max(days, 1) * 45))
+            progress_callback(pct, f"Activities: {target_str} ({day_processed} activities)")
+
         # Move to the previous day
         current_date -= timedelta(days=1)
         days_synced += 1
@@ -740,6 +745,7 @@ def sync_garmin(
     db_path: str | None = None,
     tokenstore: str | None = None,
     unbounded: bool = False,
+    progress_callback: "Callable[[int, str], None] | None" = None,
 ) -> dict[str, int]:
     """
     Sync wellness data from Garmin Connect, processing up to *days* days
@@ -844,6 +850,10 @@ def sync_garmin(
             f"Sync complete for {target_str}: {stored} record(s) stored, "
             f"{with_hrv} with HRV data"
         )
+
+        if progress_callback is not None:
+            pct = min(40, 10 + int(days_synced / max(days, 1) * 30))
+            progress_callback(pct, f"Wellness: {target_str}")
 
         current_date -= timedelta(days=1)
         days_synced += 1
