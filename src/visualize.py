@@ -865,6 +865,7 @@ def _update_config_env(updates: dict) -> None:
 def _render_garmin_setup():
     """Render the Garmin Connect setup and sync tab."""
     from src.ingestion.garmin_connect import sync_garmin, sync_activities
+    from src.tasks.worker import BackgroundSync
     from src.ingestion.garmin_export import sync_routes_from_fit
 
     st.subheader("Garmin Connect Setup")
@@ -935,32 +936,24 @@ def _render_garmin_setup():
             disabled=not has_credentials,
             help="Parse FIT files and extract route data.",
         )
-
-    # ── Handle sync ──────────────────────────────────────────────────
+    # ── Handle sync (background) ─────────────────────────────────────
     if sync_clicked:
-        st.session_state.syncing = True
-        st.session_state.sync_status = "Starting sync..."
-        st.session_state.sync_result = None
-
-        try:
-            st.session_state.sync_status = "Fetching wellness data..."
-            wellness_counts = sync_garmin(db_path=str(config.db_path("cycling_agent.sqlite")))
-
-            st.session_state.sync_status = "Fetching activity streams..."
-            activity_counts = sync_activities(days=days, db_path=str(config.db_path("cycling_agent.sqlite")))
-
-            st.session_state.sync_result = {
-                "wellness": wellness_counts,
-                "activities": activity_counts,
-            }
-            st.session_state.sync_status = "Sync complete!"
-            st.session_state.syncing = False
-            st.success("Sync complete!")
+        sync = st.session_state.setdefault("_bg_sync", BackgroundSync())
+        if not sync.is_running:
+            sync.start(
+                days=days,
+                db_path=str(config.db_path("cycling_agent.sqlite")),
+                progress_callback=lambda p, s: (
+                    setattr(st.session_state, "_sync_progress", p),
+                    setattr(st.session_state, "_sync_stage", s),
+                ),
+            )
+            st.session_state.syncing = True
+            st.session_state.sync_status = "Sync started in background..."
+            st.session_state.sync_result = None
             st.rerun()
-        except Exception as exc:
-            st.session_state.syncing = False
-            st.session_state.sync_status = f"Sync failed: {exc}"
-            st.error(f"Sync failed: {exc}")
+        else:
+            st.info("Sync already running in background...")
 
     if routes_clicked:
         try:
@@ -971,11 +964,26 @@ def _render_garmin_setup():
         except Exception as exc:
             st.error(f"Route sync failed: {exc}")
 
-    # ── Show sync status ─────────────────────────────────────────────
-    if "sync_status" in st.session_state:
-        st.info(st.session_state.sync_status)
 
-    if st.session_state.get("syncing"):
+    # ── Show sync status ─────────────────────────────────────────────
+    sync = st.session_state.get("_bg_sync")
+    if sync is not None:
+        snap = sync.snapshot()
+        if snap["status"] == "running":
+            st.progress(snap["progress"] / 100)
+            st.info(snap["stage"])
+        elif snap["status"] == "completed":
+            st.session_state.sync_result = snap["result"]
+            st.session_state.syncing = False
+            st.success("Sync complete!")
+            st.rerun()
+        elif snap["status"] == "failed":
+            st.session_state.syncing = False
+            st.error(snap.get("error", "Sync failed"))
+            st.rerun()
+    elif "sync_status" in st.session_state:
+        st.info(st.session_state.sync_status)
+    if st.session_state.get("syncing") and (sync is None or not sync.is_running):
         st.warning("Sync in progress... this may take a few minutes.")
 
     # ── Show sync results ────────────────────────────────────────────
@@ -986,14 +994,6 @@ def _render_garmin_setup():
             st.write(f"**Wellness:** {result['wellness']}")
         if "activities" in result:
             st.write(f"**Activities:** {result['activities']}")
-# ---------------------------------------------------------------------------
-# Settings page
-# ---------------------------------------------------------------------------
-def _render_settings():
-    """Render the Settings page with Garmin Connect authentication."""
-    from src.ingestion.garmin_connect import authenticate_garmin
-
-    st.subheader("Garmin Connect")
     st.caption("Connect to Garmin Connect to sync your activity and wellness data.")
 
     # Read current email from env to show status
@@ -1185,48 +1185,41 @@ def _render_settings():
             )
 
         if sync_clicked:
-            st.session_state.syncing = True
-            st.session_state.sync_status = "Starting sync..."
-            st.rerun()
-
-        if st.session_state.get("syncing"):
-            try:
-                from src.ingestion.garmin_connect import sync_garmin, sync_activities
-
-                st.session_state.sync_status = "Fetching wellness data..."
-                wellness_counts = sync_garmin(
-                    db_path=str(config.db_path("cycling_agent.sqlite"))
-                )
-
-                st.session_state.sync_status = "Fetching activity streams..."
-                activity_counts = sync_activities(
+            from src.tasks.worker import BackgroundSync
+            sync = st.session_state.setdefault("_bg_sync", BackgroundSync())
+            if not sync.is_running:
+                sync.start(
                     days=days,
                     db_path=str(config.db_path("cycling_agent.sqlite")),
+                    progress_callback=lambda p, s: (
+                        setattr(st.session_state, "_sync_progress", p),
+                        setattr(st.session_state, "_sync_stage", s),
+                    ),
                 )
+                st.session_state.syncing = True
+                st.session_state.sync_status = "Sync started in background..."
+                st.rerun()
+            else:
+                st.info("Sync already running in background...")
 
-                st.session_state.sync_result = {
-                    "wellness": wellness_counts,
-                    "activities": activity_counts,
-                }
+        # ── Show sync status ─────────────────────────────────────────
+        sync = st.session_state.get("_bg_sync")
+        if sync is not None:
+            snap = sync.snapshot()
+            if snap["status"] == "running":
+                st.progress(snap["progress"] / 100)
+                st.info(snap["stage"])
+            elif snap["status"] == "completed":
+                st.session_state.sync_result = snap["result"]
+                st.session_state.syncing = False
                 st.session_state.sync_message = "Sync complete!"
                 st.session_state.sync_message_type = "success"
-            except Exception as exc:
-                st.session_state.sync_message = f"Sync failed: {exc}"
-                st.session_state.sync_message_type = "error"
-            finally:
-                st.session_state.syncing = False
                 st.rerun()
-
-        # Display deferred sync message
-        if st.session_state.get("sync_message"):
-            msg = st.session_state.sync_message
-            msg_type = st.session_state.sync_message_type
-            if msg_type == "success":
-                st.success(msg)
-            elif msg_type == "error":
-                st.error(msg)
-            st.session_state.sync_message = ""
-            st.session_state.sync_message_type = ""
+            elif snap["status"] == "failed":
+                st.session_state.syncing = False
+                st.session_state.sync_message = snap.get("error", "Sync failed")
+                st.session_state.sync_message_type = "error"
+                st.rerun()
 
         if routes_clicked:
             try:
