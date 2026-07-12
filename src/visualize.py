@@ -1271,4 +1271,4 @@ elif nav_page == "Map":
 elif nav_page == "Profile":
     _render_profile()
 elif nav_page == "Settings":
-    _render_settings()
+    _render_garmin_setup()
