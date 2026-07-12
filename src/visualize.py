@@ -1051,6 +1051,8 @@ elif nav_page == "Map":
 elif nav_page == "Profile":
     _render_profile()
 elif nav_page == "Settings":
+    _render_garmin_setup()
+
 # Auto-refresh when sync is running in background (Settings page only)
 if nav_page == "Settings":
     sync = st.session_state.get("_bg_sync")
