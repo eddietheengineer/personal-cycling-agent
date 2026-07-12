@@ -18,7 +18,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from src import config
 from src.db.store import CyclingDB
@@ -536,6 +536,185 @@ def _fetch_activity_streams(
         return 0
 
 
+
+def _sync_activities_batch(
+    client: "garminconnect.Garmin",
+    db: CyclingDB,
+    last_synced_date: "date | None",
+    unbounded: bool,
+    progress_callback: "Callable[[int, str], None] | None" = None,
+) -> tuple[int, int]:
+    """Fetch activities in batches and process FIT streams.
+
+    Phase 1 (Blueprint): Fetch activity summaries in batches of 100 via
+    get_activities(start, limit). Build a list of new activity IDs.
+    Phase 2 (Download): For each new activity, download FIT file and
+    parse streams via _fetch_activity_streams().
+
+    Returns (total_processed, total_stored).
+    """
+    from datetime import date
+
+    # Check for a saved resume offset from a previous interrupted run
+    resume_offset = db.get_resume_offset("garmin_activities")
+
+    # --- Phase 1: Activity Discovery ---
+    new_activities: list[dict[str, Any]] = []
+    batch_size = 100
+    offset = 0
+
+    # Try to get total count for progress estimation
+    try:
+        total_count = client.count_activities()
+    except Exception:
+        total_count = None
+
+    total_batches = None
+    if total_count is not None:
+        total_batches = (total_count + batch_size - 1) // batch_size
+
+    logger.info(
+        f"Phase 1: Fetching activity list"
+        f"{f' (total ~{total_count})' if total_count is not None else ''}"
+    )
+
+    while True:
+        # Check if we have a resume offset to start from
+        if offset == 0 and resume_offset > 0:
+            offset = resume_offset
+            logger.info(f"Resuming from saved offset {resume_offset}")
+            resume_offset = 0  # consume the resume offset
+
+        try:
+            _rate_limiter.wait()
+            activities = _retry_on_rate_limit(
+                lambda: client.get_activities(start=offset, limit=batch_size)
+            )
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during activity discovery: {e}")
+            # Save resume offset for crash recovery
+            db.set_last_synced(
+                "garmin_activities",
+                datetime.now().date().isoformat(),
+                resume_offset=offset,
+            )
+            db.close()
+            return (len(new_activities), 0)
+        except Exception as e:
+            logger.error(f"Failed to fetch activity batch at offset {offset}: {type(e).__name__}: {e}")
+            break
+
+        if not activities:
+            break
+
+        batch_activities = list(activities) if not isinstance(activities, list) else activities
+
+        if not batch_activities:
+            break
+
+        batch_index = offset // batch_size
+        if progress_callback is not None and total_batches is not None:
+            pct = int(batch_index / max(total_batches, 1) * 50)
+            progress_callback(pct, f"Fetching activities... ({len(new_activities)} found so far)")
+
+        for activity in batch_activities:
+            # Extract activity date from startTimeLocal
+            start_time_local = activity.get("startTimeLocal", "")
+            activity_date: "date | None" = None
+            if start_time_local:
+                try:
+                    activity_date = datetime.strptime(start_time_local[:10], "%Y-%m-%d").date()
+                except (ValueError, TypeError):
+                    pass
+
+            # Incremental mode: skip activities at or before last_synced_date
+            if not unbounded and last_synced_date is not None and activity_date is not None:
+                if activity_date <= last_synced_date:
+                    # Results are newest-first, so once we hit old activities we're done
+                    logger.info(
+                        f"Activity {activity_date} <= last synced {last_synced_date}, "
+                        "stopping discovery"
+                    )
+                    break
+
+            new_activities.append(activity)
+
+        if not batch_activities or len(batch_activities) < batch_size:
+            # Last batch or fewer results than requested
+            break
+
+        offset += batch_size
+
+        # Safety: if we've gone way past the total count, stop
+        if total_count is not None and offset > total_count:
+            break
+
+    logger.info(f"Phase 1 complete: {len(new_activities)} new activities to process")
+
+    if progress_callback is not None:
+        progress_callback(50, "Downloaded activity list, now processing FIT files...")
+
+    # --- Phase 2: FIT Download and Processing ---
+    total_processed = 0
+    total_stored = 0
+
+    for i, activity in enumerate(new_activities):
+        activity_id = activity.get("activityId")
+        if not activity_id:
+            continue
+
+        start_time_local = activity.get("startTimeLocal", "")
+        activity_date_str = start_time_local[:10] if start_time_local else "unknown"
+
+        logger.info(
+            f"Phase 2: Processing activity {activity_id} ({activity_date_str}) "
+            f"({i + 1}/{len(new_activities)})"
+        )
+
+        try:
+            _rate_limiter.wait()
+            time.sleep(1.0)  # spread load between downloads
+            stored = _fetch_activity_streams(client, activity_id, db)
+            total_processed += 1
+            total_stored += stored
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during activity {activity_id}: {e}")
+            # Save resume offset for crash recovery
+            db.set_last_synced(
+                "garmin_activities",
+                activity_date_str,
+                resume_offset=i,
+            )
+            db.close()
+            return (total_processed, total_stored)
+        except Exception as e:
+            logger.warning(f"Failed to fetch streams for {activity_id}: {type(e).__name__}: {e}")
+            total_processed += 1
+
+        if progress_callback is not None:
+            pct = 50 + int(i / max(len(new_activities), 1) * 45)
+            progress_callback(
+                min(pct, 95),
+                f"Processing FIT: {activity_date_str} ({i + 1}/{len(new_activities)})",
+            )
+
+    # Clear any resume offset on successful completion
+    if new_activities:
+        db.set_last_synced(
+            "garmin_activities",
+            new_activities[-1].get("startTimeLocal", "")[:10] or datetime.now().date().isoformat(),
+            resume_offset=0,
+        )
+
+    logger.info(
+        f"Phase 2 complete: {total_processed} activities processed, "
+        f"{total_stored} stream records stored"
+    )
+
+    return (total_processed, total_stored)
+
 def sync_activities(
     days: int = 1,
     db_path: str | None = None,
@@ -544,21 +723,25 @@ def sync_activities(
     progress_callback: "Callable[[int, str], None] | None" = None,
 ) -> dict[str, int]:
     """
-    Sync activity stream data from Garmin Connect, processing up to
-    *days* days going backwards from the last sync point.
+    Sync activity stream data from Garmin Connect using batch pagination.
 
-    When *unbounded* is True, syncs continuously until rate-limited
+    Uses get_activities(start, limit) to fetch activity summaries in batches,
+    then downloads and parses FIT files for each new activity. This replaces
+    the previous day-by-day approach, reducing API calls from ~100 to ~1-2
+    for typical incremental syncs.
+
+    When *unbounded* is True, syncs all activities until rate-limited
     (no day limit).
 
-    Downloads and parses FIT files for each activity found on each day.
     Stops when Garmin returns 429 Too Many Requests, saving progress
-    so the next run resumes from where it left off.
+    (including resume offset) so the next run resumes from where it left off.
 
     Args:
-        days: Number of days to sync (default 1). Ignored if *unbounded* is True.
+        days: Unused (kept for backward compatibility).
         db_path: Optional override for the database path.
-        tokenstore: Unused (kept for backward compatibility).
+        tokenstore: Optional override for the Garmin token directory.
         unbounded: If True, sync indefinitely until rate-limited.
+        progress_callback: Optional callback(progress_pct, message) for UI updates.
 
     Returns:
         Dict with counts of activities processed and stream records stored.
@@ -579,161 +762,45 @@ def sync_activities(
 
     today = datetime.now().date()
 
-    if unbounded:
-        # Continue from last sync point, going back indefinitely
-        if last_synced:
-            try:
-                last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
-            except ValueError:
-                logger.warning(f"Unparseable last_synced value '{last_synced}', "
-                               "starting from yesterday")
-                last_date = today - timedelta(days=1)
-        else:
+    # Parse last sync date for incremental mode
+    if last_synced:
+        try:
+            last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
+        except ValueError:
+            logger.warning(f"Unparseable last_synced value '{last_synced}', "
+                           "starting from yesterday")
             last_date = today - timedelta(days=1)
     else:
-        # Incremental: sync from day after last sync up to today
-        # The loop goes backward, so we set last_date=today and compute days to cover the gap
-        if last_synced:
-            try:
-                last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
-            except ValueError:
-                logger.warning(f"Unparseable last_synced value '{last_synced}', "
-                               "starting from yesterday")
-                last_date = today - timedelta(days=1)
-        else:
-            last_date = today - timedelta(days=1)
-        # days = gap from last sync to today (at least 1)
-        days = max(days, (today - last_date).days)
-        # Set last_date to today so the backward loop covers today -> last_sync+1
-        last_date = today
+        last_date = today - timedelta(days=1)
 
     reset_rate_limiter()
     client = _create_client(tokenstore)
 
-    total_processed = 0
-    total_stored = 0
-    current_date = last_date
-    days_synced = 0
-    consecutive_empty = 0  # track consecutive days with no activities
+    # For incremental mode, pass last_date as the cutoff.
+    # For unbounded mode, pass None to process everything.
+    last_synced_date = last_date if not unbounded else None
 
-    while unbounded or days_synced < days:
-        target_str = current_date.strftime("%Y-%m-%d")
-        logger.info(f"Syncing activities for {target_str}")
+    total_processed, total_stored = _sync_activities_batch(
+        client, db, last_synced_date, unbounded, progress_callback,
+    )
 
-        attempt = 0
-        activities = None
-        while activities is None:
-            try:
-                _rate_limiter.wait()
-                activities = client.get_activities_by_date(target_str, target_str)
-            except garminconnect.GarminConnectTooManyRequestsError as e:
-                _rate_limiter.record_429()
-                attempt += 1
-                if attempt >= 3:
-                    logger.warning(f"Rate limited by Garmin Connect after 3 retries: {e}")
-                    logger.info(f"Pausing — {total_processed} activities processed, "
-                                f"{total_stored} stream records stored so far")
-                    # Save sync state before returning
-                    db.set_last_synced("garmin_activities", target_str)
-                    db.close()
-                    break
-                wait = min(_rate_limiter._effective_interval, _rate_limiter.max_backoff)
-                logger.info(f"Rate limited fetching activities (attempt {attempt}/3), "
-                            f"retrying in {wait:.1f}s...")
-                time.sleep(wait)
-            except Exception as e:
-                logger.error(f"Failed to fetch activities for {target_str}: "
-                             f"{type(e).__name__}: {e}")
-                # On non-rate-limit errors, advance to avoid infinite loop
-                db.set_last_synced("garmin_activities", target_str)
-                current_date -= timedelta(days=1)
-                days_synced += 1
-                time.sleep(2.0)
-                break
+    # If the DB was already closed by _sync_activities_batch (rate limit),
+    # don't try to update state again
+    try:
+        if total_processed > 0:
+            # Update last_synced to today on successful processing
+            db.set_last_synced("garmin_activities", today.isoformat(), resume_offset=0)
+    except Exception:
+        pass  # DB may already be closed
 
-        if activities is None and attempt >= 3:
-            # We broke out of the inner loop due to rate limiting
-            return {
-                "activities_processed": total_processed,
-                "stream_records": total_stored,
-            }
+    try:
+        db.close()
+    except Exception:
+        pass
 
-        if not activities:
-            logger.info(f"No activities found for {target_str}")
-            consecutive_empty += 1
-            if unbounded and consecutive_empty >= 365:
-                logger.info(
-                    f"Hit {consecutive_empty} consecutive empty days — "
-                    "stopping unbounded sync."
-                )
-                db.set_last_synced("garmin_activities", target_str)
-                break
-            db.set_last_synced("garmin_activities", target_str)
-            current_date -= timedelta(days=1)
-            days_synced += 1
-            time.sleep(0.5)
-            continue
+    if progress_callback is not None:
+        progress_callback(100, f"Sync complete: {total_processed} activities, {total_stored} records")
 
-        consecutive_empty = 0
-        day_processed = 0
-        day_stored = 0
-
-        for activity in activities:
-            activity_id = activity.get("activityId")
-            if not activity_id:
-                continue
-
-            day_processed += 1
-            logger.info(
-                f"  Fetching streams for activity {activity_id} "
-                f"({day_processed}/{len(activities)})"
-            )
-
-            try:
-                stored = _fetch_activity_streams(client, activity_id, db)
-                day_stored += stored
-            except garminconnect.GarminConnectTooManyRequestsError as e:
-                _rate_limiter.record_429()
-                logger.warning(f"Rate limited during activity {activity_id}: {e}")
-                # Save progress at the activity level
-                total_processed += day_processed
-                total_stored += day_stored
-                db.set_last_synced("garmin_activities", target_str)
-                logger.info(f"Pausing mid-day — {total_processed} activities processed, "
-                            f"{total_stored} stream records stored so far")
-                db.close()
-                return {
-                    "activities_processed": total_processed,
-                    "stream_records": total_stored,
-                }
-            except Exception as e:
-                logger.warning(f"Failed to fetch streams for {activity_id}: "
-                               f"{type(e).__name__}: {e}")
-
-            time.sleep(1.0)
-
-        total_processed += day_processed
-        total_stored += day_stored
-
-        # Record sync timestamp for this day
-        db.set_last_synced("garmin_activities", target_str)
-
-        logger.info(
-            f"Day {target_str} complete: {day_processed} activities, "
-            f"{day_stored} stream records (total: {total_processed} activities, "
-            f"{total_stored} records)"
-        )
-
-        if progress_callback is not None:
-            pct = 50 + int(days_synced / max(days, 1) * 40)
-            progress_callback(min(pct, 95), f"Activities: {target_str} ({day_processed} activities, {days_synced}/{days} days)")
-
-        # Move to the previous day
-        current_date -= timedelta(days=1)
-        days_synced += 1
-        time.sleep(0.5)
-
-    db.close()
     return {
         "activities_processed": total_processed,
         "stream_records": total_stored,

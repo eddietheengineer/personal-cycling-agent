@@ -74,10 +74,31 @@ class CyclingDB:
 
         self.conn.commit()
 
+    def _migrate_sync_state(self):
+        """Add missing columns to the sync_state table."""
+        c = self.conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sync_state'")
+        if c.fetchone() is None:
+            return
+        c.execute("PRAGMA table_info(sync_state)")
+        existing = {row[1] for row in c.fetchall()}
+
+        columns = {
+            "resume_offset": "INTEGER DEFAULT 0",
+        }
+
+        for col, typ in columns.items():
+            if col not in existing:
+                c.execute(f"ALTER TABLE sync_state ADD COLUMN {col} {typ}")
+                logger.info(f"Migrated: added column {col} to sync_state")
+
+        self.conn.commit()
+
 
     def _create_tables(self):
         self._migrate_wellness()
         self._migrate_activity_metrics()
+        self._migrate_sync_state()
         c = self.conn.cursor()
 
         c.execute("""
@@ -385,12 +406,23 @@ class CyclingDB:
         ).fetchone()
         return row["last_synced_at"] if row else None
 
-    def set_last_synced(self, source: str, ts: str, details: str | None = None):
+    def get_resume_offset(self, source: str) -> int:
+        """Return the resume_offset for a source, or 0."""
+        row = self.conn.execute(
+            "SELECT resume_offset FROM sync_state WHERE source = ?",
+            (source,),
+        ).fetchone()
+        offset = row["resume_offset"] if row else 0
+        if offset is None:
+            return 0
+        return int(offset)
+
+    def set_last_synced(self, source: str, ts: str, details: str | None = None, resume_offset: int = 0):
         """Record the last sync timestamp for a source."""
         self.conn.execute(
-            "INSERT OR REPLACE INTO sync_state (source, last_synced_at, details) "
-            "VALUES (?, ?, ?)",
-            (source, ts, details),
+            "INSERT OR REPLACE INTO sync_state (source, last_synced_at, details, resume_offset) "
+            "VALUES (?, ?, ?, ?)",
+            (source, ts, details, resume_offset),
         )
         self.conn.commit()
 
