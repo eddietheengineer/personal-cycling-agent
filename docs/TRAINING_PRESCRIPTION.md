@@ -2226,8 +2226,146 @@ FROM baseline WHERE ABS(readiness_score - mean) > std AND std > 0;
 3. **Historical analysis** — How to review past prescriptions and outcomes to improve the model
 4. **Nutrition tracking UI** — Streamlit form for daily food log entry
 5. **Weekly report generation** — Automated weekly summary email or dashboard
-6. **Individual recovery curves** — ML model for personalized recovery per edge case type
+6. ~~**Individual recovery curves**~~ — ✅ Complete (RecoveryCurves: hierarchical Bayesian model, stressor-specific decay, drift detection)
 7. **Integration testing** — End-to-end test of the full prescription pipeline
-8. **Streamlit UI implementation** — Morning check-in form + daily prescription dashboard
+8. ~~**Streamlit UI implementation**~~ — ✅ Complete (StreamlitUI: form design, session state, dashboard KPIs, integration plan)
 9. **Garmin data field inventory** — Complete catalog of all available Garmin Connect API endpoints
 10. **Prompt template library** — Pre-built prompt templates for different prescription scenarios
+
+---
+
+## Part 32: Individual Recovery Curves
+
+**Research date:** 2026-07-12 (Round 10)
+
+### 32.1 Rothschild/Plews 2024: Individual vs. Group Recovery Models
+
+**Source:** Plews et al. (Rothschild), Eur J Appl Physiol 124:3279 [link](https://link.springer.com/article/10.1007/s00421-024-05530-2)
+
+43 athletes, 12 weeks (3572 athlete-days). Group model RMSE: 11.8 vs baseline 14.1. **Individual RMSE range: 5.5–23.6** (~4.3x variance between athletes). Key predictors vary by individual — evidence of nonergodicity. One-size-fits-all models are fundamentally inadequate.
+
+### 32.2 Hierarchical Bayesian Model Architecture
+
+**Sources:** Wearable Edge-Cloud Bayesian updating (ACM 2026) [link](https://dl.acm.org/doi/full/10.1145/3796028.3796083); Bayesian sports review (De Gruyter) [link](https://www.degruyterbrill.com/document/doi/10.1515/jqas-2018-0106/html); Bayesian recovery meta-analysis (Frontiers 2024) [link](https://www.frontiersin.org/journals/sports-and-active-living/articles/10.3389/fspor.2024.1429789/full)
+
+```
+Population priors → Individual posterior updates (Kalman filter / RLS)
+Cold start (days 1-7): population priors, high uncertainty
+Warm up (days 8-28): Bayesian convergence, individual τ and w parameters
+Steady state (day 29+): online updates with periodic drift detection
+```
+
+### 32.3 Stressor-Specific Decay Functions
+
+**Sources:** Bannister IR model (PMC 2023) [link](https://pmc.ncbi.nlm.nih.gov/articles/PMC10059925/); Smith stress-recovery framework [link](https://elementssystem.com/wp-content/uploads/2018/05/Smith-framework-alto-rendimiento.pdf); Travel recovery (Springer 2026) [link](https://link.springer.com/article/10.1007/s40279-026-02455-y); Subjective stressors (PMC 2019) [link](https://pmc.ncbi.nlm.nih.gov/articles/PMC6361803/)
+
+```
+Recovery(t) = Σ_i [Stress_i × exp(-t / τ_i) × w_i]
+
+Stressor half-lives (population priors):
+  Hard training: τ ~ 24-72h (individual 12-96h)
+  Illness: τ ~ 3-14 days (severity-dependent)
+  Travel (jet lag): τ ~ 1 day per timezone
+  Life stress: τ ~ 2-7 days
+```
+
+### 32.4 Drift Detection
+
+**Sources:** Wearable ML drift (Fibion) [link](https://web.fibion.com/articles/monitor-drift-wearable-ml-models/); Readiness recalibration (Frontiers 2026) [link](https://www.frontiersin.org/journals/physiology/articles/10.3389/fphys.2026.1855985/full); Predictive performance ML (Nature 2025) [link](https://www.nature.com/articles/s41598-025-01438-9)
+
+1. **EWMA on residuals:** α = 2/(span+1); flag when |EWMA| > threshold
+2. **BOCPD (Bayesian Online Change Point Detection):** Track hazard rate and run length
+3. **KS test:** Compare recent vs. baseline residual distributions (p < 0.05 → recalibrate)
+4. **Scheduled:** Weekly re-estimation with forgetting factor
+
+---
+
+## Part 33: Streamlit UI Implementation
+
+**Research date:** 2026-07-12 (Round 10)
+
+### 33.1 Morning Check-in Form
+
+**Sources:** Streamlit forms [link](https://docs.streamlit.io/develop/concepts/architecture/forms); Form validation (Cloudurable) [link](https://cloudurable.com/blog/article-streamlit-part-3-form-validation-part-1/); st.columns [link](https://docs.streamlit.io/develop/api-reference/layout/st.columns)
+
+```python
+with st.form("morning_checkin"):
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        prs = st.slider("PRS", 0, 10, 5)
+        fatigue = st.slider("Fatigue", 0, 10, 5)
+        stress = st.slider("Stress", 0, 10, 5)
+    with c2:
+        doms = st.slider("DOMS", 0, 10, 3)
+        sleep_q = st.slider("Sleep Quality", 0, 10, 7)
+        pain = st.slider("Pain", 0, 10, 0)
+    with c3:
+        if pain > 0: pain_loc = st.text_input("Pain Location")
+        notes = st.text_area("Notes (optional)")
+    st.form_submit_button("Submit")
+```
+
+### 33.2 Session State Machine
+
+**Sources:** Session state [link](https://docs.streamlit.io/develop/api-reference/caching-and-state/st.session_state); Callbacks [link](https://docs.streamlit.io/develop/concepts/design/buttons); Multi-step forms [link](https://discuss.streamlit.io/t/multi-step-form-interaction/55600)
+
+```
+INIT → CHECKIN (default)
+  → Form submit → validate → persist → compute readiness → PRESCRIBING
+    → [Confirm] → CONFIRMED → log to DB
+    → [Adjust] → recompute → PRESCRIBING
+    → [Skip] → SKIPPED → log to DB
+```
+
+### 33.3 Dashboard KPIs
+
+**Sources:** st.metric [link](https://docs.streamlit.io/develop/api-reference/data/st.metric); Plotly gauge [link](https://plotly.com/python/gauge-charts/); Streamlit gauge demo [link](https://discuss.streamlit.io/t/plotly-indicator-gauge-demo/54544)
+
+```python
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Readiness", f"{score}/100", delta=Δ, border=True)
+c2.metric("HRV", f"{rmssd}ms", delta="Normal"/"Below", border=True)
+c3.metric("RHR", f"{rhr} bpm", delta="Normal"/"Elevated", border=True)
+c4.metric("Sleep", f"{hours}h", delta=f"Q{quality}", border=True)
+```
+
+### 33.4 Component Architecture
+
+```
+src/ui/
+├── app.py                    # st.set_page_config, sidebar nav
+├── morning_checkin.py        # st.form with 6-8 inputs, validation
+├── prescription_dashboard.py # KPIs, gauge, workout recommendation
+├── edge_case_panel.py        # Pain gating, ACWR, stress flags
+├── history_view.py           # 7-day trends, prescription log
+├── state.py                  # Session state machine
+├── styles.py                 # Custom CSS for KPI cards
+└── integration.py            # Bridge to readiness.py, training_load.py, power_metrics.py
+```
+
+### 33.5 Integration with Existing Analytics
+
+**Readiness formula:** 0.40×Subjective + 0.30×Autonomic + 0.30×Fitness
+
+**Load modulation:** Score ≥70 → 100% planned; 40-69 → 70-80%; <40 → 20-50% (rest/recovery)
+
+**Edge case overrides:** Pain >3 → warning; ACWR >1.5 → error; SYMPATHETIC_STRESS → rest only
+
+---
+
+## Part 34: Round 11 Deep-Dive Areas
+
+**Research date:** 2026-07-12 (Round 11 planning)
+
+### 34.1 Areas Identified for Round 11
+
+1. **MQTT integration** — How to publish prescription to smart devices (bike computer, phone)
+2. **Multi-athlete support** — How to extend the model for family/team use
+3. **Historical analysis** — How to review past prescriptions and outcomes to improve the model
+4. **Nutrition tracking UI** — Streamlit form for daily food log entry
+5. **Weekly report generation** — Automated weekly summary email or dashboard
+6. **Integration testing** — End-to-end test of the full prescription pipeline
+7. **Garmin data field inventory** — Complete catalog of all available Garmin Connect API endpoints
+8. **Prompt template library** — Pre-built prompt templates for different prescription scenarios
+9. **Workout file generation** — How to generate .zwo/.fit files from prescription data
+10. **Notification system** — Push/email reminders for morning check-in
