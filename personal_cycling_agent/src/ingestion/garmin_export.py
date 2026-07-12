@@ -274,9 +274,9 @@ def import_garmin_export(
     return counts
 
 try:
-    from fitparse import FitFile
+    import fitdecode
 except ImportError:
-    FitFile = None  # type: ignore
+    fitdecode = None  # type: ignore
 
 
 def sync_routes_from_fit(db: CyclingDB, raw_dir: Path | None = None) -> dict[str, int]:
@@ -293,8 +293,8 @@ def sync_routes_from_fit(db: CyclingDB, raw_dir: Path | None = None) -> dict[str
     Returns:
         Dict with keys "processed", "with_gps", "without_gps", "total_points".
     """
-    if FitFile is None:
-        logger.warning("fitparse not installed — cannot parse FIT files")
+    if fitdecode is None:
+        logger.warning("fitdecode not installed — cannot parse FIT files")
         return {"processed": 0, "with_gps": 0, "without_gps": 0, "total_points": 0}
 
     if raw_dir is None:
@@ -318,15 +318,16 @@ def sync_routes_from_fit(db: CyclingDB, raw_dir: Path | None = None) -> dict[str
             continue
 
         try:
-            fit = FitFile(str(fit_path))
+            with fitdecode.FitReader(str(fit_path)) as fit:
+                records = [
+                    f for f in fit
+                    if isinstance(f, fitdecode.FitDataMessage) and f.name == "record"
+                ]
         except Exception:
             logger.warning(f"Failed to parse {fit_path.name!r}")
             counts["processed"] += 1
             counts["without_gps"] += 1
             continue
-
-        records = list(fit.get_messages("record"))
-        fit.close()
 
         if not records:
             counts["processed"] += 1
@@ -335,7 +336,8 @@ def sync_routes_from_fit(db: CyclingDB, raw_dir: Path | None = None) -> dict[str
 
         # Check if the first record has position_lat (indicates GPS data present)
         first = records[0]
-        if first.get_value("position_lat") is None:
+        lat_field = first.get_field("position_lat")
+        if lat_field is None or lat_field.value is None:
             counts["processed"] += 1
             counts["without_gps"] += 1
             continue
@@ -343,10 +345,12 @@ def sync_routes_from_fit(db: CyclingDB, raw_dir: Path | None = None) -> dict[str
         # Extract (lat, lon) pairs, converting from FIT integer format
         points: list[tuple[float, float]] = []
         for rec in records:
-            lat = rec.get_value("position_lat")
-            lon = rec.get_value("position_long")
-            if lat is not None and lon is not None:
-                points.append((lat / 1e7, lon / 1e7))
+            lat_field = rec.get_field("position_lat")
+            lon_field = rec.get_field("position_long")
+            if lat_field is not None and lat_field.value is not None and lon_field is not None and lon_field.value is not None:
+                lat = lat_field.value / 1e7
+                lon = lon_field.value / 1e7
+                points.append((lat, lon))
 
         if not points:
             counts["processed"] += 1

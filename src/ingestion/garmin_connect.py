@@ -36,9 +36,9 @@ except ImportError:
     GarminAuth = None  # type: ignore
 
 try:
-    from fitparse import FitFile
+    import fitdecode
 except ImportError:
-    FitFile = None  # type: ignore
+    fitdecode = None  # type: ignore
 
 
 class RateLimiter:
@@ -408,8 +408,8 @@ def _fetch_activity_streams(
 
     Returns the number of stream records stored.
     """
-    if FitFile is None:
-        logger.warning("fitparse not installed — cannot parse FIT files")
+    if fitdecode is None:
+        logger.warning("fitdecode not installed — cannot parse FIT files")
         return 0
 
     try:
@@ -448,12 +448,7 @@ def _fetch_activity_streams(
             fit_path.write_bytes(fit_data)
             logger.info(f"Downloaded FIT file for activity {activity_id} ({fit_name})")
 
-        # Parse FIT file from disk
-        fit_file = FitFile(str(fit_path))
-
-        # Collect per-second data from record messages.
-        # FIT timestamps are absolute UTC (systime), so we normalize to
-        # elapsed seconds from the first record.
+        # Parse FIT file from disk using fitdecode
         power_values: list[tuple[float, float]] = []
         hr_values: list[tuple[float, float]] = []
         cadence_values: list[tuple[float, float]] = []
@@ -462,41 +457,50 @@ def _fetch_activity_streams(
 
         first_ts: float | None = None
 
-        for msg in fit_file.get_messages("record"):
-            ts = msg.get_value("timestamp")
-            if ts is None:
-                continue
+        with fitdecode.FitReader(str(fit_path)) as fit:
+            for frame in fit:
+                if not isinstance(frame, fitdecode.FitDataMessage):
+                    continue
+                if frame.name != "record":
+                    continue
 
-            # fitparse returns datetime.datetime for timestamp
-            if hasattr(ts, "timestamp"):
-                ts = ts.timestamp()
+                ts_field = frame.get_field("timestamp")
+                if ts_field is None or ts_field.value is None:
+                    continue
+                ts = ts_field.value
 
-            if first_ts is None:
-                first_ts = float(ts)
+                # fitdecode returns datetime.datetime for timestamp
+                if hasattr(ts, "timestamp"):
+                    ts = ts.timestamp()
 
-            elapsed = float(ts) - first_ts
+                if first_ts is None:
+                    first_ts = float(ts)
 
-            pwr = msg.get_value("power")
-            if pwr is not None:
-                power_values.append((elapsed, float(pwr)))
+                elapsed = float(ts) - first_ts
 
-            hr = msg.get_value("heart_rate")
-            if hr is not None:
-                hr_values.append((elapsed, float(hr)))
+                pwr_field = frame.get_field("power")
+                if pwr_field is not None and pwr_field.value is not None:
+                    power_values.append((elapsed, float(pwr_field.value)))
 
-            cad = msg.get_value("cadence")
-            if cad is not None:
-                cadence_values.append((elapsed, float(cad)))
+                hr_field = frame.get_field("heart_rate")
+                if hr_field is not None and hr_field.value is not None:
+                    hr_values.append((elapsed, float(hr_field.value)))
 
-            speed = msg.get_value("enhanced_speed") or msg.get_value("speed")
-            if speed is not None:
-                speed_values.append((elapsed, float(speed)))
+                cad_field = frame.get_field("cadence")
+                if cad_field is not None and cad_field.value is not None:
+                    cadence_values.append((elapsed, float(cad_field.value)))
 
-            alt = msg.get_value("enhanced_altitude") or msg.get_value("altitude")
-            if alt is not None:
-                altitude_values.append((elapsed, float(alt)))
+                speed_field = frame.get_field("enhanced_speed")
+                if speed_field is None:
+                    speed_field = frame.get_field("speed")
+                if speed_field is not None and speed_field.value is not None:
+                    speed_values.append((elapsed, float(speed_field.value)))
 
-        fit_file.close()
+                alt_field = frame.get_field("enhanced_altitude")
+                if alt_field is None:
+                    alt_field = frame.get_field("altitude")
+                if alt_field is not None and alt_field.value is not None:
+                    altitude_values.append((elapsed, float(alt_field.value)))
 
         if not any([power_values, hr_values, cadence_values, speed_values, altitude_values]):
             logger.debug(f"No stream data in FIT file for activity {activity_id}")
