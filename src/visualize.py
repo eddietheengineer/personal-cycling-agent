@@ -942,18 +942,21 @@ def _render_garmin_setup():
             type="primary",
             disabled=not has_credentials,
             help="Sync new data since the last sync.",
+            key="sync_since_last",
         )
     with col2:
         sync_all_clicked = st.button(
             "Sync All Historical",
             disabled=not has_credentials,
             help="Re-sync all historical data from Garmin (may take a while).",
+            key="sync_all_historical",
         )
     with col3:
         routes_clicked = st.button(
             "Sync Routes",
             disabled=not has_credentials,
             help="Parse FIT files and extract route data.",
+            key="sync_routes_setup",
         )
 
     # ── Handle sync (background) ─────────────────────────────────────
@@ -1177,11 +1180,13 @@ def _render_garmin_setup():
                 "Sync Activities",
                 type="primary",
                 help="Fetch wellness data and activities from Garmin Connect.",
+                key="sync_activities_settings",
             )
         with col2:
             routes_clicked = st.button(
                 "Sync Routes",
                 help="Parse FIT files and extract route data.",
+                key="sync_routes_settings",
             )
 
         if sync_clicked:
