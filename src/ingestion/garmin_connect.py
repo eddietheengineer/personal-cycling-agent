@@ -725,8 +725,8 @@ def sync_activities(
         )
 
         if progress_callback is not None:
-            pct = min(95, 50 + int(days_synced / max(days, 1) * 45))
-            progress_callback(pct, f"Activities: {target_str} ({day_processed} activities)")
+            pct = 50 + int(days_synced / max(days, 1) * 40)
+            progress_callback(min(pct, 95), f"Activities: {target_str} ({day_processed} activities, {days_synced}/{days} days)")
 
         # Move to the previous day
         current_date -= timedelta(days=1)
@@ -852,8 +852,8 @@ def sync_garmin(
         )
 
         if progress_callback is not None:
-            pct = min(40, 10 + int(days_synced / max(days, 1) * 30))
-            progress_callback(pct, f"Wellness: {target_str}")
+            pct = 10 + int(days_synced / max(days, 1) * 30)
+            progress_callback(min(pct, 40), f"Wellness: {target_str} ({days_synced}/{days} days)")
 
         current_date -= timedelta(days=1)
         days_synced += 1
