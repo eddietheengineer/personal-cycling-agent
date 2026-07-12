@@ -975,14 +975,9 @@ def _render_garmin_setup():
             sync.start(
                 days=7,
                 db_path=str(config.db_path("cycling_agent.sqlite")),
-                progress_callback=lambda p, s: (
-                    setattr(st.session_state, "_sync_progress", p),
-                    setattr(st.session_state, "_sync_stage", s),
-                ),
                 unbounded=False,
             )
             st.session_state.syncing = True
-            st.session_state.sync_status = "Sync started in background..."
             st.session_state.sync_result = None
             st.rerun()
         else:
@@ -994,14 +989,9 @@ def _render_garmin_setup():
             sync.start(
                 days=3650,
                 db_path=str(config.db_path("cycling_agent.sqlite")),
-                progress_callback=lambda p, s: (
-                    setattr(st.session_state, "_sync_progress", p),
-                    setattr(st.session_state, "_sync_stage", s),
-                ),
                 unbounded=True,
             )
             st.session_state.syncing = True
-            st.session_state.sync_status = "Full historical sync started..."
             st.session_state.sync_result = None
             st.rerun()
         else:
@@ -1016,13 +1006,14 @@ def _render_garmin_setup():
         except Exception as exc:
             st.error(f"Route sync failed: {exc}")
 
-    # ── Show sync status ─────────────────────────────────────────────
+    # ── Show sync status (polling via snapshot) ──────────────────────
     sync = st.session_state.get("_bg_sync")
     if sync is not None:
         snap = sync.snapshot()
         if snap["status"] == "running":
             st.progress(snap["progress"] / 100)
-            st.info(snap["stage"])
+            st.info(f"⏳ {snap['stage']}")
+            st.caption("Refresh this page or click any button to update progress.")
         elif snap["status"] == "completed":
             st.session_state.sync_result = snap["result"]
             st.session_state.syncing = False
@@ -1032,10 +1023,8 @@ def _render_garmin_setup():
             st.session_state.syncing = False
             st.error(snap.get("error", "Sync failed"))
             st.rerun()
-    elif "sync_status" in st.session_state:
-        st.info(st.session_state.sync_status)
-    if st.session_state.get("syncing") and (sync is None or not sync.is_running):
-        st.warning("Sync in progress... this may take a few minutes.")
+    elif st.session_state.get("syncing"):
+        st.warning("Sync in progress... refresh to check status.")
 
     # ── Show sync results ────────────────────────────────────────────
     if st.session_state.get("sync_result"):
@@ -1060,3 +1049,12 @@ elif nav_page == "Profile":
     _render_profile()
 elif nav_page == "Settings":
     _render_garmin_setup()
+
+# Auto-refresh when sync is running in background
+sync = st.session_state.get("_bg_sync")
+if sync is not None:
+    snap = sync.snapshot()
+    if snap["status"] == "running":
+        import time as _time
+        _time.sleep(3)
+        st.rerun()
