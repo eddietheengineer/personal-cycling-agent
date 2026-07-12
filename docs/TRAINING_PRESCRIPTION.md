@@ -2367,5 +2367,145 @@ src/ui/
 6. **Integration testing** — End-to-end test of the full prescription pipeline
 7. **Garmin data field inventory** — Complete catalog of all available Garmin Connect API endpoints
 8. **Prompt template library** — Pre-built prompt templates for different prescription scenarios
-9. **Workout file generation** — How to generate .zwo/.fit files from prescription data
-10. **Notification system** — Push/email reminders for morning check-in
+9. ~~**Workout file generation**~~ — ✅ Complete (WorkoutFiles: ZWO XML spec, FIT SDK, fit-tool library, device export flow)
+10. ~~**Notification system**~~ — ✅ Complete (Notifications: Apprise multi-channel, APScheduler integration, preference system)
+
+---
+
+## Part 35: Workout File Generation (.zwo/.fit)
+
+**Research date:** 2026-07-12 (Round 11)
+
+### 35.1 ZWO (Zwift Workout) Format
+
+**Source:** Zwift workout file reference [link](https://github.com/h4l/zwift-workout-file-reference)
+
+XML-based. Root `<workout_file>` with metadata (`<name>`, `<sportType>`). Steps inside `<workout>`: `<Warmup>`, `<Cooldown>`, `<SteadyState>`, `<IntervalsT>`, `<Ramp>`, `<FreeRide>`, `<MaxEffort>`. Power in absolute watts (Zwift scales by user FTP). Duration in seconds. Coaching text via `<TextEvent>`.
+
+### 35.2 Garmin FIT Workout Format
+
+**Sources:** FIT SDK cookbook [link](https://developer.garmin.com/fit/cookbook/encoding-workout-files/); FIT SDK download [link](https://developer.garmin.com/fit/download/)
+
+Messages: `file_id_mesg` (type WORKOUT=0x20), `sport_mesg` (cycling=2), `workout_mesg`, `workout_step_mesg`, `workout_block_mesg`. Step fields: `type` (timed=0), `target_type` (power=6, functional_threshold_power=1), `target_value`, `min/max_target_value`, `step_duration_type` (time=0), `step_duration_value` (seconds).
+
+### 35.3 Python Libraries
+
+| Library | Read | Write | Format | License |
+|---------|------|-------|--------|--------|
+| **fit-tool** [link](https://pypi.org/project/fit-tool/) | ✅ | ✅ | FIT | Apache 2.0 |
+| python-fitparse [link](https://github.com/dtcooper/python-fitparse) | ✅ | ❌ | FIT | MIT |
+| **garmin-workouts** [link](https://github.com/mkuthan/garmin-workouts) | ✅ | ✅ | FIT + Garmin Connect | Apache 2.0 |
+| MRC_creator [link](https://github.com/helderlopes/MRC_creator) | ✅ | ✅ | .mrc, .erg, .zwo, .fit | MIT |
+
+**Recommendation:** `fit-tool` for FIT generation + `xml.etree.ElementTree` for ZWO XML.
+
+### 35.4 Prescription → File Mapping
+
+```
+Power: %FTP → absolute watts (power = ftp * percent / 100)
+Duration: minutes → seconds
+Warmup/Cooldown: → <Warmup>/<Cooldown> (ZWO) or workout_step_mesg (FIT)
+Steady state: → <SteadyState> (ZWO) or timed step with power range (FIT)
+Intervals: → <IntervalsT> with OnDuration/OffDuration/Repeat (ZWO) or workout_block_mesg (FIT)
+Ramps: → <Ramp> with PowerLow/PowerHigh (ZWO) or incremental steps (FIT)
+```
+
+### 35.5 Device Export Flow
+
+**Sources:** Zwift support [link](https://support.zwift.com/en/-sharing-importing-custom-workouts-\\(.zwo-files\\)-\\(cycling\\)-r1IlCybrQ); Garmin Connect IQ [link](https://developer.garmin.com/connect-iq/)
+
+```
+Garmin USB: .fit → GARMIN/NewFiles/ → device syncs
+Garmin Connect: garmin-workouts CLI → API upload → device syncs
+Zwift: .zwo → Documents/Zwift/Workouts/ → auto-discovered
+```
+
+---
+
+## Part 36: Notification System
+
+**Research date:** 2026-07-12 (Round 11)
+
+### 36.1 Channel Comparison
+
+| Channel | Self-hosted | Free | Latency | Setup |
+|---------|-------------|------|---------|-------|
+| **ntfy** [link](https://ntfy.sh/) | ✅ | ✅ | <1s | Low |
+| **Telegram** [link](https://levelup.gitconnected.com/building-a-telegram-bot-in-2024-with-python-17b483a7f6b9) | ❌ | ✅ | <2s | Medium |
+| **Pushover** [link](https://pushover.net/api) | ❌ | ❌ ($10) | <1s | Low |
+| **Email** [link](https://postmarkapp.com/blog/sending-mission-critical-emails-in-python-smtp-or-api) | ✅ | ✅ | 1-30min | Medium |
+| **Apprise** [link](https://github.com/caronc/apprise) | N/A | ✅ | Varies | Low |
+
+**Recommendation:** Apprise as abstraction layer [link](https://github.com/caronc/apprise) with ntfy as primary backend. 100+ notification backends in one API.
+
+```python
+from apprise import Apprise
+app = Apprise()
+app.add("ntfys://cycling-checkin/")
+app.add("tgram://BOT_TOKEN/CHAT_ID")
+app.notify("🚴 Time for morning check-in!", title="Cycling Agent")
+```
+
+### 36.2 Scheduling Integration
+
+**Source:** APScheduler CronTrigger [link](https://apscheduler.readthedocs.io/en/stable/modules/triggers/cron.html)
+
+```python
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
+
+scheduler = BackgroundScheduler(timezone="America/New_York")
+scheduler.add_job(
+    send_morning_reminder,
+    CronTrigger(hour=7, minute=0, jitter=300),
+    id="morning_checkin_reminder",
+    misfire_grace_time=3600,
+)
+```
+
+### 36.3 Preference System
+
+```python
+@dataclass
+class NotificationPreferences:
+    enabled: bool = True
+    channels: list[str] = field(default_factory=lambda: ["ntfy"])
+    reminder_time: str = "07:00"
+    timezone: str = "America/New_York"
+    quiet_hours_enabled: bool = False
+    quiet_hours_start: str = "22:00"
+    quiet_hours_end: str = "06:00"
+    skip_on_rest_days: bool = True
+    frequency: str = "daily"  # "daily" | "weekdays_only" | "custom"
+    reminder_escalation: bool = False  # second reminder after 30min
+```
+
+**Config-driven:** All preferences in `config.env`. Default to least annoying (`enabled=false`). Quiet hours override frequency. Rest day skip uses prescription engine's rest determination.
+
+### 36.4 Module Structure
+
+```
+src/notification/
+├── service.py       # NotificationService with Apprise
+├── preferences.py   # NotificationPreferences dataclass
+└── scheduler.py     # APScheduler integration
+```
+
+---
+
+## Part 37: Round 12 Deep-Dive Areas
+
+**Research date:** 2026-07-12 (Round 12 planning)
+
+### 37.1 Areas Identified for Round 12
+
+1. **MQTT integration** — How to publish prescription to smart devices (bike computer, phone)
+2. **Multi-athlete support** — How to extend the model for family/team use
+3. **Historical analysis** — How to review past prescriptions and outcomes to improve the model
+4. **Nutrition tracking UI** — Streamlit form for daily food log entry
+5. **Weekly report generation** — Automated weekly summary email or dashboard
+6. **Integration testing** — End-to-end test of the full prescription pipeline
+7. **Garmin data field inventory** — Complete catalog of all available Garmin Connect API endpoints
+8. **Prompt template library** — Pre-built prompt templates for different prescription scenarios
+9. **Error handling and resilience** — Graceful degradation when data sources fail
+10. **Performance benchmarking** — How to measure and optimize the analytics pipeline
