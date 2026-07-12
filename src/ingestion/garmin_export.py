@@ -336,7 +336,10 @@ def sync_routes_from_fit(db: CyclingDB, raw_dir: Path | None = None) -> dict[str
 
         # Check if the first record has position_lat (indicates GPS data present)
         first = records[0]
-        lat_field = first.get_field("position_lat")
+        try:
+            lat_field = first.get_field("position_lat")
+        except KeyError:
+            lat_field = None
         if lat_field is None or lat_field.value is None:
             counts["processed"] += 1
             counts["without_gps"] += 1
@@ -345,8 +348,14 @@ def sync_routes_from_fit(db: CyclingDB, raw_dir: Path | None = None) -> dict[str
         # Extract (lat, lon) pairs, converting from FIT integer format
         points: list[tuple[float, float]] = []
         for rec in records:
-            lat_field = rec.get_field("position_lat")
-            lon_field = rec.get_field("position_long")
+            try:
+                lat_field = rec.get_field("position_lat")
+            except KeyError:
+                lat_field = None
+            try:
+                lon_field = rec.get_field("position_long")
+            except KeyError:
+                lon_field = None
             if lat_field is not None and lat_field.value is not None and lon_field is not None and lon_field.value is not None:
                 lat = lat_field.value / 1e7
                 lon = lon_field.value / 1e7

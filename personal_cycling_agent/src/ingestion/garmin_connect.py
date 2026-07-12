@@ -457,6 +457,12 @@ def _fetch_activity_streams(
 
         first_ts: float | None = None
 
+        def _get_field(frame, name):
+            try:
+                return frame.get_field(name)
+            except KeyError:
+                return None
+
         with fitdecode.FitReader(str(fit_path)) as fit:
             for frame in fit:
                 if not isinstance(frame, fitdecode.FitDataMessage):
@@ -464,7 +470,7 @@ def _fetch_activity_streams(
                 if frame.name != "record":
                     continue
 
-                ts_field = frame.get_field("timestamp")
+                ts_field = _get_field(frame, "timestamp")
                 if ts_field is None or ts_field.value is None:
                     continue
                 ts = ts_field.value
@@ -478,27 +484,27 @@ def _fetch_activity_streams(
 
                 elapsed = float(ts) - first_ts
 
-                pwr_field = frame.get_field("power")
+                pwr_field = _get_field(frame, "power")
                 if pwr_field is not None and pwr_field.value is not None:
                     power_values.append((elapsed, float(pwr_field.value)))
 
-                hr_field = frame.get_field("heart_rate")
+                hr_field = _get_field(frame, "heart_rate")
                 if hr_field is not None and hr_field.value is not None:
                     hr_values.append((elapsed, float(hr_field.value)))
 
-                cad_field = frame.get_field("cadence")
+                cad_field = _get_field(frame, "cadence")
                 if cad_field is not None and cad_field.value is not None:
                     cadence_values.append((elapsed, float(cad_field.value)))
 
-                speed_field = frame.get_field("enhanced_speed")
+                speed_field = _get_field(frame, "enhanced_speed")
                 if speed_field is None:
-                    speed_field = frame.get_field("speed")
+                    speed_field = _get_field(frame, "speed")
                 if speed_field is not None and speed_field.value is not None:
                     speed_values.append((elapsed, float(speed_field.value)))
 
-                alt_field = frame.get_field("enhanced_altitude")
+                alt_field = _get_field(frame, "enhanced_altitude")
                 if alt_field is None:
-                    alt_field = frame.get_field("altitude")
+                    alt_field = _get_field(frame, "altitude")
                 if alt_field is not None and alt_field.value is not None:
                     altitude_values.append((elapsed, float(alt_field.value)))
 
@@ -817,5 +823,57 @@ if __name__ == "__main__":
     if len(_sys.argv) > 1:
         days = int(_sys.argv[1])
 
-    counts = sync_garmin(days=days)
-    print(f"Done. Wellness: {counts['wellness_records']}, With HRV: {counts['with_hrv']}")
+    email, password, tokenstore = _get_garmin_credentials()
+    if not email or not password:
+        logger.error("Garmin credentials not set. Run setup.py first.")
+        raise SystemExit(1)
+
+    from garmin_auth import GarminAuth
+    auth = GarminAuth(email=email, password=password, token_dir=tokenstore, return_on_mfa=True)
+    result = auth.login()
+
+    if result == "needs_mfa":
+        code = input("Enter Garmin OTP: ").strip()
+        client = auth.resume_login(code)
+    elif result is not None:
+        client = result
+    else:
+        logger.error("Login failed")
+        raise SystemExit(1)
+
+    db_path = str(config.db_path("cycling_agent.sqlite"))
+    db = CyclingDB(db_path)
+    last_synced = db.get_last_synced("garmin_wellness")
+    today = datetime.now().date()
+    if last_synced:
+        try:
+            last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
+        except ValueError:
+            last_date = today - timedelta(days=1)
+    else:
+        last_date = today - timedelta(days=1)
+
+    total_stored = 0
+    total_with_hrv = 0
+    current_date = last_date - timedelta(days=1)
+    days_synced = 0
+
+    while days_synced < days:
+        target_str = current_date.strftime("%Y-%m-%d")
+        logger.info(f"Syncing wellness for {target_str}")
+        record = fetch_wellness_for_date(client, target_str)
+        if record is None:
+            logger.info(f"No wellness data for {target_str}")
+            db.set_last_synced("garmin_wellness", target_str)
+        else:
+            stored = db.store_wellness([record])
+            db.set_last_synced("garmin_wellness", target_str)
+            with_hrv = 1 if record.get("rmssd") is not None else 0
+            total_stored += stored
+            total_with_hrv += with_hrv
+        current_date -= timedelta(days=1)
+        days_synced += 1
+        time.sleep(0.5)
+
+    db.close()
+    print(f"Done. Wellness: {total_stored}, With HRV: {total_with_hrv}")
