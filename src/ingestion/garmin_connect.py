@@ -577,14 +577,20 @@ def sync_activities(
     last_synced = db.get_last_synced("garmin_activities")
 
     today = datetime.now().date()
-    if last_synced:
-        try:
-            last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
-        except ValueError:
-            logger.warning(f"Unparseable last_synced value '{last_synced}', "
-                           "starting from yesterday")
+
+    if unbounded:
+        # For unbounded sync, continue from last sync point
+        if last_synced:
+            try:
+                last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
+            except ValueError:
+                logger.warning(f"Unparseable last_synced value '{last_synced}', "
+                               "starting from yesterday")
+                last_date = today - timedelta(days=1)
+        else:
             last_date = today - timedelta(days=1)
     else:
+        # For incremental sync, always start from yesterday
         last_date = today - timedelta(days=1)
 
     reset_rate_limiter()
@@ -757,12 +763,16 @@ def sync_garmin(
     last_synced = db.get_last_synced("garmin_wellness")
 
     today = datetime.now().date()
-    if last_synced:
-        try:
-            last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
-        except ValueError:
-            logger.warning(f"Unparseable last_synced value '{last_synced}', "
-                           "starting from yesterday")
+
+    if unbounded:
+        if last_synced:
+            try:
+                last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
+            except ValueError:
+                logger.warning(f"Unparseable last_synced value '{last_synced}', "
+                               "starting from yesterday")
+                last_date = today - timedelta(days=1)
+        else:
             last_date = today - timedelta(days=1)
     else:
         last_date = today - timedelta(days=1)
