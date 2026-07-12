@@ -1013,7 +1013,6 @@ def _render_garmin_setup():
         if snap["status"] == "running":
             st.progress(snap["progress"] / 100)
             st.info(f"⏳ {snap['stage']}")
-            st.caption("Refresh this page or click any button to update progress.")
         elif snap["status"] == "completed":
             st.session_state.sync_result = snap["result"]
             st.session_state.syncing = False
