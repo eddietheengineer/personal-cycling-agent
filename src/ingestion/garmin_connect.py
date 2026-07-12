@@ -17,7 +17,7 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
 from src import config
@@ -304,7 +304,7 @@ def fetch_wellness_for_date(
     """
     rl = _rate_limiter
     try:
-        # Get basic stats (RHR, steps, sleep, stress)
+        # Get basic stats (RHR, steps, stress)
         rl.wait()
         stats = _retry_on_rate_limit(lambda: client.get_stats(date_str))
 
@@ -395,7 +395,6 @@ def fetch_wellness_for_date(
 
     except Exception as e:
         logger.debug(f"Failed to fetch wellness for {date_str}: {e}")
-
 
 def _fetch_activity_streams(
     client: "garminconnect.Garmin",
@@ -815,8 +814,11 @@ def sync_garmin(
     progress_callback: "Callable[[int, str], None] | None" = None,
 ) -> dict[str, int]:
     """
-    Sync wellness data from Garmin Connect, processing up to *days* days
-    going backwards from the last sync point.
+    Sync wellness data from Garmin Connect using bulk fetching where possible.
+
+    Bulk fetches weight, body composition, and steps for the entire date range
+    in a single API call each. Then fetches HRV and sleep data per-day (these
+    are per-day only in the Garmin API).
 
     When *unbounded* is True, syncs continuously until rate-limited
     (no day limit).
@@ -878,38 +880,183 @@ def sync_garmin(
     client = _create_client(tokenstore)
     logger.info("Authenticated with Garmin Connect")
 
-    total_stored = 0
-    total_with_hrv = 0
+    # Build list of dates to sync
+    sync_dates: list[date] = []
     current_date = last_date - timedelta(days=1)
     days_synced = 0
-
     while unbounded or days_synced < days:
-        target_str = current_date.strftime("%Y-%m-%d")
+        sync_dates.append(current_date)
+        current_date -= timedelta(days=1)
+        days_synced += 1
 
-        logger.info(f"Syncing wellness for {target_str} (last synced: {last_synced or 'never'})")
+    if not sync_dates:
+        db.close()
+        return {"wellness_records": 0, "with_hrv": 0}
 
+    start_date = sync_dates[-1]
+    end_date = sync_dates[0]
+    logger.info(
+        f"Syncing wellness for {len(sync_dates)} days: "
+        f"{start_date} to {end_date}"
+    )
+
+    # --- Bulk fetch weight, body composition, steps ---
+    weight_by_date: dict[str, float] = {}
+    steps_by_date: dict[str, int] = {}
+
+    # Bulk weigh-ins
+    try:
+        _rate_limiter.wait()
+        weigh_ins = _retry_on_rate_limit(
+            lambda: client.get_weigh_ins(
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d"),
+            )
+        )
+        for entry in weigh_ins:
+            d = entry.get("dateTimestamp")
+            if d:
+                date_str = datetime.fromtimestamp(d / 1000).strftime("%Y-%m-%d")
+                w = entry.get("weightGrams")
+                if w and date_str not in weight_by_date:
+                    weight_by_date[date_str] = w / 1000.0
+    except Exception as e:
+        logger.warning(f"Failed to bulk fetch weigh-ins: {e}")
+
+    # Bulk body composition
+    try:
+        _rate_limiter.wait()
+        body = _retry_on_rate_limit(
+            lambda: client.get_body_composition(
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d"),
+            )
+        )
+        if isinstance(body, list):
+            for entry in body:
+                d = entry.get("dateTimestamp")
+                if d:
+                    date_str = datetime.fromtimestamp(d / 1000).strftime("%Y-%m-%d")
+                    w = entry.get("weight")
+                    if w and date_str not in weight_by_date:
+                        weight_by_date[date_str] = float(w)
+    except Exception as e:
+        logger.warning(f"Failed to bulk fetch body composition: {e}")
+
+    # Bulk steps (28-day chunks)
+    try:
+        _rate_limiter.wait()
+        steps_data = _retry_on_rate_limit(
+            lambda: client.get_daily_steps(
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d"),
+            )
+        )
+        for entry in steps_data:
+            d = entry.get("calendarDate")
+            if d:
+                steps_by_date[d] = entry.get("totalSteps")
+    except Exception as e:
+        logger.warning(f"Failed to bulk fetch steps: {e}")
+
+    logger.info(
+        f"Bulk fetch complete: {len(weight_by_date)} weight entries, "
+        f"{len(steps_by_date)} step entries"
+    )
+
+    if progress_callback is not None:
+        progress_callback(10, "Bulk data fetched, now fetching HRV and sleep...")
+
+    # --- Per-day fetch HRV and sleep ---
+    total_stored = 0
+    total_with_hrv = 0
+
+    for i, d in enumerate(sync_dates):
+        target_str = d.strftime("%Y-%m-%d")
+
+        # Fetch HRV
+        rmssd = None
         try:
-            record = fetch_wellness_for_date(client, target_str)
+            _rate_limiter.wait()
+            hrv_data = _retry_on_rate_limit(lambda: client.get_hrv_data(target_str))
+            if hrv_data and "hrvSummary" in hrv_data:
+                rmssd = hrv_data["hrvSummary"].get("overnightHRVValue")
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during wellness sync: {e}")
+            logger.warning(f"Rate limited during HRV sync: {e}")
             db.set_last_synced("garmin_wellness", target_str)
             db.close()
             return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch HRV for {target_str}: {e}")
 
-        if record is None:
-            logger.info(f"No wellness data for {target_str}")
-            # Still advance the sync pointer so we don't retry forever
+        # Fetch sleep
+        sleep_score = None
+        sleep_hours = None
+        try:
+            _rate_limiter.wait()
+            sleep_data = _retry_on_rate_limit(lambda: client.get_sleep_data(target_str))
+            if sleep_data:
+                sleep_score = sleep_data.get("sleepScore")
+                sleep_ms = sleep_data.get("sleepTimeSeconds", 0)
+                if sleep_ms:
+                    sleep_hours = sleep_ms / 3600.0
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during sleep sync: {e}")
             db.set_last_synced("garmin_wellness", target_str)
-            current_date -= timedelta(days=1)
-            days_synced += 1
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch sleep for {target_str}: {e}")
+
+        # Fetch stats for RHR and stress
+        resting_hr = None
+        stress = None
+        try:
+            _rate_limiter.wait()
+            stats = _retry_on_rate_limit(lambda: client.get_stats(target_str))
+            if stats:
+                resting_hr = stats.get("restingHeartRate")
+                if stats.get("allDayStress"):
+                    stress = stats["allDayStress"].get("averageStressLevel")
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during stats sync: {e}")
+            db.set_last_synced("garmin_wellness", target_str)
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch stats for {target_str}: {e}")
+
+        # Build wellness record from bulk + per-day data
+        weight = weight_by_date.get(target_str)
+        steps = steps_by_date.get(target_str)
+
+        if not any([resting_hr, rmssd, stress, steps, weight]):
+            logger.info(f"No wellness data for {target_str}")
+            db.set_last_synced("garmin_wellness", target_str)
+            if progress_callback is not None:
+                pct = 10 + int(i / max(len(sync_dates), 1) * 80)
+                progress_callback(min(pct, 95), f"Wellness: {target_str} ({i+1}/{len(sync_dates)} days)")
             time.sleep(0.5)
             continue
+
+        record = {
+            "date": target_str,
+            "weight": weight,
+            "resting_hr": resting_hr,
+            "rmssd": rmssd,
+            "stress": stress,
+            "sleep_score": sleep_score,
+            "sleep_hours": sleep_hours,
+            "steps": steps,
+        }
 
         stored = db.store_wellness([record])
         db.set_last_synced("garmin_wellness", target_str)
 
-        with_hrv = 1 if record.get("rmssd") is not None else 0
+        with_hrv = 1 if rmssd is not None else 0
         total_stored += stored
         total_with_hrv += with_hrv
 
@@ -919,11 +1066,9 @@ def sync_garmin(
         )
 
         if progress_callback is not None:
-            pct = 10 + int(days_synced / max(days, 1) * 30)
-            progress_callback(min(pct, 40), f"Wellness: {target_str} ({days_synced}/{days} days)")
+            pct = 10 + int(i / max(len(sync_dates), 1) * 80)
+            progress_callback(min(pct, 95), f"Wellness: {target_str} ({i+1}/{len(sync_dates)} days)")
 
-        current_date -= timedelta(days=1)
-        days_synced += 1
         time.sleep(0.5)
 
     db.close()
@@ -931,7 +1076,6 @@ def sync_garmin(
         "wellness_records": total_stored,
         "with_hrv": total_with_hrv,
     }
-
 
 if __name__ == "__main__":
     import sys as _sys
