@@ -1085,7 +1085,6 @@ def _render_garmin_setup():
             )
             st.session_state.syncing = True
             st.session_state.sync_result = None
-            st.rerun()
         else:
             st.info("Sync already running in background...")
 
@@ -1099,7 +1098,6 @@ def _render_garmin_setup():
             )
             st.session_state.syncing = True
             st.session_state.sync_result = None
-            st.rerun()
         else:
             st.info("Sync already running in background...")
 
@@ -1113,7 +1111,6 @@ def _render_garmin_setup():
             )
             st.session_state.syncing = True
             st.session_state.sync_result = None
-            st.rerun()
         else:
             st.info("Sync already running in background...")
 
@@ -1183,7 +1180,6 @@ def _render_garmin_setup():
             )
             st.session_state.syncing = True
             st.session_state.sync_result = None
-            st.rerun()
         else:
             st.info("Sync already running in background...")
 
