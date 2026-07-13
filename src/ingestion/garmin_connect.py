@@ -874,7 +874,9 @@ def sync_garmin(
                 last_date = today - timedelta(days=1)
         else:
             last_date = today - timedelta(days=1)
-        days = max(days, (today - last_date).days)
+        # Use the requested days limit, capped by the gap since last sync
+        gap = max(0, (today - last_date).days)
+        days = min(days, gap)
         last_date = today
 
     reset_rate_limiter()
