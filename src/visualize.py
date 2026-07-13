@@ -1097,6 +1097,7 @@ def _render_garmin_setup():
                         # Keep in mfa_pending so user can retry
                         st.session_state.garmin_auth_instance = auth_inst
 
+    show_signin = (not has_credentials) or (auth_state == "error") or (auth_state == "mfa_pending" and auth_instance is None)
     # ── Sign-in form (when no credentials, in error state, or MFA session lost) ──
     if show_signin:
         with st.form("garmin_signin", clear_on_submit=False):

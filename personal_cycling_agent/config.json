@@ -1,10 +1,13 @@
 {
   "name": "Personal Cycling Agent",
-  "version": "0.0.44",
+  "version": "0.0.45",
   "slug": "personal_cycling_agent",
   "description": "Cycling telemetry analytics with Garmin Connect sync and AI insights",
   "url": "https://github.com/eddietheengineer/personal-cycling-agent",
-  "arch": ["amd64", "aarch64"],
+  "arch": [
+    "amd64",
+    "aarch64"
+  ],
   "ingress": true,
   "ingress_port": 8501,
   "ingress_stream": true,
