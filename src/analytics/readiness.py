@@ -509,7 +509,7 @@ def assess_readiness(
             f"{kiviniemi_rec}"
         )
     else:
-        recommendation = kivinieme_rec
+        recommendation = kiviniemi_rec
 
     # Confidence based on data availability
     data_points = sum([

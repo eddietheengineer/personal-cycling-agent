@@ -273,11 +273,12 @@ def run_analyze() -> dict:
 
                     # Update 3D IR model
                     if act_date is not None:
+                        act_date_only = act_date.date() if hasattr(act_date, 'date') else act_date
                         three_dim_result = three_dim_model.update(
                             ss_result.ss_cp, ss_result.ss_wp, ss_result.ss_pmax,
-                            current_date=act_date, last_date=last_three_dim_date
+                            current_date=act_date_only, last_date=last_three_dim_date
                         )
-                        last_three_dim_date = act_date
+                        last_three_dim_date = act_date_only
                 except Exception as e:
                     logger.warning(f"Strain score/3D IR failed for {activity_id}: {e}")
 
@@ -492,11 +493,11 @@ def run_prescribe(analysis: dict | None = None) -> str:
 
         inp = PrescriptionInput(
             rmssd=readiness.get("rmssd"),
-            rmssd_baseline=readiness.get("rmssd_mean_30d"),
-            rmssd_std=readiness.get("rmssd_std_30d"),
+            rmssd_baseline=readiness.get("rmssd_mean"),
+            rmssd_std=readiness.get("rmssd_std"),
             resting_hr=readiness.get("resting_hr"),
-            rhr_baseline=readiness.get("rhr_mean_30d"),
-            rhr_std=readiness.get("rhr_std_30d"),
+            rhr_baseline=readiness.get("rhr_mean"),
+            rhr_std=readiness.get("rhr_std"),
             ctl=training_load.get("ctl"),
             atl=training_load.get("atl"),
             acwr=training_load.get("acwr"),

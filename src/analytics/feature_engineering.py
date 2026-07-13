@@ -54,7 +54,7 @@ def compute_features(
                 w_prime_min_balance=("w_prime_min_balance", "min"),
                 decoupling_drift=("decoupling_drift", "mean"),
             ).reset_index()
-            daily_activity["date"] = pd.to_datetime(daily_activity["index"])
+            daily_activity["date"] = pd.to_datetime(daily_activity.columns[0])
             daily_activity = daily_activity.set_index("date")
             df = df.join(daily_activity, rsuffix="_activity", how="left")
 

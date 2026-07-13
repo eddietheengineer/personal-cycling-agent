@@ -171,11 +171,11 @@ def compute_strain_score(
 
 def _compute_normalized_power(power: np.ndarray) -> float:
     """Compute Normalized Power from power samples."""
-    if len(power) < 4:
+    if len(power) < 10:
         return float(np.mean(power))
     cumsum = np.cumsum(power)
     cumsum = np.insert(cumsum, 0, 0.0)
-    ma = (cumsum[4:] - cumsum[:-4]) / 4.0
+    ma = (cumsum[10:] - cumsum[:-10]) / 10.0
     return float(np.mean(ma ** 4)) ** 0.25
 
 
