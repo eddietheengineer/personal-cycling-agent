@@ -20,7 +20,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import numpy as np
 
 PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -50,6 +50,16 @@ from src.analytics.power_metrics import (
 )
 from src.analytics.training_load import (
     compute_training_load, compute_training_load_history, training_load_to_dict
+)
+from src.analytics.strain_score import estimate_pmax, compute_strain_score, pmax_to_dict, strain_score_to_dict
+from src.analytics.three_dim_ir import ThreeDIMModel, three_dim_to_dict
+from src.analytics.feedback_loop import analyze_post_ride_feedback, feedback_to_dict
+from src.analytics.individual_model import IndividualizedModel
+from src.analytics.feature_engineering import compute_features
+from src.analytics.recovery_model import IndividualRecoveryModel
+from src.analytics.prescription_engine import (
+    PrescriptionInput,
+    generate_prescription,
 )
 from src.agent.prompt_builder import build_system_prompt
 from src.agent.llm_client import generate_with_retries
@@ -89,7 +99,10 @@ def run_analyze() -> dict:
 
         wellness_dicts = [dict(r) for r in wellness_records]
         latest_date = wellness_dicts[0].get("date", "")
-        readiness_result = assess_readiness(wellness_dicts, target_date=latest_date)
+        # Fetch activity metrics for load-aware readiness
+        metrics_rows = db.conn.execute('SELECT * FROM activity_metrics').fetchall()
+        activity_metrics_dicts = [dict(r) for r in metrics_rows]
+        readiness_result = assess_readiness(wellness_dicts, activity_metrics_dicts, target_date=latest_date)
         readiness_dict = readiness_to_dict(readiness_result)
         logger.info(f"Readiness: {readiness_result.state.value} - {readiness_result.recommendation}")
 
@@ -110,7 +123,29 @@ def run_analyze() -> dict:
         # Equivalent EWMA: CP_today = CP_yesterday + (new_cp - CP_yesterday) * alpha
         # where alpha = 1 - 0.5^(1/28) ≈ 0.0247 per day
 
-        current_ftp = 0.0
+        # Auto-calculate Critical Power from power data.
+        # Bootstrap with a reasonable default if no prior CP is known,
+        # then let estimate_critical_power() refine it from PDC efforts.
+        current_cp = float(os.environ.get("CP_WATTS", 0))
+        if current_cp <= 0:
+            try:
+                profile_path = config.user_profile_path()
+                if profile_path.exists():
+                    for line in profile_path.read_text().splitlines():
+                        line = line.strip()
+                        if line.startswith("- FTP (watts):") or line.startswith("- Critical Power (watts):"):
+                            val = line.split(":")[1].strip()
+                            m = re.search(r"(\d+)", val)
+                            if m:
+                                current_cp = float(m.group(1))
+                            break
+            except Exception:
+                pass
+        # If still no CP, bootstrap with a reasonable default to enable PDC computation
+        if current_cp <= 0:
+            current_cp = 250.0  # bootstrap default; will be refined by CP estimation
+            logger.info("No CP set, bootstrapping with 250W default")
+
         last_activity_date: datetime | None = None
         cp_data_points: list[dict] = []
 
@@ -120,6 +155,10 @@ def run_analyze() -> dict:
         decoupling_results = []
         thresholds_results = []
         tss_records = []
+        strain_score_results = []
+        pmax_results = []
+        three_dim_model = ThreeDIMModel()
+        last_three_dim_date: date | None = None
 
         for act in activity_dicts:
             activity_id = act.get("id", "")
@@ -150,17 +189,17 @@ def run_analyze() -> dict:
             # Decay FTP based on days since last activity
             if last_activity_date is not None and act_date is not None:
                 days_gap = (act_date - last_activity_date).days
-                if days_gap > 0 and current_ftp > 0:
+                if days_gap > 0 and current_cp > 0:
                     # Exponential decay: FTP_new = FTP_old * 0.5^(days/half_life)
                     decay = 0.5 ** (days_gap / _CP_HALF_LIFE_DAYS)
-                    current_ftp = max(current_ftp * decay, 50.0)
+                    current_cp = max(current_cp * decay, 50.0)
 
             # Compute power metrics first — we need PDC for CP estimation
             pm_result = None
             if power_samples:
                 try:
                     pm_result = compute_power_metrics(
-                        activity_id, power_samples, duration, current_ftp
+                        activity_id, power_samples, duration, current_cp
                     )
                     power_metrics_results.append(power_metrics_to_dict(pm_result))
                     tss_records.append({
@@ -192,24 +231,24 @@ def run_analyze() -> dict:
                 # alpha = 1 - 0.5^(1/28) ≈ 0.0247 per day (same as decay rate)
                 if new_cp > 0:
                     alpha = _CP_DECAY_FACTOR
-                    current_ftp = current_ftp * (1 - alpha) + new_cp * alpha
+                    current_cp = current_cp * (1 - alpha) + new_cp * alpha
                     current_w_prime = new_w_prime
                     logger.info(
-                        f"FTP updated to {current_ftp:.0f}W, W'={current_w_prime:.0f}J "
+                        f"FTP updated to {current_cp:.0f}W, W'={current_w_prime:.0f}J "
                         f"(from {len(cp_data_points)} activities)"
                     )
 
-            if act_date is not None:
-                last_activity_date = act_date
-
-            # W' (needs power) — use W' capacity from CP regression if available
+                    logger.info(
+                        f"CP updated to {current_cp:.0f}W, W'={current_w_prime:.0f}J "
+                        f"(from {len(cp_data_points)} activities)"
+                    )
             wp_result = None
             if power_samples:
                 try:
                     wp_cap = current_w_prime / 1000.0 if current_w_prime > 0 else None
                     wp_result = estimate_w_prime_from_activity(
                         activity_id, power_samples,
-                        cp_estimate=current_ftp,
+                        cp_estimate=current_cp,
                         w_prime_capacity=wp_cap,
                     )
                     w_prime_results.append(w_prime_to_dict(wp_result))
@@ -241,10 +280,37 @@ def run_analyze() -> dict:
                 except Exception as e:
                     logger.warning(f"Threshold analysis failed for {activity_id}: {e}")
 
+            # --- Strain Score & Pmax ---
+            if pm_result is not None and current_cp > 0:
+                try:
+                    wp_joules = (wp_result.w_prime_capacity * 1000) if wp_result and wp_result.w_prime_capacity else current_cp * 60
+                    pmax_result = estimate_pmax(pm_result.power_duration_curve, current_cp, wp_joules)
+                    pmax_results.append(pmax_to_dict(pmax_result))
+
+                    ss_result = compute_strain_score(
+                        power_samples, duration, current_cp, wp_joules,
+                        pmax_result.pmax, current_cp
+                    )
+                    strain_score_results.append(strain_score_to_dict(ss_result))
+
+                    # Update 3D IR model
+                    if act_date is not None and ss_result is not None:
+                        act_date_only = act_date.date() if hasattr(act_date, 'date') else act_date
+                        three_dim_result = three_dim_model.update(
+                            ss_cp=ss_result.ss_cp,
+                            ss_wp=ss_result.ss_wp,
+                            ss_pmax=ss_result.ss_pmax,
+                            current_date=act_date_only,
+                            last_date=last_three_dim_date,
+                        )
+                        last_three_dim_date = act_date_only
+                except Exception as e:
+                    logger.warning(f"Strain score/3D IR failed for {activity_id}: {e}")
+
             # Store computed metrics in DB (separate from raw data)
             if pm_result is not None:
                 db.store_activity_metrics(activity_id, {
-                    "ftp_used": current_ftp,
+                    "cp_used": current_cp,
                     "normalized_power": pm_result.normalized_power,
                     "intensity_factor": pm_result.intensity_factor,
                     "tss": pm_result.tss,
@@ -260,14 +326,103 @@ def run_analyze() -> dict:
         training_load_history = []
         if tss_records:
             try:
-                tl = compute_training_load(tss_records, current_ftp)
+                tl = compute_training_load(tss_records, current_cp)
                 training_load_result = training_load_to_dict(tl)
                 training_load_history = compute_training_load_history(tss_records)
             except Exception as e:
                 logger.warning(f"Training load computation failed: {e}")
 
+        # --- ML Model Training ---
+        ml_result = {}
+        try:
+            wellness_dicts = [dict(r) for r in wellness_records]
+            metrics_rows = db.conn.execute('SELECT * FROM activity_metrics').fetchall()
+            activity_metrics_dicts = [dict(r) for r in metrics_rows]
+
+            features_df = compute_features(
+                wellness_dicts, activity_metrics_dicts, morning_checkins=None
+            )
+
+            model_path = VAULT / "data" / "recovery_model.json"
+            model = IndividualRecoveryModel()
+
+            if model.load(model_path):
+                logger.info(f"Loaded existing model: {model.metrics.status} ({model.metrics.n_samples} samples)")
+            else:
+                logger.info("Starting fresh model (cold start)")
+
+            if not features_df.empty:
+                if "resting_hr" in features_df.columns:
+                    targets = features_df["resting_hr"].shift(-1)
+                    train_result = model.train(features_df, targets)
+                    model.save(model_path)
+                    ml_result = {"model": train_result, "features": len(features_df.columns)}
+                    logger.info(f"ML model trained: {train_result}")
+                else:
+                    logger.info("No resting_hr data for ML training target")
+            else:
+                logger.info("No features available for ML training")
+
+        except Exception as e:
+            import traceback
+            logger.warning(f"ML model training failed: {e}")
+            logger.debug(traceback.format_exc())
+            ml_result = {"error": str(e)}
+
+        # --- Individualized Model (Rothschild approach) ---
+        indiv_result = {}
+        try:
+            indiv_path = VAULT / "data" / "individual_model.json"
+            indiv_model = IndividualizedModel()
+
+            if indiv_model.load(indiv_path):
+                logger.info(f"Loaded individual model: {indiv_model.metrics.status} ({indiv_model.metrics.n_samples} samples)")
+            else:
+                logger.info("Starting fresh individual model")
+
+            if not features_df.empty:
+                if "resting_hr" in features_df.columns:
+                    targets = features_df["resting_hr"].shift(-1)
+                    train_result = indiv_model.train(features_df, targets)
+                    indiv_model.save(indiv_path)
+                    indiv_result = {"model": train_result, "weights": indiv_model.get_feature_importance()}
+                    logger.info(f"Individual model trained: {train_result}")
+        except Exception as e:
+            logger.warning(f"Individual model training failed: {e}")
+            indiv_result = {"error": str(e)}
+
+        # --- Post-Ride Feedback Loop ---
+        feedback_result = {}
+        try:
+            # Analyze most recent activity against a hypothetical plan
+            if power_metrics_results:
+                latest_pm = power_metrics_results[-1]
+                planned_tss = 100.0  # Default planned TSS
+                actual_tss = latest_pm.get("tss", 0)
+                planned_zones = {"Z1": 20.0, "Z2": 50.0, "Z3": 15.0, "Z4": 10.0, "Z5": 5.0}
+                actual_zones = latest_pm.get("time_in_zones", {})
+                planned_intensity = 0.7
+                actual_intensity = latest_pm.get("intensity_factor", 0)
+
+                fb = analyze_post_ride_feedback(
+                    planned_tss=planned_tss,
+                    actual_tss=actual_tss,
+                    planned_zones=planned_zones,
+                    actual_zones=actual_zones,
+                    planned_intensity=planned_intensity,
+                    actual_intensity=actual_intensity,
+                    decoupling_drift=dc_result.drift_pct if dc_result else None,
+                    w_prime_balance=wp_result.min_balance_pct if wp_result else None,
+                )
+                feedback_result = feedback_to_dict(fb)
+                if fb.plan_mutated:
+                    logger.info(f"Feedback: {fb.reason}")
+        except Exception as e:
+            logger.warning(f"Feedback loop failed: {e}")
+
+
     result = {
-        "ftp": current_ftp,
+        "cp": current_cp,
         "readiness": readiness_dict,
         "training_load": training_load_result,
         "training_load_history": training_load_history,
@@ -277,6 +432,12 @@ def run_analyze() -> dict:
         "durability": durability_results,
         "decoupling": decoupling_results,
         "thresholds": thresholds_results,
+        "ml_model": ml_result,
+        "strain_scores": strain_score_results,
+        "pmax_estimates": pmax_results,
+        "three_dim_ir": three_dim_model.to_dict(),
+        "individual_model": indiv_result,
+        "feedback": feedback_result,
     }
 
     # Save analytics result for the prompt builder
@@ -284,6 +445,7 @@ def run_analyze() -> dict:
     result_path.parent.mkdir(parents=True, exist_ok=True)
     with open(result_path, "w") as f:
         json.dump(result, f, indent=2)
+
 
     logger.info("Analytics complete")
     return result
@@ -301,6 +463,85 @@ def run_prescribe(analysis: dict | None = None) -> str:
             raise SystemExit(1)
         with open(result_path, "r") as f:
             analysis = json.load(f)
+
+    # --- ML Model Prediction ---
+    ml_prediction = None
+    try:
+        model_path = VAULT / "data" / "recovery_model.json"
+        if model_path.exists():
+            from src.analytics.feature_engineering import compute_features
+
+            model = IndividualRecoveryModel()
+            if model.load(model_path):
+                # Build features from latest wellness data
+                readiness = analysis.get("readiness", {})
+                training_load = analysis.get("training_load", {})
+
+                wellness_for_ml = [{
+                    "date": readiness.get("date", ""),
+                    "rmssd": readiness.get("rmssd"),
+                    "resting_hr": readiness.get("resting_hr"),
+                    "stress": readiness.get("stress"),
+                    "sleep_score": readiness.get("sleep_score"),
+                    "sleep_hours": readiness.get("sleep_hours"),
+                    "body_battery_end": readiness.get("body_battery_end"),
+                }]
+                activity_for_ml = [{
+                    "start_date": readiness.get("date", ""),
+                    "tss": training_load.get("atl", 0),
+                    "np": 0, "ifr": 0,
+                    "w_prime_min_balance": 50,
+                    "decoupling_drift": 0,
+                }]
+
+                features_df = compute_features(wellness_for_ml, activity_for_ml)
+                if not features_df.empty:
+                    pred = model.predict(features_df)
+                    ml_prediction = {
+                        "predicted_prs": pred.predicted_prs,
+                        "confidence": pred.confidence,
+                        "limiting_factor": pred.limiting_factor,
+                        "status": model.metrics.status,
+                        "n_samples": model.metrics.n_samples,
+                    }
+                    logger.info(f"ML prediction: PRS={pred.predicted_prs:.1f} "
+                               f"(confidence={pred.confidence:.2f}, "
+                               f"limiting={pred.limiting_factor})")
+    except Exception as e:
+        logger.warning(f"ML prediction failed: {e}")
+
+    # --- Prescription Engine (3-index scoring + guardrails) ---
+    prescription_engine_result = None
+    try:
+        readiness = analysis.get("readiness", {})
+        training_load = analysis.get("training_load", {})
+
+        inp = PrescriptionInput(
+            rmssd=readiness.get("rmssd"),
+            rmssd_baseline=readiness.get("rmssd_mean"),
+            rmssd_std=readiness.get("rmssd_std"),
+            resting_hr=readiness.get("resting_hr"),
+            rhr_baseline=readiness.get("rhr_mean"),
+            rhr_std=readiness.get("rhr_std"),
+            ctl=training_load.get("ctl"),
+            atl=training_load.get("atl"),
+            acwr=training_load.get("acwr"),
+            planned_tss=80.0,  # default
+        )
+
+        output = generate_prescription(inp)
+        prescription_engine_result = {
+            "readiness_assessment": output.readiness_assessment,
+            "daily_plan": output.daily_plan,
+            "safety_notes": output.safety_notes,
+        }
+        logger.info(f"Prescription engine: score={output.readiness_assessment.get('composite_score', 'N/A')}")
+    except Exception as e:
+        logger.warning(f"Prescription engine failed: {e}")
+
+    # Enrich analysis with ML and engine results
+    analysis["ml_prediction"] = ml_prediction
+    analysis["prescription_engine"] = prescription_engine_result
 
     # Build the prompt
     prompt = build_system_prompt(

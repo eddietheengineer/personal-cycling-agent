@@ -71,9 +71,9 @@ db = st.session_state.db
 st.sidebar.header("Dashboard")
 
 if "nav_page" not in st.session_state:
-    st.session_state.nav_page = "Activity Detail"
+    st.session_state.nav_page = "Check-in"
 
-pages = ["Activity Detail", "Trends", "Map", "Profile", "Settings"]
+pages = ["Check-in", "Activity Detail", "Trends", "Map", "Profile", "Settings"]
 nav_page = st.sidebar.selectbox(
     "Navigate",
     pages,
@@ -228,6 +228,112 @@ def _build_zone_chart(
 
 
 # ---------------------------------------------------------------------------
+# Morning Check-in
+# ---------------------------------------------------------------------------
+def _render_checkin():
+    st.header("Morning Check-in")
+    st.caption("Quick daily check-in to improve training recommendations")
+
+    # Default to today
+    if "checkin_date" not in st.session_state:
+        st.session_state.checkin_date = date.today().isoformat()
+
+    selected_date = st.date_input(
+        "Date", value=date.fromisoformat(st.session_state.checkin_date),
+        key="checkin_date_input"
+    )
+    checkin_date = selected_date.isoformat()
+
+    # Load existing check-in if any
+    existing = db.get_morning_checkin(checkin_date)
+
+    # Map actual DB columns to form fields
+    if existing:
+        defaults = {
+            "soreness": existing.get("soreness") or 3,
+            "stress": existing.get("life_stress") or existing.get("stress") or 3,
+            "sleep_quality": existing.get("sleep_quality") or 3,
+            "mood": existing.get("mood") or 3,
+            "energy": existing.get("energy") or 3,
+            "motivation": existing.get("motivation") or 3,
+            "caffeine": bool(existing.get("caffeine")),
+            "alcohol": bool(existing.get("alcohol")),
+            "late_meals": bool(existing.get("late_meals")),
+        }
+    else:
+        defaults = {
+            "soreness": 3, "stress": 3, "sleep_quality": 3,
+            "mood": 3, "energy": 3, "motivation": 3,
+            "caffeine": False, "alcohol": False, "late_meals": False,
+        }
+
+    with st.form("checkin_form", clear_on_submit=False):
+        st.subheader("How do you feel? (1-5)")
+        c1, c2 = st.columns(2)
+        with c1:
+            soreness = st.select_slider("Soreness", options=[1,2,3,4,5], value=defaults["soreness"],
+                                         format_func=lambda v: {1:"None",2:"Mild",3:"Moderate",4:"High",5:"Severe"}[v])
+            stress = st.select_slider("Life Stress", options=[1,2,3,4,5], value=defaults["stress"],
+                                       format_func=lambda v: {1:"None",2:"Low",3:"Moderate",4:"High",5:"Overwhelming"}[v])
+            sleep_quality = st.select_slider("Sleep Quality", options=[1,2,3,4,5], value=defaults["sleep_quality"],
+                                              format_func=lambda v: {1:"Terrible",2:"Poor",3:"Okay",4:"Good",5:"Great"}[v])
+        with c2:
+            mood = st.select_slider("Mood", options=[1,2,3,4,5], value=defaults["mood"],
+                                     format_func=lambda v: {1:"Terrible",2:"Low",3:"Okay",4:"Good",5:"Great"}[v])
+            energy = st.select_slider("Energy", options=[1,2,3,4,5], value=defaults["energy"],
+                                       format_func=lambda v: {1:"None",2:"Low",3:"Moderate",4:"High",5:"Peak"}[v])
+            motivation = st.select_slider("Motivation", options=[1,2,3,4,5], value=defaults["motivation"],
+                                          format_func=lambda v: {1:"None",2:"Low",3:"Moderate",4:"High",5:"Peak"}[v])
+
+        st.subheader("Lifestyle (yes/no)")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            caffeine = st.checkbox("Morning Caffeine", value=defaults["caffeine"])
+        with c2:
+            alcohol = st.checkbox("Alcohol Yesterday", value=defaults["alcohol"])
+        with c3:
+            late_meals = st.checkbox("Late Meals", value=defaults["late_meals"])
+
+        submitted = st.form_submit_button("Save Check-in")
+        if submitted:
+            db.store_morning_checkin({
+                "date": checkin_date,
+                "soreness": soreness,
+                "stress": stress,
+                "sleep_quality": sleep_quality,
+                "mood": mood,
+                "energy": energy,
+                "motivation": motivation,
+                "caffeine": caffeine,
+                "alcohol": alcohol,
+                "late_meals": late_meals,
+            })
+            st.success(f"Check-in saved for {checkin_date}!")
+
+    # Show history
+    st.subheader("Recent Check-ins")
+    history = db.get_morning_checkins(limit=7)
+    if history:
+        rows = []
+        for h in sorted(history, key=lambda r: r["date"], reverse=True):
+            stress_val = h.get("life_stress") or h.get("stress")
+            rows.append({
+                "Date": h["date"],
+                "Soreness": h.get("soreness"),
+                "Stress": stress_val,
+                "Sleep": h.get("sleep_quality"),
+                "Mood": h.get("mood"),
+                "Energy": h.get("energy"),
+                "Motivation": h.get("motivation"),
+                "Caffeine": "☕" if h.get("caffeine") else "—",
+                "Alcohol": "🍺" if h.get("alcohol") else "—",
+                "Late Meals": "🌙" if h.get("late_meals") else "—",
+            })
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    else:
+        st.info("No check-ins yet. Fill out the form above to get started!")
+
+# ---------------------------------------------------------------------------
 # Activity Detail tab
 # ---------------------------------------------------------------------------
 def _render_activity_detail():
@@ -272,7 +378,7 @@ def _render_activity_detail():
 
     # Computed metrics (if available)
     computed_fields = {
-        "FTP Used": ("ftp_used", "W"),
+        "FTP Used": ("cp_used", "W"),
         "Normalized Power": ("normalized_power", "W"),
         "Intensity Factor": ("intensity_factor", ""),
         "TSS": ("tss", ""),
@@ -309,7 +415,7 @@ def _render_activity_detail():
     sid = _stream_id(selected_id)
 
     # Determine zone thresholds from activity data
-    ftp = combined.get("ftp_used") or combined.get("average_power") or 0.0
+    ftp = combined.get("cp_used") or combined.get("average_power") or 0.0
     max_hr = combined.get("max_hr") or 0.0
 
     has_any_stream = False
@@ -396,8 +502,8 @@ def _render_trends():
         if not sd:
             continue
 
-        if row.get("ftp_used") is not None:
-            ftp_chart_data.append({"date": sd, "ftp_used": row["ftp_used"]})
+        if row.get("cp_used") is not None:
+            ftp_chart_data.append({"date": sd, "cp_used": row["cp_used"]})
 
         if row.get("tss") is not None:
             d = sd[:10]
@@ -406,8 +512,8 @@ def _render_trends():
     if ftp_chart_data:
         df_ftp = pd.DataFrame(ftp_chart_data)
         fig = px.line(
-            df_ftp, x="date", y="ftp_used",
-            labels={"ftp_used": "FTP Used (W)"},
+            df_ftp, x="date", y="cp_used",
+            labels={"cp_used": "FTP Used (W)"},
             title="FTP Over Time",
             template="plotly_white",
         )
@@ -665,7 +771,7 @@ def _render_map():
             height=600,
         )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def _render_profile():
@@ -948,86 +1054,83 @@ def _render_garmin_setup():
     col1, col2, col3 = st.columns(3)
     with col1:
         sync_clicked = st.button(
-            "Sync Since Last", type="primary",
+            "Update Latest Data", type="primary",
             disabled=not has_credentials,
-            help="Sync new data since the last sync.",
+            help="Pull new activities and wellness from Garmin since the last sync, then re-run analytics.",
             key="sync_since_last",
         )
     with col2:
         sync_all_clicked = st.button(
-            "Sync All Historical",
+            "Pull All Data from Garmin",
             disabled=not has_credentials,
-            help="Re-sync all historical data from Garmin (may take a while).",
+            help="Re-sync all historical data from Garmin and re-run analytics (may take a while).",
             key="sync_all_historical",
         )
     with col3:
-        routes_clicked = st.button(
-            "Sync Routes",
-            disabled=not has_credentials,
-            help="Parse FIT files and extract route data.",
-            key="sync_routes_setup",
+        reanalyze_clicked = st.button(
+            "Reanalyze All Data",
+            disabled=False,
+            help="Re-run analytics on all locally stored data (no Garmin API call).",
+            key="reanalyze_all",
         )
 
-    # ── Handle sync (background) ─────────────────────────────────────
-    if sync_clicked:
-        sync = st.session_state.setdefault("_bg_sync", BackgroundSync())
-        if not sync.is_running:
-            sync.start(
-                days=7,
-                db_path=str(config.db_path("cycling_agent.sqlite")),
-                unbounded=False,
-            )
+    # ── Handle sync (synchronous to avoid Python 3.14 Streamlit segfault) ──
+    if sync_clicked or sync_all_clicked or reanalyze_clicked:
+        if st.session_state.get("syncing"):
+            st.info("Sync already running...")
+        else:
+            mode = "update" if sync_clicked else ("all" if sync_all_clicked else "reanalyze")
+            days = 7 if mode == "update" else (3650 if mode == "all" else 0)
+            st.session_state.sync_mode = mode
+            st.session_state.sync_days = days
             st.session_state.syncing = True
             st.session_state.sync_result = None
             st.rerun()
-        else:
-            st.info("Sync already running in background...")
 
-    if sync_all_clicked:
-        sync = st.session_state.setdefault("_bg_sync", BackgroundSync())
-        if not sync.is_running:
-            sync.start(
-                days=3650,
-                db_path=str(config.db_path("cycling_agent.sqlite")),
-                unbounded=True,
-            )
-            st.session_state.syncing = True
-            st.session_state.sync_result = None
-            st.rerun()
-        else:
-            st.info("Sync already running in background...")
-
-    if routes_clicked:
+    if st.session_state.get("syncing"):
+        mode = st.session_state.get("sync_mode", "update")
+        days = st.session_state.get("sync_days", 7)
+        progress = st.progress(0)
+        status = st.empty()
         try:
-            raw_dir = config.raw_dir() / "fit"
-            counts = sync_routes_from_fit(db, raw_dir)
-            st.success(f"Route sync complete: {counts}")
-            st.rerun()
-        except Exception as exc:
-            st.error(f"Route sync failed: {exc}")
+            from src.ingestion.garmin_connect import sync_garmin, sync_activities
+            if mode != "reanalyze":
+                status.info("⏳ Fetching wellness data...")
+                progress.progress(10)
+                wellness = sync_garmin(days=days, db_path=str(config.db_path("cycling_agent.sqlite")))
+                progress.progress(40)
+                status.info("⏳ Fetching activities...")
+                activities = sync_activities(days=days, db_path=str(config.db_path("cycling_agent.sqlite")))
+                progress.progress(70)
+            else:
+                wellness = {"wellness_records": 0}
+                activities = {"activities_processed": 0}
 
-    # ── Show sync status (polling via snapshot) ──────────────────────
-    sync = st.session_state.get("_bg_sync")
-    if sync is not None:
-        snap = sync.snapshot()
-        if snap["status"] == "running":
-            st.progress(snap["progress"] / 100)
-            st.info(f"⏳ {snap['stage']}")
-        elif snap["status"] == "completed":
-            st.session_state.sync_result = snap["result"]
+            status.info("⏳ Running analytics...")
+            progress.progress(85)
+            from src.main import run_analyze
+            analyze_result = run_analyze()
+            progress.progress(100)
+            status.success("Sync and analytics complete!")
+
+            st.session_state.sync_result = {
+                "wellness": wellness,
+                "activities": activities,
+                "analysis": {
+                    "cp": analyze_result.get("cp"),
+                    "readiness": analyze_result.get("readiness"),
+                    "training_load": analyze_result.get("training_load"),
+                },
+            }
+        except Exception as exc:
+            progress.progress(100)
+            st.error(f"Sync failed: {exc}")
+            st.session_state.sync_result = {"error": str(exc)}
+        finally:
             st.session_state.syncing = False
-            st.success("Sync complete!")
-            if st.session_state.get("_sync_prev_status") != "completed":
-                st.session_state._sync_prev_status = "completed"
-                st.rerun()
-        elif snap["status"] == "failed":
-            st.session_state.syncing = False
-            st.error(snap.get("error", "Sync failed"))
-            if st.session_state.get("_sync_prev_status") != "failed":
-                st.session_state._sync_prev_status = "failed"
-                st.rerun()
-    elif st.session_state.get("syncing"):
-        st.warning("Sync in progress... refresh to check status.")
+            st.session_state.sync_mode = None
+            st.session_state.sync_days = None
+            st.rerun()
 
     # ── Show sync results ────────────────────────────────────────────
     if st.session_state.get("sync_result"):
@@ -1037,11 +1140,45 @@ def _render_garmin_setup():
             st.write(f"**Wellness:** {result['wellness']}")
         if "activities" in result:
             st.write(f"**Activities:** {result['activities']}")
+        if "analysis" in result:
+            analysis = result["analysis"]
+            if analysis.get("cp"):
+                st.write(f"**Critical Power:** {analysis['cp']:.0f} W")
+            if analysis.get("readiness"):
+                st.write(f"**Readiness:** {analysis['readiness']}")
+        if "prescription" in result:
+            st.subheader("Today's Prescription")
+            st.markdown(result["prescription"])
+        if "prescription_error" in result:
+            st.error(f"Prescription failed: {result['prescription_error']}")
+
+    # ── Prescription ─────────────────────────────────────────────────
+    st.subheader("Training Prescription")
+    col_prescribe, col_download = st.columns([3, 1])
+    with col_prescribe:
+        st.caption("Generate an AI-powered training prescription based on your latest data.")
+    with col_download:
+        prescribe_clicked = st.button(
+            "Generate Prescription",
+            help="Run analytics and generate a training prescription via LLM.",
+            key="generate_prescription",
+        )
+
+    if prescribe_clicked:
+        if st.session_state.get("syncing"):
+            st.info("Sync already running...")
+        else:
+            st.session_state.sync_mode = "prescribe"
+            st.session_state.syncing = True
+            st.session_state.sync_result = None
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
+if nav_page == "Check-in":
+    _render_checkin()
 if nav_page == "Activity Detail":
     _render_activity_detail()
 elif nav_page == "Trends":
@@ -1052,13 +1189,3 @@ elif nav_page == "Profile":
     _render_profile()
 elif nav_page == "Settings":
     _render_garmin_setup()
-
-# Auto-refresh when sync is running in background (Settings page only)
-if nav_page == "Settings":
-    sync = st.session_state.get("_bg_sync")
-    if sync is not None:
-        snap = sync.snapshot()
-        if snap["status"] == "running":
-            import time as _time
-            _time.sleep(3)
-            st.rerun()
