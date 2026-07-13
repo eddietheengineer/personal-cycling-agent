@@ -329,7 +329,7 @@ def _render_checkin():
                 "Alcohol": "🍺" if h.get("alcohol") else "—",
                 "Late Meals": "🌙" if h.get("late_meals") else "—",
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     else:
         st.info("No check-ins yet. Fill out the form above to get started!")
 
@@ -771,7 +771,7 @@ def _render_map():
             height=600,
         )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def _render_profile():
@@ -1154,7 +1154,7 @@ def _render_garmin_setup():
         if "analysis" in result:
             analysis = result["analysis"]
             if analysis.get("cp"):
-                st.write(f"\*\*Critical Power:\*\* {analysis['cp']:.0f} W")
+                st.write(f"**Critical Power:** {analysis['cp']:.0f} W")
             if analysis.get("readiness"):
                 st.write(f"**Readiness:** {analysis['readiness']}")
         if "prescription" in result:
