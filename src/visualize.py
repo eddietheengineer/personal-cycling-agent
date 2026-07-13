@@ -71,7 +71,7 @@ db = st.session_state.db
 st.sidebar.header("Dashboard")
 
 if "nav_page" not in st.session_state:
-    st.session_state.nav_page = "Activity Detail"
+    st.session_state.nav_page = "Check-in"
 
 pages = ["Check-in", "Activity Detail", "Trends", "Map", "Profile", "Settings"]
 nav_page = st.sidebar.selectbox(
