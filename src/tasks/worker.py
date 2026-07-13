@@ -143,7 +143,7 @@ class BackgroundSync:
             if self._cancelled:
                 return
             wellness_counts = sync_garmin(
-                days=1,
+                days=days,
                 db_path=db_path,
                 tokenstore=tokenstore,
                 unbounded=unbounded,
