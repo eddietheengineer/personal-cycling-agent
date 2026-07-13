@@ -41,6 +41,26 @@ except ImportError:
     fitdecode = None  # type: ignore
 
 
+def _safe_timestamp_to_date(ts_ms: float | int | None) -> str | None:
+    """Convert a millisecond timestamp to 'YYYY-MM-DD', safely.
+
+    Returns None if the timestamp is missing, zero, negative, or out of
+    the representable range for datetime.fromtimestamp().
+    """
+    if ts_ms is None:
+        return None
+    try:
+        ts_sec = float(ts_ms) / 1000
+    except (TypeError, ValueError):
+        return None
+    if ts_sec <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(ts_sec).strftime("%Y-%m-%d")
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
 class RateLimiter:
     """Proactive rate limiting for Garmin Connect API calls.
 
@@ -915,11 +935,10 @@ def sync_garmin(
         )
         for entry in weigh_ins:
             d = entry.get("dateTimestamp")
-            if d:
-                date_str = datetime.fromtimestamp(d / 1000).strftime("%Y-%m-%d")
-                w = entry.get("weightGrams")
-                if w and date_str not in weight_by_date:
-                    weight_by_date[date_str] = w / 1000.0
+            date_str = _safe_timestamp_to_date(d)
+            w = entry.get("weightGrams")
+            if w and date_str and date_str not in weight_by_date:
+                weight_by_date[date_str] = w / 1000.0
     except Exception as e:
         logger.warning(f"Failed to bulk fetch weigh-ins: {e}")
 
@@ -935,11 +954,10 @@ def sync_garmin(
         if isinstance(body, list):
             for entry in body:
                 d = entry.get("dateTimestamp")
-                if d:
-                    date_str = datetime.fromtimestamp(d / 1000).strftime("%Y-%m-%d")
-                    w = entry.get("weight")
-                    if w and date_str not in weight_by_date:
-                        weight_by_date[date_str] = float(w)
+                date_str = _safe_timestamp_to_date(d)
+                w = entry.get("weight")
+                if w and date_str and date_str not in weight_by_date:
+                    weight_by_date[date_str] = float(w)
     except Exception as e:
         logger.warning(f"Failed to bulk fetch body composition: {e}")
 

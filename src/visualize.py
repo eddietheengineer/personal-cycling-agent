@@ -1202,12 +1202,12 @@ def _render_garmin_setup():
             if mode != "reanalyze":
                 status.info("⏳ Fetching wellness data...")
                 progress.progress(10)
-                wellness = sync_garmin(days=days, db_path=str(config.db_path("cycling_agent.sqlite")))
+                unbounded = mode == "all"
+                wellness = sync_garmin(days=days, db_path=str(config.db_path("cycling_agent.sqlite")), unbounded=unbounded)
                 progress.progress(40)
                 status.info("⏳ Fetching activities...")
                 progress.progress(70)
-                activities = sync_activities(days=days, db_path=str(config.db_path("cycling_agent.sqlite")))
-                progress.progress(70)
+                activities = sync_activities(days=days, db_path=str(config.db_path("cycling_agent.sqlite")), unbounded=unbounded)
             else:
                 wellness = {"wellness_records": 0}
                 activities = {"activities_processed": 0}
