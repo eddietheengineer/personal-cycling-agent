@@ -73,7 +73,7 @@ st.sidebar.header("Dashboard")
 if "nav_page" not in st.session_state:
     st.session_state.nav_page = "Activity Detail"
 
-pages = ["Activity Detail", "Trends", "Map", "Profile", "Settings"]
+pages = ["Check-in", "Activity Detail", "Trends", "Map", "Profile", "Settings"]
 nav_page = st.sidebar.selectbox(
     "Navigate",
     pages,
@@ -226,6 +226,103 @@ def _build_zone_chart(
     )
     return fig
 
+
+# ---------------------------------------------------------------------------
+# Morning Check-in
+# ---------------------------------------------------------------------------
+def _render_checkin():
+    st.header("Morning Check-in")
+    st.caption("Quick daily check-in to improve training recommendations")
+
+    # Default to today
+    if "checkin_date" not in st.session_state:
+        st.session_state.checkin_date = date.today().isoformat()
+
+    selected_date = st.date_input(
+        "Date", value=date.fromisoformat(st.session_state.checkin_date),
+        key="checkin_date_input"
+    )
+    checkin_date = selected_date.isoformat()
+
+    # Load existing check-in if any
+    existing = db.get_morning_checkin(checkin_date)
+
+    defaults = {
+        "soreness": existing["soreness"] if existing else 3,
+        "stress": existing["stress"] if existing else 3,
+        "sleep_quality": existing["sleep_quality"] if existing else 3,
+        "mood": existing["mood"] if existing else 3,
+        "energy": existing["energy"] if existing else 3,
+        "motivation": existing["motivation"] if existing else 3,
+        "caffeine": existing.get("caffeine", False),
+        "alcohol": existing.get("alcohol", False),
+        "late_meals": existing.get("late_meals", False),
+    }
+
+    with st.form("checkin_form", clear_on_submit=False):
+        st.subheader("How do you feel? (1-5)")
+        c1, c2 = st.columns(2)
+        with c1:
+            soreness = st.select_slider("Soreness", options=[1,2,3,4,5], value=defaults["soreness"],
+                                         format_func=lambda v: {1:"None",2:"Mild",3:"Moderate",4:"High",5:"Severe"}[v])
+            stress = st.select_slider("Life Stress", options=[1,2,3,4,5], value=defaults["stress"],
+                                       format_func=lambda v: {1:"None",2:"Low",3:"Moderate",4:"High",5:"Overwhelming"}[v])
+            sleep_quality = st.select_slider("Sleep Quality", options=[1,2,3,4,5], value=defaults["sleep_quality"],
+                                              format_func=lambda v: {1:"Terrible",2:"Poor",3:"Okay",4:"Good",5:"Great"}[v])
+        with c2:
+            mood = st.select_slider("Mood", options=[1,2,3,4,5], value=defaults["mood"],
+                                     format_func=lambda v: {1:"Terrible",2:"Low",3:"Okay",4:"Good",5:"Great"}[v])
+            energy = st.select_slider("Energy", options=[1,2,3,4,5], value=defaults["energy"],
+                                       format_func=lambda v: {1:"None",2:"Low",3:"Moderate",4:"High",5:"Peak"}[v])
+            motivation = st.select_slider("Motivation", options=[1,2,3,4,5], value=defaults["motivation"],
+                                          format_func=lambda v: {1:"None",2:"Low",3:"Moderate",4:"High",5:"Peak"}[v])
+
+        st.subheader("Lifestyle (yes/no)")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            caffeine = st.checkbox("Morning Caffeine", value=defaults["caffeine"])
+        with c2:
+            alcohol = st.checkbox("Alcohol Yesterday", value=defaults["alcohol"])
+        with c3:
+            late_meals = st.checkbox("Late Meals", value=defaults["late_meals"])
+
+        submitted = st.form_submit_button("Save Check-in")
+        if submitted:
+            db.store_morning_checkin({
+                "date": checkin_date,
+                "soreness": soreness,
+                "stress": stress,
+                "sleep_quality": sleep_quality,
+                "mood": mood,
+                "energy": energy,
+                "motivation": motivation,
+                "caffeine": caffeine,
+                "alcohol": alcohol,
+                "late_meals": late_meals,
+            })
+            st.success(f"Check-in saved for {checkin_date}!")
+
+    # Show history
+    st.subheader("Recent Check-ins")
+    history = db.get_morning_checkins(limit=7)
+    if history:
+        rows = []
+        for h in sorted(history, key=lambda r: r["date"], reverse=True):
+            rows.append({
+                "Date": h["date"],
+                "Soreness": h["soreness"],
+                "Stress": h["stress"],
+                "Sleep": h["sleep_quality"],
+                "Mood": h["mood"],
+                "Energy": h["energy"],
+                "Motivation": h["motivation"],
+                "Caffeine": "☕" if h.get("caffeine") else "—",
+                "Alcohol": "🍺" if h.get("alcohol") else "—",
+                "Late Meals": "🌙" if h.get("late_meals") else "—",
+            })
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("No check-ins yet. Fill out the form above to get started!")
 
 # ---------------------------------------------------------------------------
 # Activity Detail tab
@@ -1042,6 +1139,8 @@ def _render_garmin_setup():
 # ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
+if nav_page == "Check-in":
+    _render_checkin()
 if nav_page == "Activity Detail":
     _render_activity_detail()
 elif nav_page == "Trends":

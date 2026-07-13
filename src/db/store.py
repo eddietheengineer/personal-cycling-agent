@@ -130,6 +130,22 @@ class CyclingDB:
         """)
 
         c.execute("""
+            CREATE TABLE IF NOT EXISTS morning_checkin (
+                date            TEXT    PRIMARY KEY,
+                soreness        INTEGER,
+                stress          INTEGER,
+                sleep_quality   INTEGER,
+                mood            INTEGER,
+                energy          INTEGER,
+                motivation      INTEGER,
+                caffeine        INTEGER DEFAULT 0,
+                alcohol         INTEGER DEFAULT 0,
+                late_meals      INTEGER DEFAULT 0,
+                updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        c.execute("""
             CREATE TABLE IF NOT EXISTS activities (
                 id              TEXT    PRIMARY KEY,
                 start_date      TEXT    NOT NULL,
@@ -1096,6 +1112,44 @@ class CyclingDB:
             "WHERE athlete_id = ? AND target_date = ? AND severity = 'error' "
             "ORDER BY created_at DESC",
             (athlete_id, date),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # ---- Morning Check-in ----
+
+    def store_morning_checkin(self, data: dict[str, Any]) -> None:
+        """Store or update a morning check-in record."""
+        self.conn.execute(
+            """INSERT OR REPLACE INTO morning_checkin
+               (date, soreness, stress, sleep_quality, mood, energy, motivation,
+                caffeine, alcohol, late_meals, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (
+                data["date"],
+                data.get("soreness"),
+                data.get("stress"),
+                data.get("sleep_quality"),
+                data.get("mood"),
+                data.get("energy"),
+                data.get("motivation"),
+                1 if data.get("caffeine") else 0,
+                1 if data.get("alcohol") else 0,
+                1 if data.get("late_meals") else 0,
+            ),
+        )
+        self.conn.commit()
+
+    def get_morning_checkin(self, date: str) -> dict[str, Any] | None:
+        """Get a single morning check-in by date."""
+        row = self.conn.execute(
+            "SELECT * FROM morning_checkin WHERE date = ?", (date,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_morning_checkins(self, limit: int = 30) -> list[dict[str, Any]]:
+        """Get recent morning check-ins."""
+        rows = self.conn.execute(
+            "SELECT * FROM morning_checkin ORDER BY date DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
     # -- Lifecycle --

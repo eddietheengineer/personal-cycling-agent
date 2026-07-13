@@ -379,6 +379,7 @@ def fetch_wellness_for_date(
         except Exception:
             pass
 
+
         if not any([resting_hr, rmssd, stress, steps, weight]):
             return None
 
