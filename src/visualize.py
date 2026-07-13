@@ -1047,22 +1047,22 @@ def _render_garmin_setup():
         sync_clicked = st.button(
             "Update Latest Data", type="primary",
             disabled=not has_credentials,
-            help="Pull new activities and wellness from Garmin since the last sync, then re-run ingest to compute analytics.",
+            help="Pull new activities and wellness from Garmin since the last sync, then re-run analytics.",
             key="sync_since_last",
         )
     with col2:
         sync_all_clicked = st.button(
             "Pull All Data from Garmin",
             disabled=not has_credentials,
-            help="Re-sync all historical data from Garmin and re-run ingest (may take a while).",
+            help="Re-sync all historical data from Garmin and re-run analytics (may take a while).",
             key="sync_all_historical",
         )
     with col3:
-        routes_clicked = st.button(
-            "Sync Routes",
-            disabled=not has_credentials,
-            help="Parse FIT files and extract route data.",
-            key="sync_routes_setup",
+        reanalyze_clicked = st.button(
+            "Reanalyze All Data",
+            disabled=False,
+            help="Re-run analytics on all locally stored data (no Garmin API call).",
+            key="reanalyze_all",
         )
 
     # ── Handle sync (background) ─────────────────────────────────────
@@ -1096,14 +1096,20 @@ def _render_garmin_setup():
         else:
             st.info("Sync already running in background...")
 
-    if routes_clicked:
-        try:
-            raw_dir = config.raw_dir() / "fit"
-            counts = sync_routes_from_fit(db, raw_dir)
-            st.success(f"Route sync complete: {counts}")
+    if reanalyze_clicked:
+        sync = st.session_state.setdefault("_bg_sync", BackgroundSync())
+        if not sync.is_running:
+            sync.start(
+                days=0,
+                db_path=str(config.db_path("cycling_agent.sqlite")),
+                unbounded=False,
+                run_analyze_after=True,
+            )
+            st.session_state.syncing = True
+            st.session_state.sync_result = None
             st.rerun()
-        except Exception as exc:
-            st.error(f"Route sync failed: {exc}")
+        else:
+            st.info("Sync already running in background...")
 
     # ── Show sync status (polling via snapshot) ──────────────────────
     sync = st.session_state.get("_bg_sync")
