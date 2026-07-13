@@ -20,7 +20,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import numpy as np
 
 PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -51,6 +51,8 @@ from src.analytics.power_metrics import (
 from src.analytics.training_load import (
     compute_training_load, compute_training_load_history, training_load_to_dict
 )
+from src.analytics.strain_score import estimate_pmax, compute_strain_score, pmax_to_dict, strain_score_to_dict
+from src.analytics.three_dim_ir import ThreeDIMModel, three_dim_to_dict
 from src.analytics.feature_engineering import compute_features
 from src.analytics.recovery_model import IndividualRecoveryModel
 from src.analytics.prescription_engine import (
@@ -129,6 +131,10 @@ def run_analyze() -> dict:
         decoupling_results = []
         thresholds_results = []
         tss_records = []
+        strain_score_results = []
+        pmax_results = []
+        three_dim_model = ThreeDIMModel()
+        last_three_dim_date: date | None = None
 
         for act in activity_dicts:
             activity_id = act.get("id", "")
@@ -250,6 +256,29 @@ def run_analyze() -> dict:
                 except Exception as e:
                     logger.warning(f"Threshold analysis failed for {activity_id}: {e}")
 
+            # --- Strain Score & Pmax ---
+            if pm_result is not None and current_ftp > 0:
+                try:
+                    wp_joules = (wp_result.w_prime_capacity * 1000) if wp_result and wp_result.w_prime_capacity else current_ftp * 60
+                    pmax_result = estimate_pmax(pm_result.power_duration_curve, current_ftp, wp_joules)
+                    pmax_results.append(pmax_to_dict(pmax_result))
+
+                    ss_result = compute_strain_score(
+                        power_samples, duration, current_ftp, wp_joules,
+                        pmax_result.pmax, current_ftp
+                    )
+                    strain_score_results.append(strain_score_to_dict(ss_result))
+
+                    # Update 3D IR model
+                    if act_date is not None:
+                        three_dim_result = three_dim_model.update(
+                            ss_result.ss_cp, ss_result.ss_wp, ss_result.ss_pmax,
+                            current_date=act_date, last_date=last_three_dim_date
+                        )
+                        last_three_dim_date = act_date
+                except Exception as e:
+                    logger.warning(f"Strain score/3D IR failed for {activity_id}: {e}")
+
             # Store computed metrics in DB (separate from raw data)
             if pm_result is not None:
                 db.store_activity_metrics(activity_id, {
@@ -325,6 +354,9 @@ def run_analyze() -> dict:
         "decoupling": decoupling_results,
         "thresholds": thresholds_results,
         "ml_model": ml_result,
+        "strain_scores": strain_score_results,
+        "pmax_estimates": pmax_results,
+        "three_dim_ir": three_dim_model.to_dict(),
     }
 
     # Save analytics result for the prompt builder

@@ -2,13 +2,13 @@
 
 > **Date:** 2026-07-12
 > **Branch:** `autoresearch/session-20260712`
-> **Status:** All modules implemented and validated end-to-end
+> **Status:** All modules implemented, wired, and validated end-to-end
 
 ---
 
-## Overview
+## Executive Summary
 
-This session implemented the best available open-source solutions for cycling training prescription, combining power data with wellness/physiology data. All implementations are based on peer-reviewed research and designed for personalization through machine learning.
+This session completed the full implementation of evidence-based cycling training analytics, wiring all new modules into the main pipeline and validating end-to-end functionality. The system now combines power data, wellness metrics, and machine learning to produce personalized training prescriptions.
 
 ## What Was Implemented
 
@@ -16,18 +16,19 @@ This session implemented the best available open-source solutions for cycling tr
 
 **Research basis:** Alfonso et al. 2025 (Sci Rep), Kiviniemi et al. 2007, Rothschild et al. 2024
 
-**What changed:** Complete rewrite from 2-factor (HRV+RHR) to 3-factor (autonomic + stress + load) readiness scoring.
+**Complete rewrite** from 2-factor (HRV+RHR) to 3-factor readiness scoring:
 
-**Key features:**
-- **Autonomic score (40% weight):** HRV z-score + RHR z-score from 30-day rolling baseline
-- **Stress score (25% weight):** Garmin all-day stress z-score from baseline
-- **Load score (35% weight):** ACWR-based assessment (acute:chronic workload ratio)
-- **Kiviniemi decision logic:** Normality bands (mean ± 0.5×SD) drive load modulation
-  - Within normal → full intensity (modulation=1.0)
-  - 0.5×SD below → reduce 20-30% (modulation=0.7-0.8)
-  - >1×SD below → rest/recovery (modulation=0.3-0.5)
-- **Composite score (0-100):** Weighted average of all three sub-scores
-- **Load modulation factor (0.0-1.0):** Multiply planned TSS by this value
+| Component | Weight | Data Source | Method |
+|-----------|--------|-------------|--------|
+| Autonomic | 40% | HRV z-score + RHR z-score | 30-day rolling baseline |
+| Stress | 25% | Garmin all-day stress | z-score from baseline |
+| Load | 35% | ACWR (acute:chronic ratio) | Gabbett 2016 zones |
+
+**Kiviniemi Decision Logic:**
+- Normality bands: mean ± 0.5×SD (per Kiviniemi 2007 protocol)
+- Within normal → full intensity (modulation=1.0)
+- 0.5×SD below → reduce 20-30% (modulation=0.7-0.8)
+- >1×SD below → rest/recovery (modulation=0.3-0.5)
 
 **States:** `optimal`, `coping`, `sympathetic_stress`, `parasympathetic_hyperactivity`, `exhausted`
 
@@ -35,53 +36,103 @@ This session implemented the best available open-source solutions for cycling tr
 
 **Research basis:** Puchowicz et al. 2020 (omni-domain CP model)
 
-**What it does:** Estimates peak power (Pmax) from power-duration curve data.
-
-**Key features:**
-- Uses 5s > 3s > 1s best power (longer durations are more reliable)
-- Sanity checks: clamps to 2×-10× CP range (prevents sensor spike artifacts)
-- Falls back to model prediction (CP + W'/1s) when short-duration data is unreliable
-- Confidence levels: `high` (5s valid), `medium` (3s valid), `low` (1s or model)
+- Estimates peak power from PDC data with sensor spike protection
+- Prefers 5s > 3s > 1s durations (longer = more reliable)
+- Clamps to 2×-10× CP range (prevents garbage sensor readings)
+- Falls back to model prediction (CP + W'/1s) when data is unreliable
 
 ### 3. Strain Score (`src/analytics/strain_score.py`)
 
 **Research basis:** Kontro et al. 2026 (PLOS One) — 3D IR model
 
-**What it does:** Decomposes training load into energy-system-specific strains.
-
-**Formula:** `k_strain = (Pmax - MPA + CP) / (Pmax - P + CP)`, then `SS = Σ(k_strain × P × normalization)`
-
-**Decomposition:**
+Decomposes training load into energy-system-specific strains:
 - **SS_CP (aerobic):** Power ≤ CP
 - **SS_W' (glycolytic):** CP < Power ≤ 1.5×CP
 - **SS_Pmax (alactic):** Power > 1.5×CP
-- **TSS equivalent:** For comparison with existing TSS-based systems
+
+Formula: `k_strain = (Pmax - MPA + CP) / (Pmax - P + CP)`, then `SS = Σ(k_strain × P × normalization)`
 
 ### 4. 3D Impulse-Response Model (`src/analytics/three_dim_ir.py`)
 
 **Research basis:** Kontro et al. 2026 (PLOS One)
 
-**What it does:** Tracks fitness and fatigue for three energy systems independently.
+Three parallel Banister models tracking fitness/fatigue per energy system:
 
-**Architecture:**
-- Three parallel Banister models (one per energy system)
-- Each has: fitness (slow decay), fatigue (fast decay), performance = k1×fitness - k2×fatigue
-- **CP system:** τ_fitness=52d, τ_fatigue=10d (aerobic adaptation is slow)
-- **W' system:** τ_fitness=5d, τ_fatigue=5d (glycolytic adapts quickly)
-- **Pmax system:** τ_fitness=10d, τ_fatigue=4d (neuromuscular adapts fastest)
+| System | τ_fitness | τ_fatigue | Adaptation Speed |
+|--------|-----------|-----------|-----------------|
+| CP (aerobic) | 52 days | 10 days | Slow |
+| W' (glycolytic) | 5 days | 5 days | Fast |
+| Pmax (alactic) | 10 days | 4 days | Medium |
 
-**Outputs:**
-- Per-system fitness/fatigue/performance states
-- Fitness trends (1-day change)
-- Fitness-based readiness score (0-100)
+Tracks fitness trends and produces a fitness-based readiness score (0-100).
 
-### 5. ML Recovery Model (existing, validated)
+### 5. ML Recovery Model (`src/analytics/recovery_model.py`)
 
 **Research basis:** Rothschild et al. 2024 (Eur J Appl Physiol)
 
-**Status:** Already implemented in previous session, validated in this session.
+- LASSO regression with online learning capability
+- Trained on 1,583 samples: RMSE=2.95 bpm, R²=0.21
+- Predicts next-day RHR as proxy for physiological recovery
+- Weekly retraining with drift detection
 
-**Results:** 1,583 samples, RMSE=2.95 bpm, R²=0.21, status=trained
+### 6. Prescription Engine (`src/analytics/prescription_engine.py`)
+
+Combines all readiness signals with rule-based guardrails:
+- Pain veto (≥4/10 overrides all metrics)
+- Edge case handling (illness, travel, altitude)
+- Hard TSS caps based on readiness state
+
+## Pipeline Integration (`src/main.py`)
+
+All modules are now wired into the main analytics pipeline:
+
+```
+--analyze:
+  1. Fetch wellness + activity data from DB
+  2. Compute readiness (3-factor scoring)
+  3. For each activity:
+     a. Power metrics (PDC, NP, TSS, IF)
+     b. W' analysis (capacity, balance)
+     c. Durability (fatigue profiling)
+     d. Decoupling (power:HR drift)
+     e. Thresholds (DFA-a1 based)
+     f. Pmax estimation ← NEW
+     g. Strain score decomposition ← NEW
+     h. 3D IR model update ← NEW
+  4. Training load (CTL/ATL/TSB)
+  5. ML model training (LASSO)
+  6. Save results to JSON
+
+--prescribe:
+  1. Load latest analysis
+  2. Run prescription engine (readiness + guardrails)
+  3. Build LLM prompt with all analytics
+  4. Generate training prescription
+  5. Publish via MQTT (if broker available)
+```
+
+## End-to-End Validation
+
+### Analytics Pipeline (`--analyze`)
+```
+Readiness: parasympathetic_hyperactivity - Possible exhaustion (score: 54/100)
+ML model trained: n=1583, RMSE=2.95, R²=0.21, status=trained
+Analytics complete
+```
+
+### Prescription Pipeline (`--prescribe`)
+- Correctly identified parasympathetic hyperactivity (RHR below baseline)
+- Adjusted training: reduced from VO2 max to "CNS-Sparing Punch" session
+- Applied load modulation: 55-60 min cap, quality over quantity
+- LLM generated 4,544-char prescription with specific power targets
+
+### Pmax + Strain Score + 3D IR (sample activity)
+```
+Activity garmin_23516355131: Pmax=859.6W (pdc_5s, high)
+  SS: total=299, CP=131, W'=39, Pmax=130, TSS_eq=202
+  3D IR: CP=0.0, W'=0.1, Pmax=0.2
+  Fitness readiness: 99.2/100
+```
 
 ## Data Availability
 
@@ -97,40 +148,17 @@ This session implemented the best available open-source solutions for cycling tr
 
 **Impact:** Without HRV/sleep data, readiness relies on RHR + stress + load. Model will improve significantly when Garmin Connect sync populates these fields.
 
-## End-to-End Validation
-
-### Analytics Pipeline (`--analyze`)
-```
-Readiness: parasympathetic_hyperactivity - Possible exhaustion (score: 54/100)
-ML model trained: n=1583, RMSE=2.95, R²=0.21, status=trained
-Analytics complete
-```
-
-### Prescription Pipeline (`--prescribe`)
-- Correctly identified parasympathetic hyperactivity (RHR below baseline)
-- Adjusted training: reduced from VO2 max session to neuro-prime/recovery
-- Applied load modulation: 60-min cap, Zone 1-2 only
-- LLM generated 4,028-char prescription with specific power targets
-
-### Pmax + Strain Score + 3D IR
-```
-Activity garmin_23516355131: Pmax=859.6W (pdc_5s, high)
-  SS: total=299, CP=131, W'=39, Pmax=130, TSS_eq=202
-  3D IR: CP=0.0, W'=0.1, Pmax=0.2
-  Fitness readiness: 99.2/100
-```
-
 ## Files Modified/Created
 
-| File | Action | Lines |
-|------|--------|-------|
-| `src/analytics/readiness.py` | Rewritten | 592 |
-| `src/analytics/strain_score.py` | New | 197 |
-| `src/analytics/three_dim_ir.py` | New | 263 |
-| `src/main.py` | Updated | +5 lines (readiness integration) |
-| `src/analytics/recovery_model.py` | Fixed | NaN handling, scaler reset |
-| `src/analytics/feature_engineering.py` | Fixed | fillna instead of dropna |
-| `src/agent/mqtt_publisher.py` | Fixed | Graceful disconnect |
+| File | Action | Lines | Purpose |
+|------|--------|-------|---------|
+| `src/analytics/readiness.py` | Rewritten | 592 | Multi-modal readiness + Kiviniemi logic |
+| `src/analytics/strain_score.py` | New | 197 | Pmax estimation + Strain Score |
+| `src/analytics/three_dim_ir.py` | New | 287 | 3D impulse-response model |
+| `src/main.py` | Updated | +30 | Wire all new modules into pipeline |
+| `src/analytics/recovery_model.py` | Fixed | — | NaN handling, scaler reset |
+| `src/analytics/feature_engineering.py` | Fixed | — | fillna instead of dropna |
+| `src/agent/mqtt_publisher.py` | Fixed | — | Graceful disconnect |
 
 ## Research Citations
 
@@ -140,15 +168,17 @@ Activity garmin_23516355131: Pmax=859.6W (pdc_5s, high)
 4. **Rothschild et al. 2024** (Eur J Appl Physiol 124:3279) — Individualized LASSO recovery model
 5. **Saw et al. 2016** — Readiness index weighting (0.40 autonomic, 0.25 subjective, 0.35 load)
 6. **Gabbett 2016** — ACWR sweet spot (0.8-1.3) and injury risk zones
+7. **Puchowicz et al. 2020** — Omni-domain CP model for Pmax estimation
+8. **Banister et al. 1975/1990** — Original impulse-response model
 
 ## Next Steps
 
 1. **Enable Garmin Connect sync** to populate HRV, sleep, and body battery data
 2. **Add morning check-in UI** for subjective well-being (soreness, stress, sleep quality)
-3. **Wire 3D IR into main.py** for continuous fitness tracking across sessions
-4. **Wire Strain Score into main.py** as TSS replacement in activity metrics
-5. **Individual parameter fitting** — use online SGD to personalize 3D IR k1/k2 coefficients
-6. **Post-ride feedback loop** — mutate next day's plan based on actual outcomes
+3. **Individual parameter fitting** — use online SGD to personalize 3D IR k1/k2 coefficients
+4. **Post-ride feedback loop** — mutate next day's plan based on actual outcomes
+5. **Multi-athlete support** — add athlete_id dimension to all tables and model isolation
+6. **Performance benchmarking** — measure and optimize analytics pipeline speed
 
 ## Known Limitations
 
@@ -156,3 +186,4 @@ Activity garmin_23516355131: Pmax=859.6W (pdc_5s, high)
 - **Proxy target:** ML model predicts next-day RHR (not actual performance). Will improve with performance data.
 - **Single-athlete:** No multi-athlete support yet.
 - **3D IR parameters:** Using population priors. Individual fitting will improve accuracy after ~28 days of data.
+- **Strain Score normalization:** Current normalization is empirical; will refine with more data.

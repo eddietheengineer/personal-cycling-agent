@@ -238,6 +238,27 @@ class ThreeDIMModel:
         score = 100.0 / (1.0 + np.exp(-(combined - 1.0) * 2))
         return float(np.clip(score, 0, 100))
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize current model state to a plain dict."""
+        return {
+            "cp": {
+                "fitness": self.cp.fitness,
+                "fatigue": self.cp.fatigue,
+                "performance": self.cp.performance,
+            },
+            "wp": {
+                "fitness": self.wp.fitness,
+                "fatigue": self.wp.fatigue,
+                "performance": self.wp.performance,
+            },
+            "pmax": {
+                "fitness": self.pmax.fitness,
+                "fatigue": self.pmax.fatigue,
+                "performance": self.pmax.performance,
+            },
+            "readiness_from_fitness": self.get_readiness_from_fitness(),
+        }
+
 
 def three_dim_to_dict(result: ThreeDIMResult) -> dict[str, Any]:
     """Serialize ThreeDIMResult to a plain dict."""
