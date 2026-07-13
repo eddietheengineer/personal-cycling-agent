@@ -163,5 +163,5 @@ def w_prime_to_dict(result: WPrimeResult) -> dict[str, Any]:
         "w_prime_capacity": result.w_prime_capacity,
         "min_balance_pct": result.min_balance_pct,
         "final_balance_pct": result.final_balance_pct,
-        "progression_recommended": result.progression_recommended,
+        "progression_recommended": bool(result.progression_recommended),
     }

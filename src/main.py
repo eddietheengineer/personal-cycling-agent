@@ -51,6 +51,12 @@ from src.analytics.power_metrics import (
 from src.analytics.training_load import (
     compute_training_load, compute_training_load_history, training_load_to_dict
 )
+from src.analytics.feature_engineering import compute_features
+from src.analytics.recovery_model import IndividualRecoveryModel
+from src.analytics.prescription_engine import (
+    PrescriptionInput,
+    generate_prescription,
+)
 from src.agent.prompt_builder import build_system_prompt
 from src.agent.llm_client import generate_with_retries
 from src.agent.mqtt_publisher import publish as mqtt_publish
@@ -266,6 +272,44 @@ def run_analyze() -> dict:
             except Exception as e:
                 logger.warning(f"Training load computation failed: {e}")
 
+        # --- ML Model Training ---
+        ml_result = {}
+        try:
+            wellness_dicts = [dict(r) for r in wellness_records]
+            metrics_rows = db.conn.execute('SELECT * FROM activity_metrics').fetchall()
+            activity_metrics_dicts = [dict(r) for r in metrics_rows]
+
+            features_df = compute_features(
+                wellness_dicts, activity_metrics_dicts, morning_checkins=None
+            )
+
+            model_path = VAULT / "data" / "recovery_model.json"
+            model = IndividualRecoveryModel()
+
+            if model.load(model_path):
+                logger.info(f"Loaded existing model: {model.metrics.status} ({model.metrics.n_samples} samples)")
+            else:
+                logger.info("Starting fresh model (cold start)")
+
+            if not features_df.empty:
+                if "resting_hr" in features_df.columns:
+                    targets = features_df["resting_hr"].shift(-1)
+                    train_result = model.train(features_df, targets)
+                    model.save(model_path)
+                    ml_result = {"model": train_result, "features": len(features_df.columns)}
+                    logger.info(f"ML model trained: {train_result}")
+                else:
+                    logger.info("No resting_hr data for ML training target")
+            else:
+                logger.info("No features available for ML training")
+
+        except Exception as e:
+            import traceback
+            logger.warning(f"ML model training failed: {e}")
+            logger.debug(traceback.format_exc())
+            ml_result = {"error": str(e)}
+
+
     result = {
         "ftp": current_ftp,
         "readiness": readiness_dict,
@@ -277,6 +321,7 @@ def run_analyze() -> dict:
         "durability": durability_results,
         "decoupling": decoupling_results,
         "thresholds": thresholds_results,
+        "ml_model": ml_result,
     }
 
     # Save analytics result for the prompt builder
@@ -284,6 +329,7 @@ def run_analyze() -> dict:
     result_path.parent.mkdir(parents=True, exist_ok=True)
     with open(result_path, "w") as f:
         json.dump(result, f, indent=2)
+
 
     logger.info("Analytics complete")
     return result
@@ -301,6 +347,85 @@ def run_prescribe(analysis: dict | None = None) -> str:
             raise SystemExit(1)
         with open(result_path, "r") as f:
             analysis = json.load(f)
+
+    # --- ML Model Prediction ---
+    ml_prediction = None
+    try:
+        model_path = VAULT / "data" / "recovery_model.json"
+        if model_path.exists():
+            from src.analytics.feature_engineering import compute_features
+
+            model = IndividualRecoveryModel()
+            if model.load(model_path):
+                # Build features from latest wellness data
+                readiness = analysis.get("readiness", {})
+                training_load = analysis.get("training_load", {})
+
+                wellness_for_ml = [{
+                    "date": readiness.get("date", ""),
+                    "rmssd": readiness.get("rmssd"),
+                    "resting_hr": readiness.get("resting_hr"),
+                    "stress": readiness.get("stress"),
+                    "sleep_score": readiness.get("sleep_score"),
+                    "sleep_hours": readiness.get("sleep_hours"),
+                    "body_battery_end": readiness.get("body_battery_end"),
+                }]
+                activity_for_ml = [{
+                    "start_date": readiness.get("date", ""),
+                    "tss": training_load.get("atl", 0),
+                    "np": 0, "ifr": 0,
+                    "w_prime_min_balance": 50,
+                    "decoupling_drift": 0,
+                }]
+
+                features_df = compute_features(wellness_for_ml, activity_for_ml)
+                if not features_df.empty:
+                    pred = model.predict(features_df)
+                    ml_prediction = {
+                        "predicted_prs": pred.predicted_prs,
+                        "confidence": pred.confidence,
+                        "limiting_factor": pred.limiting_factor,
+                        "status": model.metrics.status,
+                        "n_samples": model.metrics.n_samples,
+                    }
+                    logger.info(f"ML prediction: PRS={pred.predicted_prs:.1f} "
+                               f"(confidence={pred.confidence:.2f}, "
+                               f"limiting={pred.limiting_factor})")
+    except Exception as e:
+        logger.warning(f"ML prediction failed: {e}")
+
+    # --- Prescription Engine (3-index scoring + guardrails) ---
+    prescription_engine_result = None
+    try:
+        readiness = analysis.get("readiness", {})
+        training_load = analysis.get("training_load", {})
+
+        inp = PrescriptionInput(
+            rmssd=readiness.get("rmssd"),
+            rmssd_baseline=readiness.get("rmssd_mean_30d"),
+            rmssd_std=readiness.get("rmssd_std_30d"),
+            resting_hr=readiness.get("resting_hr"),
+            rhr_baseline=readiness.get("rhr_mean_30d"),
+            rhr_std=readiness.get("rhr_std_30d"),
+            ctl=training_load.get("ctl"),
+            atl=training_load.get("atl"),
+            acwr=training_load.get("acwr"),
+            planned_tss=80.0,  # default
+        )
+
+        output = generate_prescription(inp)
+        prescription_engine_result = {
+            "readiness_assessment": output.readiness_assessment,
+            "daily_plan": output.daily_plan,
+            "safety_notes": output.safety_notes,
+        }
+        logger.info(f"Prescription engine: score={output.readiness_assessment.get('composite_score', 'N/A')}")
+    except Exception as e:
+        logger.warning(f"Prescription engine failed: {e}")
+
+    # Enrich analysis with ML and engine results
+    analysis["ml_prediction"] = ml_prediction
+    analysis["prescription_engine"] = prescription_engine_result
 
     # Build the prompt
     prompt = build_system_prompt(

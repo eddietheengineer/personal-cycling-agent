@@ -25,7 +25,13 @@ class CyclingDB:
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self._apply_pragmas()
         self._create_tables()
+    def _apply_pragmas(self):
+        """Apply performance pragmas to the connection."""
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.execute("PRAGMA cache_size=-64000")
 
     def _migrate_wellness(self):
         """Add missing columns to the wellness table."""
@@ -192,8 +198,123 @@ class CyclingDB:
             )
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_routes_activity ON activity_routes(activity_id)")
+
+        # --- New tables for ML model and prescription engine ---
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS morning_checkin (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                athlete_id      TEXT    NOT NULL,
+                date            TEXT    NOT NULL,
+                perceived_readiness REAL,
+                soreness        REAL,
+                life_stress     REAL,
+                sleep_quality   REAL,
+                mood            REAL,
+                energy          REAL,
+                motivation      REAL,
+                pain_score      REAL,
+                pain_location   TEXT,
+                notes           TEXT,
+                recorded_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(athlete_id, date)
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS daily_readiness (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                athlete_id      TEXT    NOT NULL,
+                date            TEXT    NOT NULL,
+                rmssd           REAL,
+                resting_hr      REAL,
+                rmssd_mean_30d  REAL,
+                rmssd_std_30d   REAL,
+                rhr_mean_30d    REAL,
+                rhr_std_30d     REAL,
+                sleep_hours     REAL,
+                sleep_score     REAL,
+                perceived_readiness REAL,
+                soreness        REAL,
+                life_stress     REAL,
+                mood            REAL,
+                readiness_score REAL,
+                readiness_state TEXT,
+                recommendation  TEXT,
+                ctl             REAL,
+                atl             REAL,
+                tsb             REAL,
+                acwr            REAL,
+                computed_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(athlete_id, date)
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS training_log (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                athlete_id      TEXT    NOT NULL,
+                planned_date    TEXT    NOT NULL,
+                workout_id      TEXT,
+                planned_type    TEXT,
+                planned_duration REAL,
+                planned_tss     REAL,
+                readiness_at_plan REAL,
+                actual_activity_id TEXT,
+                actual_duration  REAL,
+                actual_tss      REAL,
+                actual_np       REAL,
+                actual_rpe      REAL,
+                completed       INTEGER DEFAULT 0,
+                modification_reason TEXT,
+                post_ride_notes TEXT,
+                decoupling_drift REAL,
+                w_prime_min_balance REAL,
+                planned_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+                completed_at    TEXT
+            )
+        """)
+
+        c.execute("CREATE INDEX IF NOT EXISTS idx_training_log_athlete ON training_log(athlete_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_training_log_planned_date ON training_log(planned_date)")
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS edge_cases (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                athlete_id      TEXT    NOT NULL,
+                case_type       TEXT    NOT NULL,
+                start_date      TEXT    NOT NULL,
+                end_date        TEXT,
+                description     TEXT,
+                training_impact TEXT,
+                resolution      TEXT,
+                resolved        INTEGER DEFAULT 0,
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        c.execute("CREATE INDEX IF NOT EXISTS idx_edge_cases_athlete ON edge_cases(athlete_id)")
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS validation_log (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                athlete_id      TEXT    NOT NULL,
+                check_name      TEXT    NOT NULL,
+                target_date     TEXT    NOT NULL,
+                severity        TEXT    NOT NULL,
+                message         TEXT,
+                raw_value       REAL,
+                expected_min    REAL,
+                expected_max    REAL,
+                action_taken    TEXT,
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        c.execute("CREATE INDEX IF NOT EXISTS idx_validation_log_athlete ON validation_log(athlete_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_validation_log_date ON validation_log(target_date)")
+
         self.conn.commit()
-        self.conn.execute("PRAGMA journal_mode=WAL")
 
     # -- Wellness --
 
@@ -584,6 +705,399 @@ class CyclingDB:
         ).fetchone()
         return row[0]
 
+    # -- Morning Checkin --
+
+    def insert_morning_checkin(self, record: dict[str, Any]) -> int:
+        """Insert or replace a morning checkin record. Returns the row id."""
+        self.conn.execute(
+            "INSERT INTO morning_checkin "
+            "(athlete_id, date, perceived_readiness, soreness, life_stress, "
+            " sleep_quality, mood, energy, motivation, pain_score, pain_location, notes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(athlete_id, date) DO UPDATE SET "
+            "perceived_readiness = excluded.perceived_readiness, "
+            "soreness = excluded.soreness, "
+            "life_stress = excluded.life_stress, "
+            "sleep_quality = excluded.sleep_quality, "
+            "mood = excluded.mood, "
+            "energy = excluded.energy, "
+            "motivation = excluded.motivation, "
+            "pain_score = excluded.pain_score, "
+            "pain_location = excluded.pain_location, "
+            "notes = excluded.notes, "
+            "recorded_at = datetime('now')",
+            (
+                record.get("athlete_id"),
+                record.get("date"),
+                record.get("perceived_readiness"),
+                record.get("soreness"),
+                record.get("life_stress"),
+                record.get("sleep_quality"),
+                record.get("mood"),
+                record.get("energy"),
+                record.get("motivation"),
+                record.get("pain_score"),
+                record.get("pain_location"),
+                record.get("notes"),
+            ),
+        )
+        self.conn.commit()
+        return int(self.conn.execute(
+            "SELECT id FROM morning_checkin WHERE athlete_id = ? AND date = ?",
+            (record.get("athlete_id"), record.get("date")),
+        ).fetchone()[0])
+
+    def get_morning_checkin(self, athlete_id: str, date: str) -> dict[str, Any] | None:
+        """Get a morning checkin for a specific athlete and date."""
+        row = self.conn.execute(
+            "SELECT * FROM morning_checkin WHERE athlete_id = ? AND date = ?",
+            (athlete_id, date),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_recent_morning_checkins(
+        self, athlete_id: str, days: int = 30
+    ) -> list[dict[str, Any]]:
+        """Get recent morning checkins for an athlete, ordered by date desc."""
+        rows = self.conn.execute(
+            "SELECT * FROM morning_checkin "
+            "WHERE athlete_id = ? AND date >= date('now', ?) "
+            "ORDER BY date DESC",
+            (athlete_id, f"-{days} days"),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_morning_checkins(
+        self, athlete_id: str, oldest: str | None = None, newest: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Query morning checkins with optional date range."""
+        query = "SELECT * FROM morning_checkin WHERE athlete_id = ?"
+        params: list[Any] = [athlete_id]
+
+        if oldest:
+            query += " AND date >= ?"
+            params.append(oldest)
+        if newest:
+            query += " AND date <= ?"
+            params.append(newest)
+
+        query += " ORDER BY date DESC"
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    # -- Daily Readiness --
+
+    def insert_daily_readiness(self, record: dict[str, Any]) -> int:
+        """Insert or replace a daily readiness record. Returns the row id."""
+        self.conn.execute(
+            "INSERT INTO daily_readiness "
+            "(athlete_id, date, rmssd, resting_hr, rmssd_mean_30d, rmssd_std_30d, "
+            " rhr_mean_30d, rhr_std_30d, sleep_hours, sleep_score, "
+            " perceived_readiness, soreness, life_stress, mood, "
+            " readiness_score, readiness_state, recommendation, "
+            " ctl, atl, tsb, acwr) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(athlete_id, date) DO UPDATE SET "
+            "rmssd = excluded.rmssd, "
+            "resting_hr = excluded.resting_hr, "
+            "rmssd_mean_30d = excluded.rmssd_mean_30d, "
+            "rmssd_std_30d = excluded.rmssd_std_30d, "
+            "rhr_mean_30d = excluded.rhr_mean_30d, "
+            "rhr_std_30d = excluded.rhr_std_30d, "
+            "sleep_hours = excluded.sleep_hours, "
+            "sleep_score = excluded.sleep_score, "
+            "perceived_readiness = excluded.perceived_readiness, "
+            "soreness = excluded.soreness, "
+            "life_stress = excluded.life_stress, "
+            "mood = excluded.mood, "
+            "readiness_score = excluded.readiness_score, "
+            "readiness_state = excluded.readiness_state, "
+            "recommendation = excluded.recommendation, "
+            "ctl = excluded.ctl, "
+            "atl = excluded.atl, "
+            "tsb = excluded.tsb, "
+            "acwr = excluded.acwr, "
+            "computed_at = datetime('now')",
+            (
+                record.get("athlete_id"),
+                record.get("date"),
+                record.get("rmssd"),
+                record.get("resting_hr"),
+                record.get("rmssd_mean_30d"),
+                record.get("rmssd_std_30d"),
+                record.get("rhr_mean_30d"),
+                record.get("rhr_std_30d"),
+                record.get("sleep_hours"),
+                record.get("sleep_score"),
+                record.get("perceived_readiness"),
+                record.get("soreness"),
+                record.get("life_stress"),
+                record.get("mood"),
+                record.get("readiness_score"),
+                record.get("readiness_state"),
+                record.get("recommendation"),
+                record.get("ctl"),
+                record.get("atl"),
+                record.get("tsb"),
+                record.get("acwr"),
+            ),
+        )
+        self.conn.commit()
+        return int(self.conn.execute(
+            "SELECT id FROM daily_readiness WHERE athlete_id = ? AND date = ?",
+            (record.get("athlete_id"), record.get("date")),
+        ).fetchone()[0])
+
+    def get_daily_readiness_by_date(self, athlete_id: str, date: str) -> dict[str, Any] | None:
+        """Get daily readiness for a specific athlete and date."""
+        row = self.conn.execute(
+            "SELECT * FROM daily_readiness WHERE athlete_id = ? AND date = ?",
+            (athlete_id, date),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def get_recent_daily_readiness(
+        self, athlete_id: str, days: int = 30
+    ) -> list[dict[str, Any]]:
+        """Get recent daily readiness records for an athlete."""
+        rows = self.conn.execute(
+            "SELECT * FROM daily_readiness "
+            "WHERE athlete_id = ? AND date >= date('now', ?) "
+            "ORDER BY date DESC",
+            (athlete_id, f"-{days} days"),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_daily_readiness_by_state(
+        self, athlete_id: str, readiness_state: str
+    ) -> list[dict[str, Any]]:
+        """Get readiness records filtered by readiness state."""
+        rows = self.conn.execute(
+            "SELECT * FROM daily_readiness "
+            "WHERE athlete_id = ? AND readiness_state = ? "
+            "ORDER BY date DESC",
+            (athlete_id, readiness_state),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_daily_readiness(
+        self, athlete_id: str, oldest: str | None = None, newest: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Query daily readiness with optional date range."""
+        query = "SELECT * FROM daily_readiness WHERE athlete_id = ?"
+        params: list[Any] = [athlete_id]
+
+        if oldest:
+            query += " AND date >= ?"
+            params.append(oldest)
+        if newest:
+            query += " AND date <= ?"
+            params.append(newest)
+
+        query += " ORDER BY date DESC"
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    # -- Training Log --
+
+    def insert_training_log(self, record: dict[str, Any]) -> int:
+        """Insert a training log entry. Returns the row id."""
+        self.conn.execute(
+            "INSERT INTO training_log "
+            "(athlete_id, planned_date, workout_id, planned_type, planned_duration, "
+            " planned_tss, readiness_at_plan, actual_activity_id, actual_duration, "
+            " actual_tss, actual_np, actual_rpe, completed, modification_reason, "
+            " post_ride_notes, decoupling_drift, w_prime_min_balance) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.get("athlete_id"),
+                record.get("planned_date"),
+                record.get("workout_id"),
+                record.get("planned_type"),
+                record.get("planned_duration"),
+                record.get("planned_tss"),
+                record.get("readiness_at_plan"),
+                record.get("actual_activity_id"),
+                record.get("actual_duration"),
+                record.get("actual_tss"),
+                record.get("actual_np"),
+                record.get("actual_rpe"),
+                record.get("completed", 0),
+                record.get("modification_reason"),
+                record.get("post_ride_notes"),
+                record.get("decoupling_drift"),
+                record.get("w_prime_min_balance"),
+            ),
+        )
+        self.conn.commit()
+        return int(self.conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+    def update_training_log(self, log_id: int, updates: dict[str, Any]) -> None:
+        """Update fields on an existing training log entry."""
+        if not updates:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values())
+        values.append(log_id)
+        self.conn.execute(
+            f"UPDATE training_log SET {set_clause} WHERE id = ?",
+            values,
+        )
+        self.conn.commit()
+
+    def get_training_log(
+        self, athlete_id: str, oldest: str | None = None, newest: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Query training log with optional date range."""
+        query = "SELECT * FROM training_log WHERE athlete_id = ?"
+        params: list[Any] = [athlete_id]
+
+        if oldest:
+            query += " AND planned_date >= ?"
+            params.append(oldest)
+        if newest:
+            query += " AND planned_date <= ?"
+            params.append(newest)
+
+        query += " ORDER BY planned_date DESC"
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_planned_workouts(
+        self, athlete_id: str, date: str
+    ) -> list[dict[str, Any]]:
+        """Get planned workouts for a specific date."""
+        rows = self.conn.execute(
+            "SELECT * FROM training_log WHERE athlete_id = ? AND planned_date = ?",
+            (athlete_id, date),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_completed_training(
+        self, athlete_id: str, days: int = 7
+    ) -> list[dict[str, Any]]:
+        """Get completed training entries for recent days."""
+        rows = self.conn.execute(
+            "SELECT * FROM training_log "
+            "WHERE athlete_id = ? AND completed = 1 "
+            "AND planned_date >= date('now', ?) "
+            "ORDER BY planned_date DESC",
+            (athlete_id, f"-{days} days"),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    # -- Edge Cases --
+
+    def insert_edge_case(self, record: dict[str, Any]) -> int:
+        """Insert an edge case record. Returns the row id."""
+        self.conn.execute(
+            "INSERT INTO edge_cases "
+            "(athlete_id, case_type, start_date, end_date, description, "
+            " training_impact, resolution, resolved) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.get("athlete_id"),
+                record.get("case_type"),
+                record.get("start_date"),
+                record.get("end_date"),
+                record.get("description"),
+                record.get("training_impact"),
+                record.get("resolution"),
+                record.get("resolved", 0),
+            ),
+        )
+        self.conn.commit()
+        return int(self.conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+    def update_edge_case(self, case_id: int, updates: dict[str, Any]) -> None:
+        """Update fields on an edge case record."""
+        if not updates:
+            return
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values())
+        values.append(case_id)
+        self.conn.execute(
+            f"UPDATE edge_cases SET {set_clause} WHERE id = ?",
+            values,
+        )
+        self.conn.commit()
+
+    def get_edge_cases(
+        self, athlete_id: str, resolved: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Get edge cases for an athlete, optionally filtered by resolved status."""
+        query = "SELECT * FROM edge_cases WHERE athlete_id = ?"
+        params: list[Any] = [athlete_id]
+
+        if resolved is not None:
+            query += " AND resolved = ?"
+            params.append(resolved)
+
+        query += " ORDER BY start_date DESC"
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_active_edge_cases(self, athlete_id: str) -> list[dict[str, Any]]:
+        """Get unresolved edge cases for an athlete."""
+        return self.get_edge_cases(athlete_id, resolved=0)
+
+    # -- Validation Log --
+
+    def insert_validation_log(self, record: dict[str, Any]) -> int:
+        """Insert a validation log entry. Returns the row id."""
+        self.conn.execute(
+            "INSERT INTO validation_log "
+            "(athlete_id, check_name, target_date, severity, message, "
+            " raw_value, expected_min, expected_max, action_taken) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.get("athlete_id"),
+                record.get("check_name"),
+                record.get("target_date"),
+                record.get("severity"),
+                record.get("message"),
+                record.get("raw_value"),
+                record.get("expected_min"),
+                record.get("expected_max"),
+                record.get("action_taken"),
+            ),
+        )
+        self.conn.commit()
+        return int(self.conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+    def get_validation_logs(
+        self, athlete_id: str, oldest: str | None = None, newest: str | None = None,
+        severity: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Query validation logs with optional filters."""
+        query = "SELECT * FROM validation_log WHERE athlete_id = ?"
+        params: list[Any] = [athlete_id]
+
+        if oldest:
+            query += " AND target_date >= ?"
+            params.append(oldest)
+        if newest:
+            query += " AND target_date <= ?"
+            params.append(newest)
+        if severity:
+            query += " AND severity = ?"
+            params.append(severity)
+
+        query += " ORDER BY target_date DESC"
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_validation_errors(
+        self, athlete_id: str, date: str
+    ) -> list[dict[str, Any]]:
+        """Get error-level validation entries for a specific date."""
+        rows = self.conn.execute(
+            "SELECT * FROM validation_log "
+            "WHERE athlete_id = ? AND target_date = ? AND severity = 'error' "
+            "ORDER BY created_at DESC",
+            (athlete_id, date),
+        ).fetchall()
+        return [dict(r) for r in rows]
     # -- Lifecycle --
 
     def close(self):
