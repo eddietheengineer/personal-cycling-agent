@@ -1074,68 +1074,63 @@ def _render_garmin_setup():
             key="reanalyze_all",
         )
 
-    # ── Handle sync (background) ─────────────────────────────────────
-    if sync_clicked:
-        sync = st.session_state.setdefault("_bg_sync", BackgroundSync())
-        if not sync.is_running:
-            sync.start(
-                days=7,
-                db_path=str(config.db_path("cycling_agent.sqlite")),
-                run_analyze_after=True,
-            )
+    # ── Handle sync (synchronous to avoid Python 3.14 Streamlit segfault) ──
+    if sync_clicked or sync_all_clicked or reanalyze_clicked:
+        if st.session_state.get("syncing"):
+            st.info("Sync already running...")
+        else:
+            mode = "update" if sync_clicked else ("all" if sync_all_clicked else "reanalyze")
+            days = 7 if mode == "update" else (3650 if mode == "all" else 0)
+            st.session_state.sync_mode = mode
+            st.session_state.sync_days = days
             st.session_state.syncing = True
             st.session_state.sync_result = None
-        else:
-            st.info("Sync already running in background...")
+            st.rerun()
 
-    if sync_all_clicked:
-        sync = st.session_state.setdefault("_bg_sync", BackgroundSync())
-        if not sync.is_running:
-            sync.start(
-                days=3650,
-                db_path=str(config.db_path("cycling_agent.sqlite")),
-                run_analyze_after=True,
-            )
-            st.session_state.syncing = True
-            st.session_state.sync_result = None
-        else:
-            st.info("Sync already running in background...")
+    if st.session_state.get("syncing"):
+        mode = st.session_state.get("sync_mode", "update")
+        days = st.session_state.get("sync_days", 7)
+        progress = st.progress(0)
+        status = st.empty()
+        try:
+            from src.ingestion.garmin_connect import sync_garmin, sync_activities
+            if mode != "reanalyze":
+                status.info("⏳ Fetching wellness data...")
+                progress.progress(10)
+                wellness = sync_garmin(days=days, db_path=str(config.db_path("cycling_agent.sqlite")))
+                progress.progress(40)
+                status.info("⏳ Fetching activities...")
+                activities = sync_activities(days=days, db_path=str(config.db_path("cycling_agent.sqlite")))
+                progress.progress(70)
+            else:
+                wellness = {"wellness_records": 0}
+                activities = {"activities_processed": 0}
 
-    if reanalyze_clicked:
-        sync = st.session_state.setdefault("_bg_sync", BackgroundSync())
-        if not sync.is_running:
-            sync.start(
-                days=0,
-                db_path=str(config.db_path("cycling_agent.sqlite")),
-                run_analyze_after=True,
-            )
-            st.session_state.syncing = True
-            st.session_state.sync_result = None
-        else:
-            st.info("Sync already running in background...")
+            status.info("⏳ Running analytics...")
+            progress.progress(85)
+            from src.main import run_analyze
+            analyze_result = run_analyze()
+            progress.progress(100)
+            status.success("Sync and analytics complete!")
 
-    # ── Show sync status (polling via snapshot) ──────────────────────
-    sync = st.session_state.get("_bg_sync")
-    if sync is not None:
-        snap = sync.snapshot()
-        if snap["status"] == "running":
-            st.progress(snap["progress"] / 100)
-            st.info(f"⏳ {snap['stage']}")
-        elif snap["status"] == "completed":
-            st.session_state.sync_result = snap["result"]
+            st.session_state.sync_result = {
+                "wellness": wellness,
+                "activities": activities,
+                "analysis": {
+                    "cp": analyze_result.get("cp"),
+                    "readiness": analyze_result.get("readiness"),
+                    "training_load": analyze_result.get("training_load"),
+                },
+            }
+        except Exception as exc:
+            progress.progress(100)
+            st.error(f"Sync failed: {exc}")
+            st.session_state.sync_result = {"error": str(exc)}
+        finally:
             st.session_state.syncing = False
-            st.success("Sync complete!")
-            if st.session_state.get("_sync_prev_status") != "completed":
-                st.session_state._sync_prev_status = "completed"
-                st.rerun()
-        elif snap["status"] == "failed":
-            st.session_state.syncing = False
-            st.error(snap.get("error", "Sync failed"))
-            if st.session_state.get("_sync_prev_status") != "failed":
-                st.session_state._sync_prev_status = "failed"
-                st.rerun()
-    elif st.session_state.get("syncing"):
-        st.warning("Sync in progress... refresh to check status.")
+            st.session_state.sync_mode = None
+            st.session_state.sync_days = None
+            st.rerun()
 
     # ── Show sync results ────────────────────────────────────────────
     if st.session_state.get("sync_result"):
@@ -1170,18 +1165,13 @@ def _render_garmin_setup():
         )
 
     if prescribe_clicked:
-        sync = st.session_state.setdefault("_bg_sync", BackgroundSync())
-        if not sync.is_running:
-            sync.start(
-                days=0,
-                db_path=str(config.db_path("cycling_agent.sqlite")),
-                run_analyze_after=True,
-                run_prescribe_after=True,
-            )
+        if st.session_state.get("syncing"):
+            st.info("Sync already running...")
+        else:
+            st.session_state.sync_mode = "prescribe"
             st.session_state.syncing = True
             st.session_state.sync_result = None
-        else:
-            st.info("Sync already running in background...")
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -1199,13 +1189,3 @@ elif nav_page == "Profile":
     _render_profile()
 elif nav_page == "Settings":
     _render_garmin_setup()
-
-# Auto-refresh when sync is running in background (Settings page only)
-if nav_page == "Settings":
-    sync = st.session_state.get("_bg_sync")
-    if sync is not None:
-        snap = sync.snapshot()
-        if snap["status"] == "running":
-            import time as _time
-            _time.sleep(3)
-            st.rerun()
