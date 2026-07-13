@@ -1081,7 +1081,6 @@ def _render_garmin_setup():
             sync.start(
                 days=7,
                 db_path=str(config.db_path("cycling_agent.sqlite")),
-                unbounded=False,
                 run_analyze_after=True,
             )
             st.session_state.syncing = True
@@ -1096,7 +1095,6 @@ def _render_garmin_setup():
             sync.start(
                 days=3650,
                 db_path=str(config.db_path("cycling_agent.sqlite")),
-                unbounded=True,
                 run_analyze_after=True,
             )
             st.session_state.syncing = True
@@ -1111,7 +1109,6 @@ def _render_garmin_setup():
             sync.start(
                 days=0,
                 db_path=str(config.db_path("cycling_agent.sqlite")),
-                unbounded=False,
                 run_analyze_after=True,
             )
             st.session_state.syncing = True
@@ -1181,7 +1178,6 @@ def _render_garmin_setup():
             sync.start(
                 days=0,
                 db_path=str(config.db_path("cycling_agent.sqlite")),
-                unbounded=False,
                 run_analyze_after=True,
                 run_prescribe_after=True,
             )
