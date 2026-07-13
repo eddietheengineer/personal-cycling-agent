@@ -123,20 +123,28 @@ def run_analyze() -> dict:
         # Equivalent EWMA: CP_today = CP_yesterday + (new_cp - CP_yesterday) * alpha
         # where alpha = 1 - 0.5^(1/28) ≈ 0.0247 per day
 
-        # Seed FTP from user profile or environment variable
-        current_ftp = float(os.environ.get("FTP_WATTS", 0))
-        if current_ftp <= 0:
+        # Auto-calculate Critical Power from power data.
+        # Bootstrap with a reasonable default if no prior CP is known,
+        # then let estimate_critical_power() refine it from PDC efforts.
+        current_cp = float(os.environ.get("CP_WATTS", 0))
+        if current_cp <= 0:
             try:
                 profile_path = config.user_profile_path()
                 if profile_path.exists():
                     for line in profile_path.read_text().splitlines():
-                        if line.strip().startswith("- FTP (watts):"):
-                            current_ftp = float(line.split(":")[1].strip())
+                        line = line.strip()
+                        if line.startswith("- FTP (watts):") or line.startswith("- Critical Power (watts):"):
+                            val = line.split(":")[1].strip()
+                            m = re.search(r"(\d+)", val)
+                            if m:
+                                current_cp = float(m.group(1))
                             break
             except Exception:
                 pass
-        if current_ftp <= 0:
-            logger.warning("No FTP set; analytics will be limited. Set FTP in Profile or config.env (FTP_WATTS)")
+        # If still no CP, bootstrap with a reasonable default to enable PDC computation
+        if current_cp <= 0:
+            current_cp = 250.0  # bootstrap default; will be refined by CP estimation
+            logger.info("No CP set, bootstrapping with 250W default")
 
         last_activity_date: datetime | None = None
         cp_data_points: list[dict] = []
@@ -181,17 +189,17 @@ def run_analyze() -> dict:
             # Decay FTP based on days since last activity
             if last_activity_date is not None and act_date is not None:
                 days_gap = (act_date - last_activity_date).days
-                if days_gap > 0 and current_ftp > 0:
+                if days_gap > 0 and current_cp > 0:
                     # Exponential decay: FTP_new = FTP_old * 0.5^(days/half_life)
                     decay = 0.5 ** (days_gap / _CP_HALF_LIFE_DAYS)
-                    current_ftp = max(current_ftp * decay, 50.0)
+                    current_cp = max(current_cp * decay, 50.0)
 
             # Compute power metrics first — we need PDC for CP estimation
             pm_result = None
             if power_samples:
                 try:
                     pm_result = compute_power_metrics(
-                        activity_id, power_samples, duration, current_ftp
+                        activity_id, power_samples, duration, current_cp
                     )
                     power_metrics_results.append(power_metrics_to_dict(pm_result))
                     tss_records.append({
@@ -223,24 +231,24 @@ def run_analyze() -> dict:
                 # alpha = 1 - 0.5^(1/28) ≈ 0.0247 per day (same as decay rate)
                 if new_cp > 0:
                     alpha = _CP_DECAY_FACTOR
-                    current_ftp = current_ftp * (1 - alpha) + new_cp * alpha
+                    current_cp = current_cp * (1 - alpha) + new_cp * alpha
                     current_w_prime = new_w_prime
                     logger.info(
-                        f"FTP updated to {current_ftp:.0f}W, W'={current_w_prime:.0f}J "
+                        f"FTP updated to {current_cp:.0f}W, W'={current_w_prime:.0f}J "
                         f"(from {len(cp_data_points)} activities)"
                     )
 
-            if act_date is not None:
-                last_activity_date = act_date
-
-            # W' (needs power) — use W' capacity from CP regression if available
+                    logger.info(
+                        f"CP updated to {current_cp:.0f}W, W'={current_w_prime:.0f}J "
+                        f"(from {len(cp_data_points)} activities)"
+                    )
             wp_result = None
             if power_samples:
                 try:
                     wp_cap = current_w_prime / 1000.0 if current_w_prime > 0 else None
                     wp_result = estimate_w_prime_from_activity(
                         activity_id, power_samples,
-                        cp_estimate=current_ftp,
+                        cp_estimate=current_cp,
                         w_prime_capacity=wp_cap,
                     )
                     w_prime_results.append(w_prime_to_dict(wp_result))
@@ -273,15 +281,15 @@ def run_analyze() -> dict:
                     logger.warning(f"Threshold analysis failed for {activity_id}: {e}")
 
             # --- Strain Score & Pmax ---
-            if pm_result is not None and current_ftp > 0:
+            if pm_result is not None and current_cp > 0:
                 try:
-                    wp_joules = (wp_result.w_prime_capacity * 1000) if wp_result and wp_result.w_prime_capacity else current_ftp * 60
-                    pmax_result = estimate_pmax(pm_result.power_duration_curve, current_ftp, wp_joules)
+                    wp_joules = (wp_result.w_prime_capacity * 1000) if wp_result and wp_result.w_prime_capacity else current_cp * 60
+                    pmax_result = estimate_pmax(pm_result.power_duration_curve, current_cp, wp_joules)
                     pmax_results.append(pmax_to_dict(pmax_result))
 
                     ss_result = compute_strain_score(
-                        power_samples, duration, current_ftp, wp_joules,
-                        pmax_result.pmax, current_ftp
+                        power_samples, duration, current_cp, wp_joules,
+                        pmax_result.pmax, current_cp
                     )
                     strain_score_results.append(strain_score_to_dict(ss_result))
 
@@ -289,7 +297,6 @@ def run_analyze() -> dict:
                     if act_date is not None:
                         act_date_only = act_date.date() if hasattr(act_date, 'date') else act_date
                         three_dim_result = three_dim_model.update(
-                            ss_result.ss_cp, ss_result.ss_wp, ss_result.ss_pmax,
                             current_date=act_date_only, last_date=last_three_dim_date
                         )
                         last_three_dim_date = act_date_only
@@ -299,7 +306,7 @@ def run_analyze() -> dict:
             # Store computed metrics in DB (separate from raw data)
             if pm_result is not None:
                 db.store_activity_metrics(activity_id, {
-                    "ftp_used": current_ftp,
+                    "cp_used": current_cp,
                     "normalized_power": pm_result.normalized_power,
                     "intensity_factor": pm_result.intensity_factor,
                     "tss": pm_result.tss,
@@ -315,7 +322,7 @@ def run_analyze() -> dict:
         training_load_history = []
         if tss_records:
             try:
-                tl = compute_training_load(tss_records, current_ftp)
+                tl = compute_training_load(tss_records, current_cp)
                 training_load_result = training_load_to_dict(tl)
                 training_load_history = compute_training_load_history(tss_records)
             except Exception as e:
@@ -411,7 +418,7 @@ def run_analyze() -> dict:
 
 
     result = {
-        "ftp": current_ftp,
+        "cp": current_cp,
         "readiness": readiness_dict,
         "training_load": training_load_result,
         "training_load_history": training_load_history,

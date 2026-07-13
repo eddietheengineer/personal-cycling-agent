@@ -70,7 +70,7 @@ class CyclingDB:
         existing = {row[1] for row in c.fetchall()}
 
         columns = {
-            "ftp_used": "REAL",
+            "cp_used": "REAL",
         }
 
         for col, typ in columns.items():
@@ -574,7 +574,7 @@ class CyclingDB:
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 activity_id,
-                metrics.get("ftp_used"),
+                metrics.get("cp_used"),
                 metrics.get("normalized_power"),
                 metrics.get("intensity_factor"),
                 metrics.get("tss"),

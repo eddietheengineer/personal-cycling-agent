@@ -369,7 +369,7 @@ def _render_activity_detail():
 
     # Computed metrics (if available)
     computed_fields = {
-        "FTP Used": ("ftp_used", "W"),
+        "FTP Used": ("cp_used", "W"),
         "Normalized Power": ("normalized_power", "W"),
         "Intensity Factor": ("intensity_factor", ""),
         "TSS": ("tss", ""),
@@ -406,7 +406,7 @@ def _render_activity_detail():
     sid = _stream_id(selected_id)
 
     # Determine zone thresholds from activity data
-    ftp = combined.get("ftp_used") or combined.get("average_power") or 0.0
+    ftp = combined.get("cp_used") or combined.get("average_power") or 0.0
     max_hr = combined.get("max_hr") or 0.0
 
     has_any_stream = False
@@ -493,8 +493,8 @@ def _render_trends():
         if not sd:
             continue
 
-        if row.get("ftp_used") is not None:
-            ftp_chart_data.append({"date": sd, "ftp_used": row["ftp_used"]})
+        if row.get("cp_used") is not None:
+            ftp_chart_data.append({"date": sd, "cp_used": row["cp_used"]})
 
         if row.get("tss") is not None:
             d = sd[:10]
@@ -503,8 +503,8 @@ def _render_trends():
     if ftp_chart_data:
         df_ftp = pd.DataFrame(ftp_chart_data)
         fig = px.line(
-            df_ftp, x="date", y="ftp_used",
-            labels={"ftp_used": "FTP Used (W)"},
+            df_ftp, x="date", y="cp_used",
+            labels={"cp_used": "FTP Used (W)"},
             title="FTP Over Time",
             template="plotly_white",
         )
@@ -1144,8 +1144,8 @@ def _render_garmin_setup():
             st.write(f"**Activities:** {result['activities']}")
         if "analysis" in result:
             analysis = result["analysis"]
-            if analysis.get("ftp"):
-                st.write(f"**FTP:** {analysis['ftp']:.0f} W")
+            if analysis.get("cp"):
+                st.write(f"\*\*Critical Power:\*\* {analysis['cp']:.0f} W")
             if analysis.get("readiness"):
                 st.write(f"**Readiness:** {analysis['readiness']}")
         if "prescription" in result:
