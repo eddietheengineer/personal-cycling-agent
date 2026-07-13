@@ -1119,23 +1119,44 @@ class CyclingDB:
 
     def store_morning_checkin(self, data: dict[str, Any]) -> None:
         """Store or update a morning check-in record."""
+        # Check if table exists and get columns
+        try:
+            cursor = self.conn.execute("PRAGMA table_info(morning_checkin)")
+            columns = [row[1] for row in cursor.fetchall()]
+        except Exception:
+            columns = []
+        
+        # Map our simple fields to the actual schema
+        # Use a default athlete_id for single-athlete use
+        athlete_id = data.get("athlete_id", "default")
+        
+        values = {
+            "athlete_id": athlete_id,
+            "date": data["date"],
+            "soreness": data.get("soreness"),
+            "life_stress": data.get("stress"),  # map stress -> life_stress
+            "sleep_quality": data.get("sleep_quality"),
+            "mood": data.get("mood"),
+            "energy": data.get("energy"),
+            "motivation": data.get("motivation"),
+            "caffeine": 1 if data.get("caffeine") else 0,
+            "alcohol": 1 if data.get("alcohol") else 0,
+            "late_meals": 1 if data.get("late_meals") else 0,
+        }
+        
+        # Only insert columns that exist in the table
+        insert_cols = [col for col in values.keys() if col in columns]
+        if not insert_cols:
+            logger.warning("morning_checkin table has no matching columns")
+            return
+        
+        placeholders = ", ".join(["?" for _ in insert_cols])
+        col_list = ", ".join(insert_cols)
+        param_list = [values[col] for col in insert_cols]
+        
         self.conn.execute(
-            """INSERT OR REPLACE INTO morning_checkin
-               (date, soreness, stress, sleep_quality, mood, energy, motivation,
-                caffeine, alcohol, late_meals, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-            (
-                data["date"],
-                data.get("soreness"),
-                data.get("stress"),
-                data.get("sleep_quality"),
-                data.get("mood"),
-                data.get("energy"),
-                data.get("motivation"),
-                1 if data.get("caffeine") else 0,
-                1 if data.get("alcohol") else 0,
-                1 if data.get("late_meals") else 0,
-            ),
+            f"INSERT OR REPLACE INTO morning_checkin ({col_list}) VALUES ({placeholders})",
+            param_list,
         )
         self.conn.commit()
 

@@ -247,17 +247,25 @@ def _render_checkin():
     # Load existing check-in if any
     existing = db.get_morning_checkin(checkin_date)
 
-    defaults = {
-        "soreness": existing["soreness"] if existing else 3,
-        "stress": existing["stress"] if existing else 3,
-        "sleep_quality": existing["sleep_quality"] if existing else 3,
-        "mood": existing["mood"] if existing else 3,
-        "energy": existing["energy"] if existing else 3,
-        "motivation": existing["motivation"] if existing else 3,
-        "caffeine": existing.get("caffeine", False) if existing else False,
-        "alcohol": existing.get("alcohol", False) if existing else False,
-        "late_meals": existing.get("late_meals", False) if existing else False,
-    }
+    # Map actual DB columns to form fields
+    if existing:
+        defaults = {
+            "soreness": existing.get("soreness") or 3,
+            "stress": existing.get("life_stress") or existing.get("stress") or 3,
+            "sleep_quality": existing.get("sleep_quality") or 3,
+            "mood": existing.get("mood") or 3,
+            "energy": existing.get("energy") or 3,
+            "motivation": existing.get("motivation") or 3,
+            "caffeine": bool(existing.get("caffeine")),
+            "alcohol": bool(existing.get("alcohol")),
+            "late_meals": bool(existing.get("late_meals")),
+        }
+    else:
+        defaults = {
+            "soreness": 3, "stress": 3, "sleep_quality": 3,
+            "mood": 3, "energy": 3, "motivation": 3,
+            "caffeine": False, "alcohol": False, "late_meals": False,
+        }
 
     with st.form("checkin_form", clear_on_submit=False):
         st.subheader("How do you feel? (1-5)")
@@ -308,14 +316,15 @@ def _render_checkin():
     if history:
         rows = []
         for h in sorted(history, key=lambda r: r["date"], reverse=True):
+            stress_val = h.get("life_stress") or h.get("stress")
             rows.append({
                 "Date": h["date"],
-                "Soreness": h["soreness"],
-                "Stress": h["stress"],
-                "Sleep": h["sleep_quality"],
-                "Mood": h["mood"],
-                "Energy": h["energy"],
-                "Motivation": h["motivation"],
+                "Soreness": h.get("soreness"),
+                "Stress": stress_val,
+                "Sleep": h.get("sleep_quality"),
+                "Mood": h.get("mood"),
+                "Energy": h.get("energy"),
+                "Motivation": h.get("motivation"),
                 "Caffeine": "☕" if h.get("caffeine") else "—",
                 "Alcohol": "🍺" if h.get("alcohol") else "—",
                 "Late Meals": "🌙" if h.get("late_meals") else "—",
