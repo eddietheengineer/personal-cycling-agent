@@ -254,9 +254,9 @@ def _render_checkin():
         "mood": existing["mood"] if existing else 3,
         "energy": existing["energy"] if existing else 3,
         "motivation": existing["motivation"] if existing else 3,
-        "caffeine": existing.get("caffeine", False),
-        "alcohol": existing.get("alcohol", False),
-        "late_meals": existing.get("late_meals", False),
+        "caffeine": existing.get("caffeine", False) if existing else False,
+        "alcohol": existing.get("alcohol", False) if existing else False,
+        "late_meals": existing.get("late_meals", False) if existing else False,
     }
 
     with st.form("checkin_form", clear_on_submit=False):
