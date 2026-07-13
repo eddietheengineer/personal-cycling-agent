@@ -95,7 +95,10 @@ def run_analyze() -> dict:
 
         wellness_dicts = [dict(r) for r in wellness_records]
         latest_date = wellness_dicts[0].get("date", "")
-        readiness_result = assess_readiness(wellness_dicts, target_date=latest_date)
+        # Fetch activity metrics for load-aware readiness
+        metrics_rows = db.conn.execute('SELECT * FROM activity_metrics').fetchall()
+        activity_metrics_dicts = [dict(r) for r in metrics_rows]
+        readiness_result = assess_readiness(wellness_dicts, activity_metrics_dicts, target_date=latest_date)
         readiness_dict = readiness_to_dict(readiness_result)
         logger.info(f"Readiness: {readiness_result.state.value} - {readiness_result.recommendation}")
 
