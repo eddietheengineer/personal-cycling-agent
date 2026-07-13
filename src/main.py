@@ -123,7 +123,21 @@ def run_analyze() -> dict:
         # Equivalent EWMA: CP_today = CP_yesterday + (new_cp - CP_yesterday) * alpha
         # where alpha = 1 - 0.5^(1/28) ≈ 0.0247 per day
 
-        current_ftp = 0.0
+        # Seed FTP from user profile or environment variable
+        current_ftp = float(os.environ.get("FTP_WATTS", 0))
+        if current_ftp <= 0:
+            try:
+                profile_path = config.user_profile_path()
+                if profile_path.exists():
+                    for line in profile_path.read_text().splitlines():
+                        if line.strip().startswith("- FTP (watts):"):
+                            current_ftp = float(line.split(":")[1].strip())
+                            break
+            except Exception:
+                pass
+        if current_ftp <= 0:
+            logger.warning("No FTP set; analytics will be limited. Set FTP in Profile or config.env (FTP_WATTS)")
+
         last_activity_date: datetime | None = None
         cp_data_points: list[dict] = []
 

@@ -915,6 +915,8 @@ def sync_garmin(
             )
         )
         for entry in weigh_ins:
+            if not isinstance(entry, dict):
+                continue
             d = entry.get("dateTimestamp")
             if d:
                 date_str = datetime.fromtimestamp(d / 1000).strftime("%Y-%m-%d")
