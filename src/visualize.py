@@ -1045,16 +1045,16 @@ def _render_garmin_setup():
     col1, col2, col3 = st.columns(3)
     with col1:
         sync_clicked = st.button(
-            "Sync Since Last", type="primary",
+            "Update Latest Data", type="primary",
             disabled=not has_credentials,
-            help="Sync new data since the last sync.",
+            help="Pull new activities and wellness from Garmin since the last sync, then re-run ingest to compute analytics.",
             key="sync_since_last",
         )
     with col2:
         sync_all_clicked = st.button(
-            "Sync All Historical",
+            "Pull All Data from Garmin",
             disabled=not has_credentials,
-            help="Re-sync all historical data from Garmin (may take a while).",
+            help="Re-sync all historical data from Garmin and re-run ingest (may take a while).",
             key="sync_all_historical",
         )
     with col3:
@@ -1073,6 +1073,7 @@ def _render_garmin_setup():
                 days=7,
                 db_path=str(config.db_path("cycling_agent.sqlite")),
                 unbounded=False,
+                run_analyze_after=True,
             )
             st.session_state.syncing = True
             st.session_state.sync_result = None
@@ -1087,6 +1088,7 @@ def _render_garmin_setup():
                 days=3650,
                 db_path=str(config.db_path("cycling_agent.sqlite")),
                 unbounded=True,
+                run_analyze_after=True,
             )
             st.session_state.syncing = True
             st.session_state.sync_result = None

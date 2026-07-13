@@ -101,6 +101,7 @@ class BackgroundSync:
         tokenstore: str | None = None,
         progress_callback: Callable[[int, str], None] | None = None,
         unbounded: bool = False,
+        run_analyze_after: bool = False,
     ) -> None:
         """Start a background sync task.
 
@@ -110,6 +111,7 @@ class BackgroundSync:
             tokenstore: Optional token store path override.
             progress_callback: Optional callback(progress_percent, stage_text).
             unbounded: If True, sync all historical data until rate-limited.
+            run_analyze_after: If True, run analytics after sync completes.
         """
         with self._lock:
             if self._result.status == TaskStatus.RUNNING:
@@ -121,12 +123,12 @@ class BackgroundSync:
 
             self._thread = threading.Thread(
                 target=self._run_sync,
-                args=(days, db_path, tokenstore, unbounded),
+                args=(days, db_path, tokenstore, unbounded, run_analyze_after),
                 daemon=True,
                 name="bg-sync",
             )
             self._thread.start()
-    def _run_sync(self, days: int, db_path: str | None, tokenstore: str | None, unbounded: bool = False) -> None:
+    def _run_sync(self, days: int, db_path: str | None, tokenstore: str | None, unbounded: bool = False, run_analyze_after: bool = False) -> None:
         """Worker thread that runs the actual sync."""
         from src.ingestion.garmin_connect import sync_garmin, sync_activities
 
@@ -166,13 +168,30 @@ class BackgroundSync:
             self._result.update(progress=90, stage="Activity sync complete")
             self._notify(90, "Activity sync complete")
 
-            # Done
             result = {
                 "wellness": wellness_counts,
                 "activities": activity_counts,
             }
-            self._result.mark_completed(result, "Sync complete!")
-            self._notify(100, "Sync complete!")
+
+            # Phase 3: Run analytics if requested
+            if run_analyze_after:
+                self._result.update(progress=92, stage="Running analytics...")
+                self._notify(92, "Running analytics...")
+                try:
+                    from src.main import run_analyze
+                    analyze_result = run_analyze()
+                    result["analysis"] = {
+                        "ftp": analyze_result.get("ftp"),
+                        "readiness": analyze_result.get("readiness"),
+                        "training_load": analyze_result.get("training_load"),
+                    }
+                    logger.info("Analytics complete after sync")
+                except Exception as e:
+                    logger.warning(f"Analytics failed after sync: {e}")
+                    result["analysis_error"] = str(e)
+
+            self._result.mark_completed(result, "Sync and analytics complete!")
+            self._notify(100, "Sync and analytics complete!")
 
         except Exception as exc:
             logger.error(f"Background sync failed: {exc}", exc_info=True)
