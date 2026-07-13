@@ -294,10 +294,14 @@ def run_analyze() -> dict:
                     strain_score_results.append(strain_score_to_dict(ss_result))
 
                     # Update 3D IR model
-                    if act_date is not None:
+                    if act_date is not None and ss_result is not None:
                         act_date_only = act_date.date() if hasattr(act_date, 'date') else act_date
                         three_dim_result = three_dim_model.update(
-                            current_date=act_date_only, last_date=last_three_dim_date
+                            ss_cp=ss_result.ss_cp,
+                            ss_wp=ss_result.ss_wp,
+                            ss_pmax=ss_result.ss_pmax,
+                            current_date=act_date_only,
+                            last_date=last_three_dim_date,
                         )
                         last_three_dim_date = act_date_only
                 except Exception as e:
