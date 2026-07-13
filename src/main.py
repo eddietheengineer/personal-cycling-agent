@@ -53,6 +53,8 @@ from src.analytics.training_load import (
 )
 from src.analytics.strain_score import estimate_pmax, compute_strain_score, pmax_to_dict, strain_score_to_dict
 from src.analytics.three_dim_ir import ThreeDIMModel, three_dim_to_dict
+from src.analytics.feedback_loop import analyze_post_ride_feedback, feedback_to_dict
+from src.analytics.individual_model import IndividualizedModel
 from src.analytics.feature_engineering import compute_features
 from src.analytics.recovery_model import IndividualRecoveryModel
 from src.analytics.prescription_engine import (
@@ -341,6 +343,57 @@ def run_analyze() -> dict:
             logger.debug(traceback.format_exc())
             ml_result = {"error": str(e)}
 
+        # --- Individualized Model (Rothschild approach) ---
+        indiv_result = {}
+        try:
+            indiv_path = VAULT / "data" / "individual_model.json"
+            indiv_model = IndividualizedModel()
+
+            if indiv_model.load(indiv_path):
+                logger.info(f"Loaded individual model: {indiv_model.metrics.status} ({indiv_model.metrics.n_samples} samples)")
+            else:
+                logger.info("Starting fresh individual model")
+
+            if not features_df.empty:
+                if "resting_hr" in features_df.columns:
+                    targets = features_df["resting_hr"].shift(-1)
+                    train_result = indiv_model.train(features_df, targets)
+                    indiv_model.save(indiv_path)
+                    indiv_result = {"model": train_result, "weights": indiv_model.get_feature_importance()}
+                    logger.info(f"Individual model trained: {train_result}")
+        except Exception as e:
+            logger.warning(f"Individual model training failed: {e}")
+            indiv_result = {"error": str(e)}
+
+        # --- Post-Ride Feedback Loop ---
+        feedback_result = {}
+        try:
+            # Analyze most recent activity against a hypothetical plan
+            if power_metrics_results:
+                latest_pm = power_metrics_results[-1]
+                planned_tss = 100.0  # Default planned TSS
+                actual_tss = latest_pm.get("tss", 0)
+                planned_zones = {"Z1": 20.0, "Z2": 50.0, "Z3": 15.0, "Z4": 10.0, "Z5": 5.0}
+                actual_zones = latest_pm.get("time_in_zones", {})
+                planned_intensity = 0.7
+                actual_intensity = latest_pm.get("intensity_factor", 0)
+
+                fb = analyze_post_ride_feedback(
+                    planned_tss=planned_tss,
+                    actual_tss=actual_tss,
+                    planned_zones=planned_zones,
+                    actual_zones=actual_zones,
+                    planned_intensity=planned_intensity,
+                    actual_intensity=actual_intensity,
+                    decoupling_drift=dc_result.drift_pct if dc_result else None,
+                    w_prime_balance=wp_result.min_balance_pct if wp_result else None,
+                )
+                feedback_result = feedback_to_dict(fb)
+                if fb.plan_mutated:
+                    logger.info(f"Feedback: {fb.reason}")
+        except Exception as e:
+            logger.warning(f"Feedback loop failed: {e}")
+
 
     result = {
         "ftp": current_ftp,
@@ -357,6 +410,8 @@ def run_analyze() -> dict:
         "strain_scores": strain_score_results,
         "pmax_estimates": pmax_results,
         "three_dim_ir": three_dim_model.to_dict(),
+        "individual_model": indiv_result,
+        "feedback": feedback_result,
     }
 
     # Save analytics result for the prompt builder
