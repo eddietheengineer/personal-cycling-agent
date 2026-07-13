@@ -124,7 +124,7 @@ class BackgroundSync:
 
             self._thread = threading.Thread(
                 target=self._run_sync,
-                args=(days, db_path, tokenstore, unbounded, run_analyze_after, run_prescribe_after),
+                args=(days, db_path, tokenstore, False, run_analyze_after, run_prescribe_after),
                 daemon=True,
                 name="bg-sync",
             )
