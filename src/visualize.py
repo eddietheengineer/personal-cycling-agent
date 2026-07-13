@@ -1142,6 +1142,45 @@ def _render_garmin_setup():
             st.write(f"**Wellness:** {result['wellness']}")
         if "activities" in result:
             st.write(f"**Activities:** {result['activities']}")
+        if "analysis" in result:
+            analysis = result["analysis"]
+            if analysis.get("ftp"):
+                st.write(f"**FTP:** {analysis['ftp']:.0f} W")
+            if analysis.get("readiness"):
+                st.write(f"**Readiness:** {analysis['readiness']}")
+        if "prescription" in result:
+            st.subheader("Today's Prescription")
+            st.markdown(result["prescription"])
+        if "prescription_error" in result:
+            st.error(f"Prescription failed: {result['prescription_error']}")
+
+    # ── Prescription ─────────────────────────────────────────────────
+    st.subheader("Training Prescription")
+    col_prescribe, col_download = st.columns([3, 1])
+    with col_prescribe:
+        st.caption("Generate an AI-powered training prescription based on your latest data.")
+    with col_download:
+        prescribe_clicked = st.button(
+            "Generate Prescription",
+            help="Run analytics and generate a training prescription via LLM.",
+            key="generate_prescription",
+        )
+
+    if prescribe_clicked:
+        sync = st.session_state.setdefault("_bg_sync", BackgroundSync())
+        if not sync.is_running:
+            sync.start(
+                days=0,
+                db_path=str(config.db_path("cycling_agent.sqlite")),
+                unbounded=False,
+                run_analyze_after=True,
+                run_prescribe_after=True,
+            )
+            st.session_state.syncing = True
+            st.session_state.sync_result = None
+            st.rerun()
+        else:
+            st.info("Sync already running in background...")
 
 
 # ---------------------------------------------------------------------------

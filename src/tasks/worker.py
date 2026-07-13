@@ -100,8 +100,8 @@ class BackgroundSync:
         db_path: str | None = None,
         tokenstore: str | None = None,
         progress_callback: Callable[[int, str], None] | None = None,
-        unbounded: bool = False,
         run_analyze_after: bool = False,
+        run_prescribe_after: bool = False,
     ) -> None:
         """Start a background sync task.
 
@@ -112,6 +112,7 @@ class BackgroundSync:
             progress_callback: Optional callback(progress_percent, stage_text).
             unbounded: If True, sync all historical data until rate-limited.
             run_analyze_after: If True, run analytics after sync completes.
+            run_prescribe_after: If True, generate LLM prescription after analytics.
         """
         with self._lock:
             if self._result.status == TaskStatus.RUNNING:
@@ -123,12 +124,12 @@ class BackgroundSync:
 
             self._thread = threading.Thread(
                 target=self._run_sync,
-                args=(days, db_path, tokenstore, unbounded, run_analyze_after),
+                args=(days, db_path, tokenstore, unbounded, run_analyze_after, run_prescribe_after),
                 daemon=True,
                 name="bg-sync",
             )
             self._thread.start()
-    def _run_sync(self, days: int, db_path: str | None, tokenstore: str | None, unbounded: bool = False, run_analyze_after: bool = False) -> None:
+    def _run_sync(self, days: int, db_path: str | None, tokenstore: str | None, unbounded: bool = False, run_analyze_after: bool = False, run_prescribe_after: bool = False) -> None:
         """Worker thread that runs the actual sync."""
         from src.ingestion.garmin_connect import sync_garmin, sync_activities
 
@@ -187,8 +188,20 @@ class BackgroundSync:
                     }
                     logger.info("Analytics complete after sync")
                 except Exception as e:
-                    logger.warning(f"Analytics failed after sync: {e}")
                     result["analysis_error"] = str(e)
+
+            # Phase 4: Generate prescription if requested
+            if run_prescribe_after:
+                self._result.update(progress=96, stage="Generating prescription...")
+                self._notify(96, "Generating prescription...")
+                try:
+                    from src.main import run_prescribe
+                    prescription = run_prescribe(result.get("analysis"))
+                    result["prescription"] = prescription
+                    logger.info("Prescription generated")
+                except Exception as e:
+                    logger.warning(f"Prescription generation failed: {e}")
+                    result["prescription_error"] = str(e)
 
             self._result.mark_completed(result, "Sync and analytics complete!")
             self._notify(100, "Sync and analytics complete!")
