@@ -2185,48 +2185,37 @@ def _render_weekly_calendar():
 
 
 def _render_schedule_config():
-    """Render training schedule configuration with ride window pickers."""
+    """Render 7x24 hour availability grid."""
     from src.config.schedule import load_schedule, save_schedule, DAY_NAMES
 
     schedule = load_schedule()
     day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
     with st.expander("⚙️ Training Schedule", expanded=False):
-        st.caption("Configure which days you can train and your available ride windows.")
+        st.caption("Click hours you're available to ride. Each cell = 1 hour block.")
 
-        cols = st.columns(7)
-        for i, day_name in enumerate(DAY_NAMES):
-            with cols[i]:
-                entry = schedule.get(day_name, {})
-                available = st.checkbox(
-                    f"{day_labels[i]}",
-                    value=entry.get("available", False),
-                    key=f"schedule_{day_name}",
-                )
+        # Build grid: hour labels (left) + 7 day columns
+        grid_cols = st.columns([1, 1, 1, 1, 1, 1, 1, 1])
+        # Header row
+        grid_cols[0].caption("")
+        for i in range(7):
+            grid_cols[i + 1].markdown(f"**{day_labels[i]}**")
 
-                windows = entry.get("ride_windows", [{"start": 6, "end": 12}])
-                if not windows:
-                    windows = [{"start": 6, "end": 12}]
-
-                start = st.number_input(
-                    "From", min_value=0, max_value=23,
-                    value=windows[0]["start"],
-                    key=f"win_start_{day_name}",
-                    disabled=not available,
+        for hour in range(24):
+            hour_label = f"{hour:02d}:00"
+            grid_cols[0].caption(hour_label)
+            for day_idx in range(7):
+                day_name = DAY_NAMES[day_idx]
+                hours = set(schedule.get(day_name, {}).get("available_hours", []))
+                checked = hour in hours
+                if grid_cols[day_idx + 1].checkbox(
+                    "", value=checked, key=f"hour_{day_name}_{hour}",
                     label_visibility="collapsed",
-                )
-                end = st.number_input(
-                    "To", min_value=1, max_value=23,
-                    value=windows[0]["end"],
-                    key=f"win_end_{day_name}",
-                    disabled=not available,
-                    label_visibility="collapsed",
-                )
-
-                schedule[day_name] = {
-                    "available": available,
-                    "ride_windows": [{"start": start, "end": max(end, start + 1)}],
-                }
+                ):
+                    hours.add(hour)
+                else:
+                    hours.discard(hour)
+                schedule[day_name] = {"available_hours": sorted(hours)}
 
         if st.button("Save Schedule", type="primary", use_container_width=True, key="save_schedule"):
             save_schedule(schedule)
@@ -2235,8 +2224,6 @@ def _render_schedule_config():
         if st.session_state.get("schedule_saved"):
             st.success("Schedule saved!")
             st.session_state.schedule_saved = False
-
-    # Location config for weather
     st.divider()
     with st.expander("🌤 Weather Location", expanded=False):
         st.caption("Set your location for weather-based workout adjustments. Saved to vault.")

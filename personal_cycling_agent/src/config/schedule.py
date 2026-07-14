@@ -41,48 +41,43 @@ _SLOT_TO_WINDOW: dict[str, dict[str, int]] = {
 
 
 def _schedule_file() -> Path:
-    """Return the path to the training schedule JSON file in the vault."""
     return vault_path() / "training_schedule.json"
 
 
 def _migrate_entry(entry: dict) -> dict:
-    """Migrate legacy time_slots to ride_windows if needed."""
+    """Migrate any legacy format to available_hours."""
+    if "available_hours" in entry:
+        return {"available_hours": list(entry["available_hours"])}
     if "ride_windows" in entry:
-        return entry
-    # Legacy: time_slots -> ride_windows
-    slots = entry.get("time_slots", ["morning"])
+        hours = set()
+        for w in entry["ride_windows"]:
+            for h in range(w.get("start", 6), w.get("end", 12)):
+                hours.add(h)
+        return {"available_hours": sorted(hours)}
+    slot_map = {"morning": range(6, 12), "afternoon": range(12, 18),
+                "evening": range(17, 22), "any": range(6, 22)}
+    slots = entry.get("time_slots", [])
     if isinstance(slots, str):
         slots = [slots]
-    windows = [_SLOT_TO_WINDOW.get(s, {"start": 6, "end": 12}) for s in slots]
-    return {
-        "available": bool(entry.get("available", False)),
-        "ride_windows": windows,
-    }
+    hours = set()
+    for s in slots:
+        hours.update(slot_map.get(s, range(6, 12)))
+    return {"available_hours": sorted(hours)}
 
 
 def load_schedule() -> dict:
-    """Load the training schedule from the vault.
-
-    Returns DEFAULT_SCHEDULE if the file does not exist or is invalid.
-    Auto-migrates legacy time_slots to ride_windows.
-    """
     path = _schedule_file()
     if not path.exists():
         return dict(DEFAULT_SCHEDULE)
     try:
-        with open(path, "r") as f:
+        with open(path) as f:
             data = json.load(f)
-        result = {}
-        for day in DAY_NAMES:
-            entry = data.get(day, {})
-            result[day] = _migrate_entry(entry)
-        return result
+        return {day: _migrate_entry(data.get(day, {})) for day in DAY_NAMES}
     except (json.JSONDecodeError, OSError):
         return dict(DEFAULT_SCHEDULE)
 
 
 def save_schedule(schedule: dict) -> None:
-    """Persist the training schedule to the vault."""
     path = _schedule_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
@@ -90,25 +85,17 @@ def save_schedule(schedule: dict) -> None:
 
 
 def get_available_days() -> list[int]:
-    """Return weekday ints (0=Mon … 6=Sun) where available=True."""
     schedule = load_schedule()
-    return [
-        i
-        for i, day in enumerate(DAY_NAMES)
-        if schedule.get(day, {}).get("available", False)
-    ]
+    return [i for i, day in enumerate(DAY_NAMES)
+            if schedule.get(day, {}).get("available_hours", [])]
 
 
-def get_ride_windows(day: int) -> list[dict]:
-    """Return ride_windows list for a given weekday int (0=Mon … 6=Sun).
-
-    Each window: {"start": int, "end": int} (hours 0-23).
-    Returns [{"start": 6, "end": 12}] as default.
-    """
+def get_available_hours(day: int) -> list[int]:
+    """Return list of available hours (0-23) for a weekday."""
     if not 0 <= day <= 6:
-        return [{"start": 6, "end": 12}]
+        return []
     schedule = load_schedule()
-    return schedule.get(DAY_NAMES[day], {}).get("ride_windows", [{"start": 6, "end": 12}])
+    return schedule.get(DAY_NAMES[day], {}).get("available_hours", [])
 def _weather_file() -> Path:
     """Return the path to the weather location JSON file in the vault."""
     return vault_path() / "weather_location.json"

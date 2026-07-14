@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from src.config import vault_path
-from src.config.schedule import load_schedule, get_available_days, get_ride_windows
+from src.config.schedule import load_schedule, get_available_days, get_available_hours
 from src.services.weather import get_location, get_weekly_forecast
 
 logger = logging.getLogger(__name__)
@@ -118,6 +118,17 @@ def _project_ctl_atl(current_ctl: float, current_atl: float, daily_tss: list[flo
         atl_series.append(atl)
 
     return ctl_series[1:], atl_series[1:]
+
+
+def _hour_weather(forecast: dict, hour: int) -> dict:
+    """Get weather for a specific hour from forecast slot data."""
+    if hour < 6 or hour > 21:
+        return {}
+    if 6 <= hour <= 11:
+        return forecast.get("morning", {})
+    if 12 <= hour <= 17:
+        return forecast.get("afternoon", {})
+    return forecast.get("evening", {})
 
 
 def _weather_adjustment(forecast: dict | None) -> tuple[bool, str]:
@@ -274,37 +285,29 @@ def generate_weekly_plan() -> WeeklyPlan:
             forecast_map[f.get("date", "")] = f
 
     # Score each available day by weather quality for the user's time slots
-    # Then pick the best days (2-3)
-    from src.services.weather import is_rideable_window
-    day_scores: list[tuple[int, date, float, dict | None, list[dict]]] = []
+    # Score each available day by weather quality for available hours
+    day_scores: list[tuple[int, date, float, dict | None, list[int]]] = []
     for i, day_date in enumerate(week_dates):
         weekday = day_date.weekday()
         date_str = day_date.isoformat()
         if weekday not in available_days:
             continue
-        ride_windows = get_ride_windows(weekday)
+        avail_hours = get_available_hours(weekday)
         day_forecast = forecast_map.get(date_str)
 
-        # Score based on ride windows: check if any window is rideable
-        score = 100.0
-        if day_forecast:
-            window_scores = []
-            for w in ride_windows:
-                rideable, note = is_rideable_window(
-                    day_forecast, w["start"], w["end"], min_clear_hours=1
-                )
-                if rideable:
-                    window_scores.append(100)
-                else:
-                    # Partial: count clear hours vs total
-                    import re
-                    m = re.search(r'(\d+)h clear', note)
-                    clear_h = int(m.group(1)) if m else 0
-                    total_h = w["end"] - w["start"]
-                    window_scores.append(max(0, (clear_h / max(total_h, 1)) * 100))
-            score = min(window_scores) if window_scores else 0
+        # Score: fraction of available hours that are rideable
+        score = 0.0
+        if day_forecast and avail_hours:
+            clear_count = 0
+            for h in avail_hours:
+                slot_data = _hour_weather(day_forecast, h)
+                cond = slot_data.get("condition", "unknown")
+                precip = slot_data.get("precip", 0)
+                if cond not in ("storm", "snow") and precip < 40:
+                    clear_count += 1
+            score = (clear_count / len(avail_hours)) * 100
 
-        day_scores.append((i, day_date, score, day_forecast, ride_windows))
+        day_scores.append((i, day_date, score, day_forecast, avail_hours))
 
     MAX_TRAINING_DAYS = 3
     # Sort by score descending, pick top MAX_TRAINING_DAYS
@@ -337,7 +340,7 @@ def generate_weekly_plan() -> WeeklyPlan:
     for i, day_date in enumerate(week_dates):
         weekday = day_date.weekday()
         date_str = day_date.isoformat()
-        ride_windows = get_ride_windows(weekday)
+        avail_hours = get_available_hours(weekday)
         day_forecast = forecast_map.get(date_str)
         indoor, weather_note = _weather_adjustment(day_forecast)
 
@@ -399,7 +402,7 @@ def generate_weekly_plan() -> WeeklyPlan:
         # Cap duration
         duration = min(duration, int(max_duration))
 
-        window_label = f"{ride_windows[0]['start']}:00-{ride_windows[0]['end']}:00" if ride_windows else "morning"
+        window_label = f"{avail_hours[0]:02d}:00-{avail_hours[-1]+1:02d}:00" if avail_hours else "morning"
         description = _build_description(session_type, zone, duration, tss, indoor, window_label)
 
         w_temp_max = day_forecast.get("temp_max", 0) if day_forecast else 0
