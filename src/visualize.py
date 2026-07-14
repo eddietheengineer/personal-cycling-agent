@@ -332,34 +332,36 @@ def _render_readiness_card():
         tsb = training_load.get("tsb", 0)
 
         c_cols = st.columns(3)
-        if ctl > 100:
-            ctl_status = "🟢 High fitness base"
+        # CTL thresholds per Coggan (TrainingPeaks Performance Manager):
+        # <100 undertraining, 100-150 optimal, >150 unsustainable
+        if ctl > 150:
+            ctl_status = "🟠 Very high (unsustainable long-term)"
+        elif ctl > 100:
+            ctl_status = "🟢 Optimal fitness base"
         elif ctl > 50:
-            ctl_status = "🟡 Building fitness"
+            ctl_status = "🟡 Building (room to add volume)"
         else:
-            ctl_status = "🔴 Low fitness base"
+            ctl_status = "🔴 Low (undertraining)"
         c_cols[0].markdown(f"**CTL {ctl:.0f}** {ctl_status}")
 
-        if tsb < 0:
-            atl_status = "🔴 Overreaching"
+        # ATL is recent load — interpret relative to CTL via TSB
+        if tsb < -20:
+            atl_status = "🔴 Very high (heavy fatigue)"
+        elif tsb < 0:
+            atl_status = "🟠 Elevated (fatigued)"
         elif tsb < 10:
-            atl_status = "🟡 Tapering"
-        elif tsb < 20:
-            atl_status = "🟢 Normal training"
+            atl_status = "🟡 Moderate (normal training)"
         else:
-            atl_status = "🟢 Well-recovered"
+            atl_status = "🟢 Low (recovered)"
         c_cols[1].markdown(f"**ATL {atl:.0f}** {atl_status}")
 
-        if tsb > 20:
-            tsb_status = "🟢 Fresh / peaking"
-        elif tsb > 10:
-            tsb_status = "🟡 Recovering"
-        elif tsb > 0:
-            tsb_status = "🟡 Normal training"
+        # TSB thresholds per Coggan: <−10 not fresh, −10 to +10 neutral, >+10 fresh
+        if tsb > 10:
+            tsb_status = "🟢 Fresh"
         elif tsb > -10:
-            tsb_status = "🟠 Fatigued"
+            tsb_status = "🟡 Neutral"
         else:
-            tsb_status = "🔴 Overreaching"
+            tsb_status = "🔴 Fatigued"
         c_cols[2].markdown(f"**TSB {tsb:.0f}** {tsb_status}")
 
 
