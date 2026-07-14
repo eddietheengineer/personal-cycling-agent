@@ -1239,7 +1239,26 @@ def _render_garmin_setup():
 
     # ── Show sync progress (polling) ─────────────────────────────────
     sync_status = st.session_state.get("sync_status")
-    if sync_status and sync_status not in ("done",):
+    thread = st.session_state.get("sync_thread")
+
+    if sync_status == "done":
+        # Thread finished — clear state and rerun once to show results
+        st.session_state.sync_status = None
+        st.session_state.sync_thread = None
+        st.session_state.syncing = False
+        st.success("Sync and analytics complete!")
+        st.rerun()
+
+    if sync_status in ("error", "mfa_error"):
+        err = st.session_state.get("sync_error", "")
+        st.error(f"Sync failed: {err}")
+        if sync_status == "mfa_error":
+            st.info("Your session has expired. Please sign in again.")
+        st.session_state.sync_status = None
+        st.session_state.sync_thread = None
+        st.session_state.syncing = False
+
+    if sync_status and sync_status not in ("done", "error", "mfa_error"):
         progress = st.progress(0)
         status = st.empty()
         status_map = {
@@ -1247,34 +1266,14 @@ def _render_garmin_setup():
             "fetching_wellness": ("⏳ Fetching wellness data...", 15),
             "fetching_activities": ("⏳ Fetching activities...", 45),
             "analyzing": ("⏳ Running analytics...", 80),
-            "done": ("✅ Sync and analytics complete!", 100),
-            "error": ("❌ Sync failed", 100),
-            "mfa_error": ("❌ MFA required", 100),
         }
         msg, pct = status_map.get(sync_status, ("⏳ Syncing...", 50))
         status.markdown(msg)
         progress.progress(pct)
 
-        if sync_status in ("error", "mfa_error"):
-            err = st.session_state.get("sync_error", "")
-            st.error(f"Sync failed: {err}")
-            if sync_status == "mfa_error":
-                st.info("Your session has expired. Please sign in again.")
-
-        # Keep polling while running
-        import time
-        thread = st.session_state.get("sync_thread")
+        # Non-blocking poll: rerun immediately if thread is still alive
         if thread and thread.is_alive():
-            time.sleep(1)
             st.rerun()
-        elif sync_status == "done":
-            # Clear syncing state after showing success
-            st.session_state.sync_status = None
-            st.session_state.sync_thread = None
-            st.rerun()
-        elif sync_status in ("error", "mfa_error"):
-            st.session_state.sync_status = None
-            st.session_state.sync_thread = None
 
     # ── Show sync results ────────────────────────────────────────────
     if st.session_state.get("sync_result"):
