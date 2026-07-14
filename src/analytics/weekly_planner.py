@@ -359,6 +359,15 @@ def generate_weekly_plan() -> WeeklyPlan:
     # Compute weekly TSS target from CTL
     weekly_tss_target = current_ctl * 7 / 30  # approximate
 
+    # Scale sessions to hit weekly TSS target
+    if weekly_tss > 0 and weekly_tss > weekly_tss_target:
+        scale = weekly_tss_target / weekly_tss
+        for day in days:
+            if not day.rest_day:
+                day.target_tss = round(day.target_tss * scale, 1)
+                day.duration_min = max(20, int(day.duration_min * scale))
+        weekly_tss = weekly_tss_target
+
     plan = WeeklyPlan(
         week_start=monday.isoformat(),
         days=days,
