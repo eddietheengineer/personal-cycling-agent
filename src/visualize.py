@@ -1338,14 +1338,26 @@ def _render_llm_settings():
     with c2:
         st.markdown("---")
         if st.button("🔍 Test Connection", type="primary", use_container_width=True, key="test_llm"):
+            import requests
+            test_url = base_url.rstrip("/") + "/models"
+            headers = {"Content-Type": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
             try:
-                models = _discover_models()
-                if models:
-                    st.session_state.llm_models = models
-                    st.session_state.llm_test_ok = True
-                    st.rerun()
+                resp = requests.get(test_url, headers=headers, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    models = [m.get("id", "") for m in data.get("data", [])]
+                    if models:
+                        st.session_state.llm_models = models
+                        st.session_state.llm_test_ok = True
+                        st.rerun()
+                    else:
+                        st.error("Connected but no models returned. Check your endpoint config.")
                 else:
-                    st.error("Connected but no models returned.")
+                    st.error(f"Server returned HTTP {resp.status_code}: {resp.text[:200]}")
+            except requests.exceptions.ConnectionError as e:
+                st.error(f"Cannot connect to {test_url}. Is the server running and reachable from the container?")
             except Exception as e:
                 st.error(f"Connection failed: {e}")
 
