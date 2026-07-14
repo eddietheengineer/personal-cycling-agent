@@ -971,7 +971,7 @@ def sync_garmin(
 
     # Build list of dates to sync
     sync_dates: list[date] = []
-    current_date = last_date - timedelta(days=1)
+    current_date = last_date  # include today for partial data
     days_synced = 0
     # Cap unbounded sync to 10 years back to avoid datetime underflow
     max_days = 3650 if unbounded else days
