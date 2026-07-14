@@ -124,6 +124,11 @@ def get_weekly_forecast(lat: float, lon: float) -> list[dict]:
         precipitation_prob (int)   – max precipitation probability (0-100)
         wind_speed         (float) – max wind speed at 10 m in km/h
         condition          (str)   – 'clear' | 'cloudy' | 'rain' | 'snow' | 'storm'
+        morning            (dict)  – weather for 06:00-11:59
+        afternoon          (dict)  – weather for 12:00-17:59
+        evening            (dict)  – weather for 18:00-21:59
+
+    Each slot dict: {condition, temp, precip, wind}
 
     Returns an empty list on network errors or malformed responses.
     """
@@ -135,6 +140,12 @@ def get_weekly_forecast(lat: float, lon: float) -> list[dict]:
             "temperature_2m_min",
             "precipitation_probability_max",
             "wind_speed_10m_max",
+            "weathercode",
+        ],
+        "hourly": [
+            "temperature_2m",
+            "precipitation_probability",
+            "wind_speed_10m",
             "weathercode",
         ],
         "timezone": "auto",
@@ -153,28 +164,74 @@ def get_weekly_forecast(lat: float, lon: float) -> list[dict]:
         return []
 
     daily = data.get("daily", {})
+    hourly = data.get("hourly", {})
     dates = daily.get("time", [])
     if not dates:
         logger.warning("Open-Meteo response missing daily data")
         return []
 
+    # Build hourly lookup: date -> {hour: values}
+    hour_times = hourly.get("time", [])
+    hour_temps = hourly.get("temperature_2m", [])
+    hour_precip = hourly.get("precipitation_probability", [])
+    hour_wind = hourly.get("wind_speed_10m", [])
+    hour_codes = hourly.get("weathercode", [])
+
+    def _slot_for_hours(hours: list[int]) -> dict:
+        """Aggregate hourly data for a list of hours into a single slot."""
+        if not hours or not hour_times:
+            return {"condition": "unknown", "temp": 0, "precip": 0, "wind": 0}
+        temps, precips, winds, codes = [], [], [], []
+        for i, t in enumerate(hour_times):
+            if t in hours and i < len(hour_temps):
+                temps.append(hour_temps[i])
+                precips.append(hour_precip[i] if i < len(hour_precip) else 0)
+                winds.append(hour_wind[i] if i < len(hour_wind) else 0)
+                codes.append(hour_codes[i] if i < len(hour_codes) else 3)
+        if not temps:
+            return {"condition": "unknown", "temp": 0, "precip": 0, "wind": 0}
+        # Dominant condition: most common non-clear code, else clear
+        code_counts = {}
+        for c in codes:
+            code_counts[c] = code_counts.get(c, 0) + 1
+        dominant = max(code_counts, key=code_counts.get)
+        return {
+            "condition": _map_weather_code(dominant),
+            "temp": round(sum(temps) / len(temps), 1),
+            "precip": max(precips),
+            "wind": round(max(winds), 1),
+        }
+
+    def _hours_for_slot(date_str: str, slot: str) -> list:
+        """Return list of datetime strings for a given date and time slot."""
+        result = []
+        for t in hour_times:
+            if not t.startswith(date_str):
+                continue
+            hour = int(t[11:13])
+            if slot == "morning" and 6 <= hour <= 11:
+                result.append(t)
+            elif slot == "afternoon" and 12 <= hour <= 17:
+                result.append(t)
+            elif slot == "evening" and 18 <= hour <= 21:
+                result.append(t)
+        return result
+
     forecast: list[dict] = []
     for i, date in enumerate(dates):
         try:
-            forecast.append(
-                {
-                    "date": date,
-                    "temp_max": float(daily["temperature_2m_max"][i]),
-                    "temp_min": float(daily["temperature_2m_min"][i]),
-                    "precipitation_prob": int(
-                        daily["precipitation_probability_max"][i]
-                    ),
-                    "wind_speed": float(daily["wind_speed_10m_max"][i]),
-                    "condition": _map_weather_code(
-                        int(daily["weathercode"][i])
-                    ),
-                }
-            )
+            entry = {
+                "date": date,
+                "temp_max": float(daily["temperature_2m_max"][i]),
+                "temp_min": float(daily["temperature_2m_min"][i]),
+                "precipitation_prob": int(daily["precipitation_probability_max"][i]),
+                "wind_speed": float(daily["wind_speed_10m_max"][i]),
+                "condition": _map_weather_code(int(daily["weathercode"][i])),
+                "morning": _slot_for_hours(_hours_for_slot(date, "morning")),
+                "afternoon": _slot_for_hours(_hours_for_slot(date, "afternoon")),
+                "evening": _slot_for_hours(_hours_for_slot(date, "evening")),
+            }
+            forecast.append(entry)
         except (KeyError, IndexError, TypeError) as exc:
             logger.warning("Skipping malformed forecast day %d: %s", i, exc)
             continue

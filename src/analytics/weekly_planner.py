@@ -273,10 +273,8 @@ def generate_weekly_plan() -> WeeklyPlan:
         for f in forecasts:
             forecast_map[f.get("date", "")] = f
 
-    # Score each available day by weather quality (lower precip = better)
-    # Then pick the best days up to MAX_TRAINING_DAYS
-    MAX_TRAINING_DAYS = 3
-
+    # Score each available day by weather quality for the user's time slots
+    # Then pick the best days (2-3)
     day_scores: list[tuple[int, date, float, dict | None, list[str]]] = []
     for i, day_date in enumerate(week_dates):
         weekday = day_date.weekday()
@@ -286,17 +284,31 @@ def generate_weekly_plan() -> WeeklyPlan:
         time_slots = get_time_slots(weekday)
         day_forecast = forecast_map.get(date_str)
 
-        # Score: 100 = perfect, 0 = terrible weather
+        # Score based on the user's preferred time slots
         score = 100.0
         if day_forecast:
-            precip = day_forecast.get("precipitation_prob", 0)
-            condition = day_forecast.get("condition", "clear")
-            if condition in ("storm", "snow"):
-                score = 0
-            elif condition == "rain":
-                score = max(0, 100 - precip * 2)
-            else:
-                score = max(0, 100 - precip)
+            # Check each preferred slot; worst slot determines score
+            for slot in time_slots:
+                slot_data = day_forecast.get(slot, {})
+                if slot_data:
+                    precip = slot_data.get("precip", 0)
+                    condition = slot_data.get("condition", "clear")
+                    if condition in ("storm", "snow"):
+                        score = min(score, 0)
+                    elif condition == "rain":
+                        score = min(score, max(0, 100 - precip * 2))
+                    else:
+                        score = min(score, max(0, 100 - precip))
+            # Also check daily as fallback
+            if "morning" not in day_forecast:
+                precip = day_forecast.get("precipitation_prob", 0)
+                condition = day_forecast.get("condition", "clear")
+                if condition in ("storm", "snow"):
+                    score = 0
+                elif condition == "rain":
+                    score = max(0, 100 - precip * 2)
+                else:
+                    score = max(0, 100 - precip)
 
         day_scores.append((i, day_date, score, day_forecast, time_slots))
 
@@ -485,8 +497,15 @@ def generate_ai_plan() -> WeeklyPlan:
         fc = forecast_map.get(ds, {})
         tmax_f = fc.get("temp_max", 0) * 9/5 + 32
         tmin_f = fc.get("temp_min", 0) * 9/5 + 32
+        slots_info = []
+        for slot_name in ["morning", "afternoon", "evening"]:
+            sd = fc.get(slot_name, {})
+            if sd and sd.get("condition"):
+                st_f = sd.get("temp", 0) * 9/5 + 32
+                slots_info.append(f"{slot_name}: {sd['condition']} {st_f:.0f}F precip {sd.get('precip', 0)}%")
+        slot_str = " | ".join(slots_info) if slots_info else ""
         weather_lines.append(
-            f"{ds}: {fc.get('condition','unknown')} {tmax_f:.0f}F/{tmin_f:.0f}F precip {fc.get('precipitation_prob',0)}%"
+            f"{ds}: {fc.get('condition','unknown')} {tmax_f:.0f}F/{tmin_f:.0f}F precip {fc.get('precipitation_prob',0)}% {slot_str}"
         )
 
     day_names = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
@@ -501,7 +520,6 @@ def generate_ai_plan() -> WeeklyPlan:
         pass
 
     weather_block = "WEATHER:\n" + "\n".join(weather_lines) + "\n\n"
-    journal_block = f"## Memory Journal\n{journal_context}\n\n" if journal_context else ""
 
     prompt = (
         f"You are a cycling coach. Generate a 7-day training plan.\n\n"
@@ -511,12 +529,15 @@ def generate_ai_plan() -> WeeklyPlan:
         f"Recommendation: {readiness_rec}\n"
         f"Goals: {profile.get('primary_goal', 'VO2 max')}\n"
         f"Max session: {_parse_float(profile.get('max_session_duration'), 90.0):.0f}min\n\n"
-        f"## HARD CONSTRAINTS (must follow exactly):\n"
-        f"1. EXACTLY 3 training days. No more, no less. All other days must be rest (rest_day=true).\n"
+        f"## HARD CONSTRAINTS:\n"
+        f"1. Pick 2-3 training days (no more than 3). All other days must be rest.\n"
         f"2. Available days: {available_days_str}. Only pick from these.\n"
-        f"3. PICK THE 3 DAYS WITH THE BEST WEATHER. Avoid storm and rain days.\n"
-        f"   If weather is bad on a picked day, set indoor=true.\n"
-        f"4. If readiness < 60, use only recovery or endurance. No threshold/VO2.\n\n"
+        f"3. PICK THE BEST WEATHER DAYS. Avoid storm and rain days.\n"
+        f"   Weather includes morning/afternoon/evening breakdowns.\n"
+        f"   If morning is rainy but evening is clear, the day is still rideable (indoor=false).\n"
+        f"   Only set indoor=true if ALL time slots are bad.\n"
+        f"4. If readiness < 60, use only recovery or endurance. No threshold/VO2.\n"
+        f"5. You may do 2 longer rides or 3 shorter ones — use your judgment.\n\n"
         + weather_block
         + journal_block
         + f"Return ONLY a JSON array of 7 day objects:\n"
@@ -559,10 +580,10 @@ def generate_ai_plan() -> WeeklyPlan:
                 weather_precip=fc.get("precipitation_prob", 0),
                 weather_condition=fc.get("condition", ""),
             ))
-        # Validate: must have exactly 3 training days
+        # Validate: must have 1-3 training days
         train_count = sum(1 for d in days if not d.rest_day)
-        if train_count != 3:
-            logger.warning(f"AI plan has {train_count} training days (expected 3), falling back to rules")
+        if train_count < 1 or train_count > 3:
+            logger.warning(f"AI plan has {train_count} training days (expected 1-3), falling back to rules")
             return generate_weekly_plan()
 
         weekly_tss = sum(d.target_tss for d in days if not d.rest_day)
