@@ -2216,7 +2216,7 @@ def _render_schedule_config():
     schedule = load_schedule()
     day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-    with st.expander("⚙️ Training Schedule", expanded=False):
+    with st.expander("⚙️ Training Schedule", expanded=True):
         st.caption("Click cells to toggle availability. Each row = 1 hour block.")
 
         # Quick presets
@@ -2266,31 +2266,6 @@ def _render_schedule_config():
             st.success("Schedule saved!")
             st.session_state.schedule_saved = False
     st.divider()
-    with st.expander("🌤 Weather Location", expanded=False):
-        st.caption("Set your location for weather-based workout adjustments. Saved to vault.")
-        from src.config.schedule import load_weather_location, save_weather_location
-
-        saved_loc = load_weather_location()
-        default_lat = str(saved_loc[0]) if saved_loc else ""
-        default_lon = str(saved_loc[1]) if saved_loc else ""
-
-        lat = st.text_input("Latitude", value=default_lat, key="weather_lat")
-        lon = st.text_input("Longitude", value=default_lon, key="weather_lon")
-
-        if st.button("Save Location", type="primary", use_container_width=True, key="save_weather_loc"):
-            try:
-                save_weather_location(float(lat), float(lon))
-                st.session_state.weather_saved = True
-            except ValueError:
-                st.error("Enter valid numbers for latitude and longitude.")
-
-        if st.session_state.get("weather_saved"):
-            st.success(f"Location saved: {lat}, {lon}")
-            st.session_state.weather_saved = False
-        elif saved_loc:
-            st.info(f"Current location: {saved_loc[0]}, {saved_loc[1]}")
-        else:
-            st.info("No location set. Will auto-detect from Garmin GPS data if available.")
 # ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------

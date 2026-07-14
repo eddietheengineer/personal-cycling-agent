@@ -55,17 +55,6 @@ def get_location() -> tuple[float, float] | None:
             except (json.JSONDecodeError, KeyError):
                 pass
 
-    try:
-        from src.db.store import get_db
-        db = get_db()
-        cursor = db.execute(
-            "SELECT latitude, longitude FROM activities ORDER BY activity_date DESC LIMIT 1"
-        )
-        row = cursor.fetchone()
-        if row:
-            return float(row[0]), float(row[1])
-    except Exception as e:
-        logger.debug("Could not get location from DB: %s", e)
     return None
 
 
