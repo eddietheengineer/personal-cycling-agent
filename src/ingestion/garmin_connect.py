@@ -875,8 +875,10 @@ def sync_activities(
     # don't try to update state again
     try:
         if total_processed > 0:
-            # Update last_synced to today on successful processing
-            db.set_last_synced("garmin_activities", today.isoformat(), resume_offset=0)
+            # Use the actual newest activity date, not today — avoids gaps
+            newest = db.conn.execute("SELECT MAX(start_date) FROM activities").fetchone()[0]
+            sync_date = newest[:10] if newest else today.isoformat()
+            db.set_last_synced("garmin_activities", sync_date, resume_offset=0)
     except Exception:
         pass  # DB may already be closed
 
