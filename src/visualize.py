@@ -125,8 +125,8 @@ def _render_dashboard():
 
     st.title("Cycling Dashboard")
 
-    # ── 7-Day Week Strip ────────────────────────────────────────────────
-    _render_week_strip()
+    # ── 7-Day Training Calendar ─────────────────────────────────────────
+    _render_weekly_calendar()
 
     st.divider()
 
@@ -231,33 +231,6 @@ def _render_week_strip():
             col.caption(f"{day.duration_min}min · TSS {day.target_tss:.0f}")
             if day.description:
                 col.caption(day.description)
-
-    # Projected fitness/fatigue/load chart
-    if plan and plan.ctl_series:
-        import pandas as pd
-        import plotly.graph_objects as go
-
-        dates = [d.date for d in plan.days]
-        labels = [f"{d.date.split('-')[1]}/{d.date.split('-')[2]}" for d in plan.days]
-
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=labels, y=plan.ctl_series, name="CTL (Fitness)",
-                                  line=dict(color="#2196f3", width=2), mode="lines+markers"))
-        fig.add_trace(go.Scatter(x=labels, y=plan.atl_series, name="ATL (Fatigue)",
-                                  line=dict(color="#f44336", width=2), mode="lines+markers"))
-        fig.add_trace(go.Scatter(x=labels, y=plan.tsb_series, name="TSB (Form)",
-                                  line=dict(color="#4caf50", width=2), mode="lines+markers"))
-
-        fig.update_layout(
-            height=200, margin=dict(l=50, r=20, t=10, b=30),
-            xaxis_title="", yaxis_title="",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(size=11),
-        )
-        fig.update_xaxes(showgrid=False)
-        fig.update_yaxes(showgrid=True, gridcolor="#333")
-        st.plotly_chart(fig, use_container_width=True)
 
 
 def _render_readiness_card():
@@ -2229,6 +2202,33 @@ def _render_weekly_calendar():
             st.caption(f"🚴 {day.ride_note}")
         if day.weather_note:
             st.caption(f"🌤 {day.weather_note}")
+
+    st.divider()
+
+    # Projected fitness/fatigue/load chart
+    if plan and plan.ctl_series:
+        import plotly.graph_objects as go
+
+        labels = [f"{d.date.split('-')[1]}/{d.date.split('-')[2]}" for d in plan.days]
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=labels, y=plan.ctl_series, name="CTL (Fitness)",
+                                  line=dict(color="#2196f3", width=2), mode="lines+markers"))
+        fig.add_trace(go.Scatter(x=labels, y=plan.atl_series, name="ATL (Fatigue)",
+                                  line=dict(color="#f44336", width=2), mode="lines+markers"))
+        fig.add_trace(go.Scatter(x=labels, y=plan.tsb_series, name="TSB (Form)",
+                                  line=dict(color="#4caf50", width=2), mode="lines+markers"))
+
+        fig.update_layout(
+            height=200, margin=dict(l=50, r=20, t=10, b=30),
+            xaxis_title="", yaxis_title="",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(size=11),
+        )
+        fig.update_xaxes(showgrid=False)
+        fig.update_yaxes(showgrid=True, gridcolor="#333")
+        st.plotly_chart(fig, use_container_width=True)
 
     st.divider()
 
