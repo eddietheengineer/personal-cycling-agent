@@ -89,7 +89,7 @@ if "nav_page" not in st.session_state:
     _today_checkin = db.get_morning_checkin(date.today().isoformat())
     st.session_state.nav_page = "Coach" if _today_checkin else "Check-in"
 
-pages = ["Check-in", "Activity Detail", "Trends", "Map", "Profile", "Settings", "Coach"]
+pages = ["Check-in", "Activity Detail", "Trends", "Map", "Profile", "Week", "Settings", "Coach"]
 nav_page = st.sidebar.selectbox(
     "Navigate",
     pages,
@@ -1587,6 +1587,165 @@ def _render_coach():
         st.session_state.coach_input_value = ""
         st.rerun()
 # ---------------------------------------------------------------------------
+# Weekly Calendar Page
+# ---------------------------------------------------------------------------
+def _render_weekly_calendar():
+    """Render the 7-day training calendar."""
+    from src.analytics.weekly_planner import generate_weekly_plan, save_weekly_plan, load_weekly_plan
+    from src.config.schedule import load_schedule, save_schedule, DAY_NAMES
+
+    st.header("Weekly Training Plan")
+
+    # Load or generate plan
+    plan = load_weekly_plan()
+
+    # Regenerate button
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        if plan:
+            week_label = f"Week of {plan.week_start}"
+            st.caption(week_label)
+        else:
+            st.caption("No plan generated yet")
+    with col2:
+        if st.button("🔄 Generate Week", type="primary", use_container_width=True, key="generate_week"):
+            try:
+                plan = generate_weekly_plan()
+                save_weekly_plan(plan)
+                st.session_state.week_generated = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to generate plan: {e}")
+
+    if st.session_state.get("week_generated"):
+        st.success("Weekly plan generated!")
+        st.session_state.week_generated = False
+
+    if not plan:
+        st.info("Click 'Generate Week' to create your training plan based on readiness, weather, and schedule.")
+        _render_schedule_config()
+        return
+
+    # Summary row
+    st.markdown(f"`{plan.readiness_summary}`")
+    s_cols = st.columns(3)
+    s_cols[0].metric("Weekly TSS Target", f"{plan.weekly_tss_target:.0f}")
+    s_cols[1].metric("Weekly TSS Planned", f"{plan.weekly_tss_planned:.0f}")
+    train_days = sum(1 for d in plan.days if not d.rest_day)
+    s_cols[2].metric("Training Days", str(train_days))
+
+    st.divider()
+
+    # Calendar grid
+    day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    # Intensity colors
+    zone_colors = {
+        "rest": "#666",
+        "recovery": "#4caf50",
+        "endurance": "#2196f3",
+        "threshold": "#ff9800",
+        "vo2": "#f44336",
+        "anaerobic": "#9c27b0",
+        "mixed": "#00bcd4",
+    }
+
+    for i, day in enumerate(plan.days):
+        color = zone_colors.get(day.session_type, "#666")
+        is_today = day.date == date.today().isoformat()
+        border = "2px solid #fff" if is_today else "1px solid #333"
+
+        if day.rest_day:
+            bg = "#1a1a2e"
+            color_display = "#666"
+        else:
+            bg = color + "20"
+            color_display = color
+
+        day_name = day_labels[day.weekday]
+        day_date = day.date[5:]  # MM-DD
+
+        if day.rest_day:
+            content = f"""
+            <div style="padding: 12px; border: {border}; border-radius: 8px; background: {bg}; text-align: center; min-height: 80px;">
+                <div style="font-weight: 600; color: #888;">{day_name} {day_date}</div>
+                <div style="color: #666; margin-top: 8px;">Rest</div>
+            </div>"""
+        else:
+            indoor_icon = "🏠" if day.indoor else "🚴"
+            content = f"""
+            <div style="padding: 12px; border: {border}; border-radius: 8px; background: {bg}; text-align: center; min-height: 80px;">
+                <div style="font-weight: 600; color: {color_display};">{day_name} {day_date}</div>
+                <div style="font-size: 1.2em; margin: 4px 0;">{indoor_icon} {day.session_type.title()}</div>
+                <div style="color: #aaa; font-size: 0.85em;">{day.duration_min}min · TSS {day.target_tss:.0f}</div>
+                <div style="color: {color_display}; font-size: 0.8em;">{day.target_zone}</div>
+            </div>"""
+
+        st.markdown(content, unsafe_allow_html=True)
+
+        # Expandable details
+        if not day.rest_day:
+            with st.expander(f"{day.description}"):
+                st.write(day.description)
+                if day.weather_note:
+                    st.info(f"🌤 {day.weather_note}")
+                st.caption(f"Rationale: {day.rationale}")
+
+    st.divider()
+
+    # Schedule config
+    _render_schedule_config()
+
+
+def _render_schedule_config():
+    """Render training schedule configuration in Settings/Week page."""
+    from src.config.schedule import load_schedule, save_schedule, DAY_NAMES
+
+    with st.expander("⚙️ Training Schedule", expanded=False):
+        st.caption("Configure which days you can train and your preferred time slot.")
+
+        schedule = load_schedule()
+        day_labels = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+        cols = st.columns(7)
+        for i, day_name in enumerate(DAY_NAMES):
+            with cols[i]:
+                entry = schedule.get(day_name, {})
+                available = st.checkbox(
+                    f"{day_labels[i]}",
+                    value=entry.get("available", False),
+                    key=f"schedule_{day_name}",
+                )
+                time_slot = st.selectbox(
+                    ["morning", "afternoon", "evening", "any"],
+                    index=["morning", "afternoon", "evening", "any"].index(entry.get("time_slot", "morning")),
+                    format_func=lambda v: v.capitalize(),
+                    key=f"slot_{day_name}",
+                    disabled=not available,
+                    label_visibility="collapsed",
+                )
+                schedule[day_name] = {
+                    "available": available,
+                    "time_slot": time_slot,
+                }
+
+        if st.button("Save Schedule", type="primary", use_container_width=True, key="save_schedule"):
+            save_schedule(schedule)
+            st.success("Schedule saved!")
+            st.rerun()
+
+    # Location config for weather
+    st.divider()
+    with st.expander("🌤 Weather Location", expanded=False):
+        st.caption("Set your location for weather-based workout adjustments (optional — auto-detected from Garmin data).")
+        import os
+        lat = st.text_input("Latitude", value=os.environ.get("WEATHER_LAT", ""), key="weather_lat")
+        lon = st.text_input("Longitude", value=os.environ.get("WEATHER_LON", ""), key="weather_lon")
+        if lat and lon:
+            st.success(f"Location set: {lat}, {lon}")
+        else:
+            st.info("Will auto-detect from your latest Garmin activity GPS data.")
+# ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
 if nav_page == "Check-in":
@@ -1601,5 +1760,7 @@ elif nav_page == "Profile":
     _render_profile()
 elif nav_page == "Settings":
     _render_garmin_setup()
+elif nav_page == "Week":
+    _render_weekly_calendar()
 elif nav_page == "Coach":
     _render_coach()

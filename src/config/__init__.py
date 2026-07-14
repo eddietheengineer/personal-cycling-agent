@@ -108,6 +108,7 @@ def _resolve_hashed_passwords() -> None:
         # value for initial auth, but tokens are cached thereafter. The config.env file
         # itself stores only the hash, so the plaintext is only in memory at runtime.
 
+
 def hash_password(plaintext: str) -> tuple[str, str]:
     """
     Hash a password for storage in config.env using pbkdf2.
@@ -147,5 +148,14 @@ def db_path(name: str = "cycling_agent.sqlite") -> Path:
 
 
 def raw_dir() -> Path:
-    """Return the path to the raw data directory in the vault."""
+    """Return the path to raw data files in the vault."""
     return vault_path() / "raw"
+
+# Re-export schedule convenience functions
+from src.config.schedule import (
+    DEFAULT_SCHEDULE,
+    get_available_days,
+    get_time_slot,
+    load_schedule,
+    save_schedule,
+)
