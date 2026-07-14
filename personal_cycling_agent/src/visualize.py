@@ -1105,6 +1105,7 @@ def _render_profile():
         "bikes": os.getenv("BIKES", ""),
         "power_meter": os.getenv("POWER_METER", ""),
         "hr_monitor": os.getenv("HR_MONITOR", ""),
+        "tsb_floor": -10,
     }
 
     if profile_path.exists():
