@@ -565,9 +565,14 @@ def generate_ai_plan() -> WeeklyPlan:
 
         raw_days = json.loads(json_match.group())
         days = []
+        # Map weekday -> correct date for this week
+        weekday_to_date = {d.weekday(): d.isoformat() for d in week_dates}
+
         for rd in raw_days[:7]:
             ds = rd.get("date", "")
             weekday = rd.get("weekday", 0)
+            # Force date to match this week's schedule
+            ds = weekday_to_date.get(weekday, ds)
             fc = forecast_map.get(ds, {})
             indoor, weather_note = _weather_adjustment(fc)
             if rd.get("indoor"):
