@@ -234,9 +234,9 @@ def generate_weekly_plan() -> WeeklyPlan:
     """Generate a complete 7-day training plan."""
     today = date.today()
 
-    # Find the Monday of this week
-    monday = today - timedelta(days=today.weekday())
-    week_dates = [monday + timedelta(days=i) for i in range(7)]
+    # Show today + next 6 days (not calendar week)
+    week_start = today
+    week_dates = [today + timedelta(days=i) for i in range(7)]
 
     # Load data
     analysis = _load_analysis()
@@ -420,7 +420,7 @@ def generate_weekly_plan() -> WeeklyPlan:
         weekly_tss = weekly_tss_target
 
     plan = WeeklyPlan(
-        week_start=monday.isoformat(),
+        week_start=week_start.isoformat(),
         days=days,
         weekly_tss_target=round(weekly_tss_target, 1),
         weekly_tss_planned=round(weekly_tss, 1),
@@ -455,12 +455,11 @@ def load_weekly_plan() -> WeeklyPlan | None:
     try:
         with open(path) as f:
             data = json.load(f)
-        # Check if plan is from this week
-        plan_monday = date.fromisoformat(data["week_start"])
+        # Check if plan start date is today or in the future
+        plan_start = date.fromisoformat(data["week_start"])
         today = date.today()
-        this_monday = today - timedelta(days=today.weekday())
-        if plan_monday < this_monday:
-            return None  # stale
+        if plan_start < today:
+            return None  # stale — plan starts before today
         days = [DailyPlan(**d) for d in data.get("days", [])]
         return WeeklyPlan(
             week_start=data["week_start"],
