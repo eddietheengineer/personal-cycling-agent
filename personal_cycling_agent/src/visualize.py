@@ -211,7 +211,7 @@ def _render_checkin():
     if history:
         rows = []
         for h in sorted(history, key=lambda r: r["date"], reverse=True):
-            stress_val = h.get("stress") or h.get("life_stress")
+            stress_val = h.get("stress")
             rows.append({
                 "Date": h["date"],
                 "Soreness": h.get("soreness"),

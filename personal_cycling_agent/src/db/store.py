@@ -133,7 +133,7 @@ class CyclingDB:
             CREATE TABLE IF NOT EXISTS morning_checkin (
                 date            TEXT    PRIMARY KEY,
                 soreness        INTEGER,
-                stress          INTEGER,
+                stress          REAL,
                 sleep_quality   INTEGER,
                 mood            INTEGER,
                 energy          INTEGER,
@@ -1135,7 +1135,6 @@ class CyclingDB:
             "date": data["date"],
             "soreness": data.get("soreness"),
             "stress": data.get("stress"),
-            "life_stress": data.get("stress"),
             "sleep_quality": data.get("sleep_quality"),
             "mood": data.get("mood"),
             "energy": data.get("energy"),
