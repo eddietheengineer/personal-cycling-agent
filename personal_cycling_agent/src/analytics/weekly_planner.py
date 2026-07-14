@@ -547,7 +547,7 @@ def generate_ai_plan() -> WeeklyPlan:
         f"4. If readiness < 60, use only recovery or endurance. No threshold/VO2.\n"
         f"5. You may do 2 longer rides or 3 shorter ones — use your judgment.\n\n"
         + weather_block
-        + journal_block
+        + journal_context
         + f"Return ONLY a JSON array of 7 day objects:\n"
         + f'[{{"date":"YYYY-MM-DD","weekday":0-6,"rest_day":bool,"session_type":"rest|recovery|endurance|threshold|vo2|anaerobic|mixed",'
         + f'"target_zone":"Z1-Z5","duration_min":int,"target_tss":float,"indoor":bool,'
