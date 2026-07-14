@@ -269,27 +269,68 @@ def generate_weekly_plan() -> WeeklyPlan:
         for f in forecasts:
             forecast_map[f.get("date", "")] = f
 
+    # Score each available day by weather quality (lower precip = better)
+    # Then pick the best days up to MAX_TRAINING_DAYS
+    MAX_TRAINING_DAYS = 3
+
+    day_scores: list[tuple[int, date, float, dict | None, list[str]]] = []
+    for i, day_date in enumerate(week_dates):
+        weekday = day_date.weekday()
+        date_str = day_date.isoformat()
+        if weekday not in available_days:
+            continue
+        time_slots = get_time_slots(weekday)
+        day_forecast = forecast_map.get(date_str)
+
+        # Score: 100 = perfect, 0 = terrible weather
+        score = 100.0
+        if day_forecast:
+            precip = day_forecast.get("precipitation_prob", 0)
+            condition = day_forecast.get("condition", "clear")
+            if condition in ("storm", "snow"):
+                score = 0
+            elif condition == "rain":
+                score = max(0, 100 - precip * 2)
+            else:
+                score = max(0, 100 - precip)
+
+        day_scores.append((i, day_date, score, day_forecast, time_slots))
+
+    # Sort by score descending, pick top MAX_TRAINING_DAYS
+    day_scores.sort(key=lambda x: -x[2])
+    training_days = set()
+    for entry in day_scores:
+        if len(training_days) >= MAX_TRAINING_DAYS:
+            break
+        # Skip days with terrible weather (score < 20) unless we have no other choice
+        if entry[2] < 20 and len(training_days) < len(day_scores):
+            continue
+        training_days.add(entry[0])
+
+    # If we skipped too many due to weather, fill remaining slots
+    if len(training_days) < MAX_TRAINING_DAYS:
+        for entry in day_scores:
+            if len(training_days) >= MAX_TRAINING_DAYS:
+                break
+            if entry[0] not in training_days:
+                training_days.add(entry[0])
+
     # Build daily plans
     days: list[DailyPlan] = []
     training_day_counter = 0
     weekly_tss = 0.0
 
-    # Project CTL/ATL forward
-    projected_tss_list = [0.0] * 7
-    ctl_proj, atl_proj = _project_ctl_atl(current_ctl, current_atl, [0.0])  # placeholder
+    # Session pattern for 3-day week
+    session_pattern = ["endurance", "threshold", "vo2"]
 
-    # First pass: assign sessions
     for i, day_date in enumerate(week_dates):
         weekday = day_date.weekday()
         date_str = day_date.isoformat()
-        is_available = weekday in available_days
         time_slots = get_time_slots(weekday)
-
-        # Weather for this day
         day_forecast = forecast_map.get(date_str)
         indoor, weather_note = _weather_adjustment(day_forecast)
 
-        if not is_available:
+        if i not in training_days:
             days.append(DailyPlan(
                 date=date_str,
                 weekday=weekday,
@@ -301,33 +342,43 @@ def generate_weekly_plan() -> WeeklyPlan:
                 indoor=False,
                 description="Rest day",
                 weather_note=weather_note,
-                rationale="Scheduled rest day",
+                rationale="Not selected for this week's plan",
             ))
             continue
 
         # Use today's readiness for today, project forward for future days
         day_readiness = readiness_score if day_date == today else max(50, readiness_score + (i - 1) * 3)
-        day_readiness = min(90, day_readiness)  # cap at 90
+        day_readiness = min(90, day_readiness)
 
         # Projected TSB for this day
-        proj_tsb = current_tsb + i * 2  # rough recovery projection
+        proj_tsb = current_tsb + i * 2
 
-        session_type, zone, duration, tss = _select_session_type(
-            day_index=i,
-            readiness_score=day_readiness,
-            tsb=proj_tsb,
-            projected_ctl=current_ctl,
-            projected_atl=current_atl,
-            available_days=available_days,
-            training_day_index=training_day_counter,
-        )
+        # Pick session type from pattern
+        session_type = session_pattern[training_day_counter % len(session_pattern)]
+
+        # Readiness-based override
+        if day_readiness < 40:
+            session_type = "recovery"
+        elif day_readiness < 55:
+            session_type = "endurance"
+        elif proj_tsb < -15:
+            session_type = "recovery"
+
+        session_map = {
+            "recovery": ("Z1", 30, 15.0),
+            "endurance": ("Z2", 60, 50.0),
+            "threshold": ("Z3-Z4", 45, 80.0),
+            "vo2": ("Z4-Z5", 45, 90.0),
+            "anaerobic": ("Z5", 30, 60.0),
+            "mixed": ("Z2-Z4", 60, 70.0),
+        }
+        zone, duration, tss = session_map.get(session_type, ("Z2", 60, 50.0))
+
+        # Adjust TSS based on readiness
+        tss *= max(0.5, day_readiness / 100.0)
 
         # Cap duration
         duration = min(duration, int(max_duration))
-
-        # Indoor override from weather
-        if indoor and not session_type == "rest":
-            pass  # description will note indoor
 
         description = _build_description(session_type, zone, duration, tss, indoor, time_slots[0])
 
@@ -337,6 +388,7 @@ def generate_weekly_plan() -> WeeklyPlan:
         rationale_parts.append(f"Projected TSB: {proj_tsb:.0f}")
         if weather_note:
             rationale_parts.append(weather_note)
+        rationale_parts.append("Selected as one of 3 best weather days")
 
         days.append(DailyPlan(
             date=date_str,
@@ -345,19 +397,18 @@ def generate_weekly_plan() -> WeeklyPlan:
             session_type=session_type,
             target_zone=zone,
             duration_min=duration,
-            target_tss=tss,
+            target_tss=round(tss, 1),
             indoor=indoor,
             description=description,
             weather_note=weather_note,
             rationale="; ".join(rationale_parts),
         ))
 
-        projected_tss_list[i] = tss
         weekly_tss += tss
         training_day_counter += 1
 
     # Compute weekly TSS target from CTL
-    weekly_tss_target = current_ctl * 7 / 30  # approximate
+    weekly_tss_target = current_ctl * 7 / 30
 
     # Scale sessions to hit weekly TSS target
     if weekly_tss > 0 and weekly_tss > weekly_tss_target:

@@ -153,7 +153,7 @@ def get_weekly_forecast(lat: float, lon: float) -> list[dict]:
         return []
 
     daily = data.get("daily", {})
-    dates = daily.get("temperature_2m_max", [])
+    dates = daily.get("time", [])
     if not dates:
         logger.warning("Open-Meteo response missing daily data")
         return []
