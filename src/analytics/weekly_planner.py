@@ -39,6 +39,10 @@ class DailyPlan:
     description: str  # Human-readable workout description
     weather_note: str = ""  # e.g. "Rain likely — indoor recommended"
     rationale: str = ""  # Why this workout was chosen
+    weather_temp_max: float = 0.0
+    weather_temp_min: float = 0.0
+    weather_precip: int = 0
+    weather_condition: str = ""
 
 
 @dataclass
@@ -331,6 +335,10 @@ def generate_weekly_plan() -> WeeklyPlan:
         indoor, weather_note = _weather_adjustment(day_forecast)
 
         if i not in training_days:
+            w_temp_max = day_forecast.get("temp_max", 0) if day_forecast else 0
+            w_temp_min = day_forecast.get("temp_min", 0) if day_forecast else 0
+            w_precip = day_forecast.get("precipitation_prob", 0) if day_forecast else 0
+            w_condition = day_forecast.get("condition", "") if day_forecast else ""
             days.append(DailyPlan(
                 date=date_str,
                 weekday=weekday,
@@ -343,6 +351,10 @@ def generate_weekly_plan() -> WeeklyPlan:
                 description="Rest day",
                 weather_note=weather_note,
                 rationale="Not selected for this week's plan",
+                weather_temp_max=w_temp_max,
+                weather_temp_min=w_temp_min,
+                weather_precip=w_precip,
+                weather_condition=w_condition,
             ))
             continue
 
@@ -382,6 +394,10 @@ def generate_weekly_plan() -> WeeklyPlan:
 
         description = _build_description(session_type, zone, duration, tss, indoor, time_slots[0])
 
+        w_temp_max = day_forecast.get("temp_max", 0) if day_forecast else 0
+        w_temp_min = day_forecast.get("temp_min", 0) if day_forecast else 0
+        w_precip = day_forecast.get("precipitation_prob", 0) if day_forecast else 0
+        w_condition = day_forecast.get("condition", "") if day_forecast else ""
         rationale_parts = []
         if day_date == today:
             rationale_parts.append(f"Today's readiness: {readiness_score:.0f}/100")
@@ -402,6 +418,10 @@ def generate_weekly_plan() -> WeeklyPlan:
             description=description,
             weather_note=weather_note,
             rationale="; ".join(rationale_parts),
+            weather_temp_max=w_temp_max,
+            weather_temp_min=w_temp_min,
+            weather_precip=w_precip,
+            weather_condition=w_condition,
         ))
 
         weekly_tss += tss
@@ -429,6 +449,112 @@ def generate_weekly_plan() -> WeeklyPlan:
     )
 
     return plan
+def generate_ai_plan() -> WeeklyPlan:
+    """Generate a weekly plan using LLM analysis of recent history and readiness."""
+    from src.agent.llm_client import generate
+
+    today = date.today()
+    week_start = today
+    week_dates = [today + timedelta(days=i) for i in range(7)]
+
+    analysis = _load_analysis()
+    profile = _load_profile()
+    available_days = get_available_days()
+
+    training_load = analysis.get("training_load", {})
+    current_ctl = _parse_float(training_load.get("ctl"), 100.0)
+    current_atl = _parse_float(training_load.get("atl"), 80.0)
+    current_tsb = current_ctl - current_atl
+
+    readiness = analysis.get("readiness", {})
+    readiness_score = _parse_float(readiness.get("composite_score"), 70.0)
+    readiness_rec = readiness.get("recommendation", "")
+    readiness_state = readiness.get("state", "")
+    cp = _parse_float(analysis.get("cp"), 224.0)
+
+    forecast_map: dict[str, dict] = {}
+    location = get_location()
+    if location:
+        forecasts = get_weekly_forecast(location[0], location[1])
+        for f in forecasts:
+            forecast_map[f.get("date", "")] = f
+
+    weather_lines = []
+    for d in week_dates:
+        ds = d.isoformat()
+        fc = forecast_map.get(ds, {})
+        weather_lines.append(
+            f"{ds}: {fc.get('condition','unknown')} "
+            f"{fc.get('temp_max',0):.0f}C/{fc.get('temp_min',0):.0f}C "
+            f"precip {fc.get('precipitation_prob',0)}%"
+        )
+
+    day_names = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
+    available_days_str = ", ".join(day_names[i] for i in available_days)
+
+    prompt = (
+        f"You are a cycling coach. Generate a 7-day training plan.\n\n"
+        f"ATHLETE: Readiness {readiness_score:.0f}/100 ({readiness_state}), "
+        f"CTL {current_ctl:.0f}, ATL {current_atl:.0f}, TSB {current_tsb:.0f}, "
+        f"CP {cp:.0f}W\n"
+        f"Recommendation: {readiness_rec}\n"
+        f"Goals: {profile.get('primary_goal', 'VO2 max')}\n"
+        f"Max session: {_parse_float(profile.get('max_session_duration'), 90.0):.0f}min\n\n"
+        f"CONSTRAINTS: Max 3 training days. Available: {available_days_str}\n\n"
+        f"WEATHER:\n" + "\n".join(weather_lines) + "\n\n"
+        f"Return ONLY a JSON array of 7 day objects:\n"
+        f'[{{"date":"YYYY-MM-DD","weekday":0-6,"rest_day":bool,"session_type":"rest|recovery|endurance|threshold|vo2|anaerobic|mixed",'
+        f'"target_zone":"Z1-Z5","duration_min":int,"target_tss":float,"indoor":bool,'
+        f'"description":"str","weather_note":"str","rationale":"str"}}]\n'
+        f"Rest days: rest_day=true, duration=0, tss=0. Total TSS ~{current_ctl*7/30:.0f}."
+    )
+
+    try:
+        response = generate(prompt, stream=False)
+        import re
+        json_match = re.search(r'\[[\s\S]*\]', response)
+        if not json_match:
+            logger.warning("AI plan: no JSON in response, falling back to rules")
+            return generate_weekly_plan()
+
+        raw_days = json.loads(json_match.group())
+        days = []
+        for rd in raw_days[:7]:
+            ds = rd.get("date", "")
+            weekday = rd.get("weekday", 0)
+            fc = forecast_map.get(ds, {})
+            indoor, weather_note = _weather_adjustment(fc)
+            if rd.get("indoor"):
+                indoor = True
+            days.append(DailyPlan(
+                date=ds, weekday=weekday,
+                rest_day=rd.get("rest_day", True),
+                session_type=rd.get("session_type", "rest"),
+                target_zone=rd.get("target_zone", "—"),
+                duration_min=rd.get("duration_min", 0),
+                target_tss=rd.get("target_tss", 0.0),
+                indoor=indoor,
+                description=rd.get("description", ""),
+                weather_note=weather_note or rd.get("weather_note", ""),
+                rationale=rd.get("rationale", ""),
+                weather_temp_max=fc.get("temp_max", 0),
+                weather_temp_min=fc.get("temp_min", 0),
+                weather_precip=fc.get("precipitation_prob", 0),
+                weather_condition=fc.get("condition", ""),
+            ))
+
+        weekly_tss = sum(d.target_tss for d in days if not d.rest_day)
+        return WeeklyPlan(
+            week_start=week_start.isoformat(),
+            days=days,
+            weekly_tss_target=round(current_ctl * 7 / 30, 1),
+            weekly_tss_planned=round(weekly_tss, 1),
+            generated_at=today.isoformat(),
+            readiness_summary=f"AI Plan - Readiness {readiness_score:.0f}/100, CTL {current_ctl:.0f}, TSB {current_tsb:.0f}",
+        )
+    except Exception as e:
+        logger.exception("AI plan generation failed")
+        raise RuntimeError(f"AI plan failed: {e}") from e
 
 
 def save_weekly_plan(plan: WeeklyPlan) -> None:

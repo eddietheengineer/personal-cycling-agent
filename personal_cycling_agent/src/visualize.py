@@ -1689,30 +1689,40 @@ def _render_weekly_calendar():
     # Load or generate plan
     plan = load_weekly_plan()
 
-    # Regenerate button
-    col1, col2 = st.columns([4, 1])
+    # Two generate buttons: Rules (instant) and AI (LLM)
+    col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
         if plan:
-            week_label = f"Week of {plan.week_start}"
+            week_label = f"Plan from {plan.week_start}"
             st.caption(week_label)
         else:
             st.caption("No plan generated yet")
     with col2:
-        if st.button("🔄 Generate Week", type="primary", use_container_width=True, key="generate_week"):
+        if st.button("📊 Rules", type="primary", use_container_width=True, key="generate_rules"):
             try:
                 plan = generate_weekly_plan()
                 save_weekly_plan(plan)
                 st.session_state.week_generated = True
                 st.rerun()
             except Exception as e:
-                st.error(f"Failed to generate plan: {e}")
+                st.error(f"Failed: {e}")
+    with col3:
+        if st.button("🤖 AI", use_container_width=True, key="generate_ai"):
+            try:
+                from src.analytics.weekly_planner import generate_ai_plan
+                plan = generate_ai_plan()
+                save_weekly_plan(plan)
+                st.session_state.week_generated = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"AI generation failed: {e}")
 
     if st.session_state.get("week_generated"):
         st.success("Weekly plan generated!")
         st.session_state.week_generated = False
 
     if not plan:
-        st.info("Click 'Generate Week' to create your training plan based on readiness, weather, and schedule.")
+        st.info("Generate a plan: **Rules** uses readiness + weather. **AI** adds LLM analysis of your history.")
         _render_schedule_config()
         return
 
@@ -1745,30 +1755,29 @@ def _render_weekly_calendar():
         is_today = day.date == date.today().isoformat()
         border = "2px solid #fff" if is_today else "1px solid #333"
 
-        if day.rest_day:
-            bg = "#1a1a2e"
-            color_display = "#666"
-        else:
-            bg = color + "20"
-            color_display = color
-
-        day_name = day_labels[day.weekday]
-        day_date = day.date[5:]  # MM-DD
+        # Weather icon
+        weather_icons = {"clear": "☀️", "cloudy": "⛅", "rain": "🌧", "snow": "❄️", "storm": "⛈"}
+        w_icon = weather_icons.get(day.weather_condition, "")
+        w_temp = f"{day.weather_temp_max:.0f}°/{day.weather_temp_min:.0f}°" if day.weather_temp_max else ""
+        w_precip = f"{day.weather_precip}%" if day.weather_precip else ""
+        w_line = f"{w_icon} {w_temp} {w_precip}".strip() if (w_temp or w_precip) else ""
 
         if day.rest_day:
             content = f"""
-            <div style="padding: 12px; border: {border}; border-radius: 8px; background: {bg}; text-align: center; min-height: 80px;">
+            <div style="padding: 12px; border: {border}; border-radius: 8px; background: {bg}; text-align: center; min-height: 90px;">
                 <div style="font-weight: 600; color: #888;">{day_name} {day_date}</div>
                 <div style="color: #666; margin-top: 8px;">Rest</div>
+                <div style="color: #555; font-size: 0.8em; margin-top: 4px;">{w_line}</div>
             </div>"""
         else:
             indoor_icon = "🏠" if day.indoor else "🚴"
             content = f"""
-            <div style="padding: 12px; border: {border}; border-radius: 8px; background: {bg}; text-align: center; min-height: 80px;">
+            <div style="padding: 12px; border: {border}; border-radius: 8px; background: {bg}; text-align: center; min-height: 90px;">
                 <div style="font-weight: 600; color: {color_display};">{day_name} {day_date}</div>
                 <div style="font-size: 1.2em; margin: 4px 0;">{indoor_icon} {day.session_type.title()}</div>
                 <div style="color: #aaa; font-size: 0.85em;">{day.duration_min}min · TSS {day.target_tss:.0f}</div>
                 <div style="color: {color_display}; font-size: 0.8em;">{day.target_zone}</div>
+                <div style="color: #555; font-size: 0.8em; margin-top: 4px;">{w_line}</div>
             </div>"""
 
         st.markdown(content, unsafe_allow_html=True)
