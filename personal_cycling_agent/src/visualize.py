@@ -1062,11 +1062,10 @@ def _render_garmin_setup():
         mode = st.session_state.get("sync_mode", "update")
         days = st.session_state.get("sync_days", 7)
 
-        # Progress callback that feeds the log and triggers rerun
+        # Progress callback that collects log messages without triggering rerun
         def progress_callback(pct: int, message: str) -> None:
-            st.session_state.sync_log.append(message)
+            st.session_state.sync_log.append(f"[{pct}%] {message}")
             st.session_state.sync_progress = pct
-            st.rerun()
 
         with st.container():
             st.subheader("Sync Progress")
