@@ -2210,14 +2210,14 @@ def _render_weekly_calendar():
 
 
 def _render_schedule_config():
-    """Render per-day hour availability selectors."""
+    """Render 7x24 hour availability grid using table rows for alignment."""
     from src.config.schedule import load_schedule, save_schedule, DAY_NAMES
 
     schedule = load_schedule()
     day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
     with st.expander("⚙️ Training Schedule", expanded=False):
-        st.caption("Select hours you're available to ride. Presets apply to all days.")
+        st.caption("Click cells to toggle availability. Each row = 1 hour block.")
 
         # Quick presets
         p1, p2, p3, p4 = st.columns(4)
@@ -2235,19 +2235,27 @@ def _render_schedule_config():
 
         st.divider()
 
-        # Per-day multi-select
-        cols = st.columns(7)
-        for day_idx, day_name in enumerate(DAY_NAMES):
-            hours = set(schedule.get(day_name, {}).get("available_hours", []))
-            with cols[day_idx]:
-                selected = st.multiselect(
-                    day_labels[day_idx],
-                    options=[f"{h:02d}:00" for h in range(24)],
-                    default=[f"{h:02d}:00" for h in sorted(hours)],
-                    key=f"ms_{day_name}",
-                )
-                selected_hours = [int(s.split(":")[0]) for s in selected]
-                schedule[day_name] = {"available_hours": selected_hours}
+        # Header row
+        hdr_cols = st.columns([0.8, 1, 1, 1, 1, 1, 1, 1])
+        hdr_cols[0].markdown("**Time**")
+        for i, label in enumerate(day_labels):
+            hdr_cols[i + 1].markdown(f"**{label}**")
+
+        # One row per hour — 8 columns locked together
+        for hour in range(24):
+            row_cols = st.columns([0.8, 1, 1, 1, 1, 1, 1, 1])
+            row_cols[0].caption(f"{hour:02d}:00")
+            for day_idx, day_name in enumerate(DAY_NAMES):
+                hours = set(schedule.get(day_name, {}).get("available_hours", []))
+                checked = hour in hours
+                if row_cols[day_idx + 1].checkbox(
+                    "", value=checked, key=f"hour_{day_name}_{hour}",
+                    label_visibility="collapsed",
+                ):
+                    hours.add(hour)
+                else:
+                    hours.discard(hour)
+                schedule[day_name] = {"available_hours": sorted(hours)}
 
         if st.button("Save Schedule", type="primary", use_container_width=True, key="save_schedule"):
             save_schedule(schedule)
