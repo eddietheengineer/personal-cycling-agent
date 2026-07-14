@@ -1159,6 +1159,15 @@ def _render_profile():
             power_meter = st.text_input("Power Meter", value=profile["power_meter"], key="prof_power_meter")
             hr_monitor = st.text_input("HR Monitor", value=profile["hr_monitor"], key="prof_hr_monitor")
 
+        st.subheader("Training Safety")
+        st.caption("TSB floor: minimum TSB the planner will allow. Going below this risks injury.")
+        tsb_floor = st.slider(
+            "TSB Floor", min_value=-30, max_value=10, value=profile["tsb_floor"],
+            step=1, key="prof_tsb_floor",
+            help="intervals.icu: Green >+10, Grey -10 to +10, Red <-10. Set to your injury threshold."
+        )
+        profile["tsb_floor"] = tsb_floor
+
         st.subheader("Location & Schedule")
         loc_col1, loc_col2 = st.columns(2)
         from src.config.schedule import load_weather_location, save_weather_location
