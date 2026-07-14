@@ -973,7 +973,9 @@ def sync_garmin(
     sync_dates: list[date] = []
     current_date = last_date - timedelta(days=1)
     days_synced = 0
-    while unbounded or days_synced < days:
+    # Cap unbounded sync to 10 years back to avoid datetime underflow
+    max_days = 3650 if unbounded else days
+    while days_synced < max_days:
         sync_dates.append(current_date)
         current_date -= timedelta(days=1)
         days_synced += 1
