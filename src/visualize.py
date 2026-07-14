@@ -1088,16 +1088,7 @@ def _render_garmin_setup():
     if st.session_state.get("sync_result"):
         result = st.session_state.sync_result
         with st.expander("Sync Results", expanded=True):
-            if "wellness" in result:
-                st.write(f"**Wellness:** {result['wellness']}")
-            if "activities" in result:
-                st.write(f"**Activities:** {result['activities']}")
-            if "analysis" in result:
-                analysis = result["analysis"]
-                if analysis.get("cp"):
-                    st.write(f"**Critical Power:** {analysis['cp']:.0f} W")
-                if analysis.get("readiness"):
-                    st.write(f"**Readiness:** {analysis['readiness']}")
+            _display_sync_results(result)
             if st.button("Done", type="primary", use_container_width=True, key="dismiss_sync_results"):
                 st.session_state.sync_result = None
                 st.session_state.sync_log = []
@@ -1118,6 +1109,73 @@ def _check_garmin_connected() -> bool:
         if files:
             return True
     return False
+
+
+def _display_sync_results(result: dict) -> None:
+    """Render formatted sync results."""
+    # Wellness summary
+    if "wellness" in result:
+        w = result["wellness"]
+        recs = w.get("wellness_records", 0)
+        hrv = w.get("with_hrv", 0)
+        st.write(f"**Wellness:** {recs} record(s) synced{f' ({hrv} with HRV)' if hrv else ''}")
+
+    # Activities summary
+    if "activities" in result:
+        a = result["activities"]
+        processed = a.get("activities_processed", 0)
+        streams = a.get("stream_records", 0)
+        st.write(f"**Activities:** {processed} processed, {streams} stream records")
+
+    # Analysis summary
+    if "analysis" in result:
+        analysis = result["analysis"]
+        cp = analysis.get("cp")
+        readiness = analysis.get("readiness")
+        training_load = analysis.get("training_load")
+
+        # Metrics row
+        cols = st.columns(4)
+        if cp:
+            cols[0].metric("Critical Power", f"{cp:.0f} W")
+        if training_load:
+            cols[1].metric("CTL", f"{training_load.get('ctl', 0):.0f}")
+            cols[2].metric("ATL", f"{training_load.get('atl', 0):.0f}")
+            cols[3].metric("TSB", f"{training_load.get('tsb', 0):.0f}")
+
+        # Readiness breakdown
+        if readiness:
+            st.markdown("---")
+            st.write(f"**Readiness:** {readiness.get('state', 'unknown').replace('_', ' ').title()}")
+            score = readiness.get("composite_score", 0)
+            state = readiness.get("state", "unknown")
+
+            # Color-coded score
+            if score >= 70:
+                emoji = "🟢"
+            elif score >= 50:
+                emoji = "🟡"
+            else:
+                emoji = "🔴"
+            st.write(f"{emoji} **Score:** {score:.0f}/100")
+
+            # Key metrics
+            r_cols = st.columns(3)
+            r_cols[0].write(f"**HRV (RMSSD):** {readiness.get('rmssd', '—')}")
+            r_cols[1].write(f"**RHR:** {readiness.get('resting_hr', '—')}")
+            r_cols[2].write(f"**Limiting Factor:** {readiness.get('limiting_factor', '—')}")
+
+            rec = readiness.get("recommendation", "")
+            if rec:
+                st.info(rec)
+
+    # Prescription
+    if "prescription" in result:
+        st.markdown("---")
+        st.subheader("Today's Prescription")
+        st.markdown(result["prescription"])
+    if "prescription_error" in result:
+        st.error(f"Prescription failed: {result['prescription_error']}")
 
 # ---------------------------------------------------------------------------
 # Shared sync controls (used by Coach page)
@@ -1254,22 +1312,7 @@ def _render_sync_controls():
     if st.session_state.get("sync_result"):
         result = st.session_state.sync_result
         with st.expander("Sync Results", expanded=True):
-            if "wellness" in result:
-                st.write(f"**Wellness:** {result['wellness']}")
-            if "activities" in result:
-                st.write(f"**Activities:** {result['activities']}")
-            if "analysis" in result:
-                analysis = result["analysis"]
-                if analysis.get("cp"):
-                    st.write(f"**Critical Power:** {analysis['cp']:.0f} W")
-                if analysis.get("readiness"):
-                    st.write(f"**Readiness:** {analysis['readiness']}")
-            if "prescription" in result:
-                st.subheader("Today's Prescription")
-                st.markdown(result["prescription"])
-            if "prescription_error" in result:
-                st.error(f"Prescription failed: {result['prescription_error']}")
-
+            _display_sync_results(result)
             if st.button("Done", type="primary", use_container_width=True, key="dismiss_sync_results"):
                 st.session_state.sync_result = None
                 st.session_state.sync_log = []
