@@ -301,6 +301,7 @@ def generate_weekly_plan() -> WeeklyPlan:
         day_scores.append((i, day_date, score, day_forecast, avail_hours, ride_note))
 
     MAX_TRAINING_DAYS = 3
+    MIN_TSB_FLOOR = -10  # Never schedule a plan that drops TSB below this
     # Sort by score descending, pick top MAX_TRAINING_DAYS
     day_scores.sort(key=lambda x: -x[2])
     training_days = set()
@@ -368,19 +369,15 @@ def generate_weekly_plan() -> WeeklyPlan:
         day_readiness = readiness_score if day_date == today else max(50, readiness_score + (i - 1) * 3)
         day_readiness = min(90, day_readiness)
 
-        # Projected TSB for this day
-        proj_tsb = current_tsb + i * 2
+        # Project CTL/ATL forward to this day to get real TSB
+        past_tss = [d.target_tss for d in days if not d.rest_day]
+        run_ctl, run_atl = _project_ctl_atl(current_ctl, current_atl, past_tss + [0.0])
+        proj_ctl = run_ctl[-1]
+        proj_atl = run_atl[-1]
+        proj_tsb = proj_ctl - proj_atl
 
         # Pick session type from pattern
         session_type = session_pattern[training_day_counter % len(session_pattern)]
-
-        # Readiness-based override
-        if day_readiness < 40:
-            session_type = "recovery"
-        elif day_readiness < 55:
-            session_type = "endurance"
-        elif proj_tsb < -15:
-            session_type = "recovery"
 
         session_map = {
             "recovery": ("Z1", 30, 15.0),
@@ -395,6 +392,32 @@ def generate_weekly_plan() -> WeeklyPlan:
         # Adjust TSS based on readiness
         tss *= max(0.5, day_readiness / 100.0)
 
+        # TSB floor: if adding this workout would drop projected TSB below floor,
+        # downgrade to recovery or skip
+        test_ctl, test_atl = _project_ctl_atl(proj_ctl, proj_atl, [tss])
+        post_tsb = test_ctl[0] - test_atl[0]
+        if post_tsb < MIN_TSB_FLOOR:
+            # Try recovery instead
+            zone, duration, tss = "Z1", 30, 15.0
+            session_type = "recovery"
+            test_ctl2, test_atl2 = _project_ctl_atl(proj_ctl, proj_atl, [tss])
+            post_tsb2 = test_ctl2[0] - test_atl2[0]
+            if post_tsb2 < MIN_TSB_FLOOR:
+                # Even recovery is too much — make it a rest day
+                days.append(DailyPlan(
+                    date=date_str, weekday=weekday, rest_day=True,
+                    session_type="rest", target_zone="—", duration_min=0,
+                    target_tss=0.0, indoor=False, description="Rest day — TSB protection",
+                    weather_note=weather_note,
+                    rationale=f"Skipped: projected TSB {post_tsb:.0f} would drop below {MIN_TSB_FLOOR}",
+                    weather_temp_max=w_temp_max, weather_temp_min=w_temp_min,
+                    weather_precip=w_precip, weather_condition=w_condition,
+                    ride_note=ride_note,
+                ))
+                weekly_tss += 0
+                training_day_counter += 1
+                continue
+
         # Cap duration
         duration = min(duration, int(max_duration))
 
@@ -408,7 +431,7 @@ def generate_weekly_plan() -> WeeklyPlan:
         rationale_parts = []
         if day_date == today:
             rationale_parts.append(f"Today's readiness: {readiness_score:.0f}/100")
-        rationale_parts.append(f"Projected TSB: {proj_tsb:.0f}")
+        rationale_parts.append(f"Projected TSB: {proj_tsb:.0f} (post-workout: {post_tsb:.0f})")
         if weather_note:
             rationale_parts.append(weather_note)
         rationale_parts.append("Selected as one of 3 best weather days")
@@ -559,7 +582,10 @@ def generate_ai_plan() -> WeeklyPlan:
         f"   with 1h buffer before/after. Prefer [RIDEABLE] days.\n"
         f"   [NOT RIDEABLE] means weather blocks a clean ride window — set indoor=true if you pick it.\n"
         f"4. If readiness < 60, use only recovery or endurance. No threshold/VO2.\n"
-        f"5. You may do 2 longer rides or 3 shorter ones — use your judgment.\n\n"
+        f"5. You may do 2 longer rides or 3 shorter ones — use your judgment.\n"
+        f"6. CRITICAL: Current TSB is {current_tsb:.0f}. NEVER schedule a plan that drops\n"
+        f"   projected TSB below -10. If TSB is already low (<0), use only recovery/endurance.\n"
+        f"   The athlete gets injured when TSB goes negative.\n\n"
         + weather_block
         + journal_context
         + f"Return ONLY a JSON array of 7 day objects:\n"
@@ -581,6 +607,24 @@ def generate_ai_plan() -> WeeklyPlan:
         days = []
         # Map weekday -> correct date for this week
         weekday_to_date = {d.weekday(): d.isoformat() for d in week_dates}
+
+        # Enforce TSB floor: downgrade sessions that would drop TSB below -10
+        MIN_TSB_FLOOR = -10
+        run_ctl, run_atl = current_ctl, current_atl
+        for rd in raw_days[:7]:
+            if rd.get("rest_day", True):
+                continue
+            tss = rd.get("target_tss", 0)
+            test_ctl, test_atl = _project_ctl_atl(run_ctl, run_atl, [tss])
+            post_tsb = test_ctl[0] - test_atl[0]
+            if post_tsb < MIN_TSB_FLOOR:
+                # Downgrade to recovery
+                rd["session_type"] = "recovery"
+                rd["target_tss"] = 15.0
+                rd["duration_min"] = 30
+                rd["target_zone"] = "Z1"
+                tss = 15.0
+            run_ctl, run_atl = _project_ctl_atl(run_ctl, run_atl, [tss])[0][0], _project_ctl_atl(run_ctl, run_atl, [tss])[1][0]
 
         for rd in raw_days[:7]:
             ds = rd.get("date", "")

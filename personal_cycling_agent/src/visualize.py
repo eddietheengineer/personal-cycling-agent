@@ -150,13 +150,27 @@ def _render_week_strip():
 
     plan = load_weekly_plan()
 
-    # Header row with generate buttons
-    h_cols = st.columns([4, 1, 1])
+    # Header row with sync + generate buttons
+    h_cols = st.columns([4, 1, 1, 1])
     with h_cols[0]:
         st.markdown("**7-Day Plan**", help="Shows today + next 6 days")
         if plan:
             st.caption(f"Plan from {plan.week_start} · {plan.readiness_summary}")
     with h_cols[1]:
+        if st.button("🔄 Sync", use_container_width=True, key="sync_dash"):
+            try:
+                from src.ingestion.garmin_connect import sync_garmin, sync_activities
+                from src.main import run_analyze, run_prescribe
+                with st.spinner("Syncing Garmin data..."):
+                    sync_garmin()
+                    sync_activities()
+                    run_analyze()
+                    run_prescribe()
+                st.session_state.sync_done = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Sync failed: {e}")
+    with h_cols[2]:
         if st.button("📊 Rules", type="primary", use_container_width=True, key="gen_rules_dash"):
             try:
                 p = generate_weekly_plan()
@@ -165,7 +179,7 @@ def _render_week_strip():
                 st.rerun()
             except Exception as e:
                 st.error(f"Failed: {e}")
-    with h_cols[2]:
+    with h_cols[3]:
         if st.button("🤖 AI", use_container_width=True, key="gen_ai_dash"):
             try:
                 from src.analytics.weekly_planner import generate_ai_plan
