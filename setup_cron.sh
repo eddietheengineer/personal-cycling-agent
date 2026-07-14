@@ -12,7 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VAULT="${CYCLING_AGENT_VAULT:-$HOME/cycling-agent-data}"
-CRON_CMD="cd ${SCRIPT_DIR} && source .venv/bin/activate && python -m src.main >> ${VAULT}/data/pipeline.log 2>&1"
+CRON_CMD="cd ${SCRIPT_DIR} && source .venv/bin/activate && python -m src.main --ingest --analyze >> ${VAULT}/data/pipeline.log 2>&1"
 
 if [ "${1:-}" = "--remove" ]; then
     crontab -l 2>/dev/null | grep -v "python -m src.main" | crontab - || true

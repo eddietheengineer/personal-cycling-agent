@@ -627,12 +627,7 @@ def main():
     else:
         analysis = None
 
-    if run_all or args.prescribe:
-        prescription = run_prescribe(analysis)
-        print("\n" + "=" * 60)
-        print("TODAY'S TRAINING PRESCRIPTION")
-        print("=" * 60)
-        print(prescription)
+
 
 
 if __name__ == "__main__":
