@@ -301,7 +301,7 @@ def generate_weekly_plan() -> WeeklyPlan:
         day_scores.append((i, day_date, score, day_forecast, avail_hours, ride_note))
 
     MAX_TRAINING_DAYS = 3
-    MIN_TSB_FLOOR = -10  # Never schedule a plan that drops TSB below this
+    MIN_TSB_FLOOR = int(profile.get("tsb_floor", -10))  # From user profile
     # Sort by score descending, pick top MAX_TRAINING_DAYS
     day_scores.sort(key=lambda x: -x[2])
     training_days = set()
@@ -584,8 +584,8 @@ def generate_ai_plan() -> WeeklyPlan:
         f"4. If readiness < 60, use only recovery or endurance. No threshold/VO2.\n"
         f"5. You may do 2 longer rides or 3 shorter ones — use your judgment.\n"
         f"6. CRITICAL: Current TSB is {current_tsb:.0f}. NEVER schedule a plan that drops\n"
-        f"   projected TSB below -10. If TSB is already low (<0), use only recovery/endurance.\n"
-        f"   The athlete gets injured when TSB goes negative.\n\n"
+        f"   projected TSB below {int(profile.get('tsb_floor', -10))}. If TSB is already low (<0), use only recovery/endurance.\n"
+        f"   The athlete gets injured when TSB goes below this floor.\n\n"
         + weather_block
         + journal_context
         + f"Return ONLY a JSON array of 7 day objects:\n"
@@ -608,8 +608,8 @@ def generate_ai_plan() -> WeeklyPlan:
         # Map weekday -> correct date for this week
         weekday_to_date = {d.weekday(): d.isoformat() for d in week_dates}
 
-        # Enforce TSB floor: downgrade sessions that would drop TSB below -10
-        MIN_TSB_FLOOR = -10
+        # Enforce TSB floor from user profile
+        MIN_TSB_FLOOR = int(profile.get("tsb_floor", -10))
         run_ctl, run_atl = current_ctl, current_atl
         for rd in raw_days[:7]:
             if rd.get("rest_day", True):
