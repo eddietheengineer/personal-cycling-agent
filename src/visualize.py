@@ -18,7 +18,6 @@ NOTE on units from Garmin Connect:
 import os
 import re
 import sys
-import threading
 from datetime import date
 from pathlib import Path
 
@@ -1181,36 +1180,68 @@ def _render_garmin_setup():
             key="reanalyze_all",
         )
 
-    # ── Handle sync via background thread ─────────────────────────────
+    col4, col5 = st.columns([3, 1])
+    with col4:
+        st.caption("Generate an AI-powered training prescription based on your latest data.")
+    with col5:
+        prescribe_clicked = st.button(
+            "Generate Prescription",
+            help="Run analytics and generate a training prescription via LLM.",
+            key="generate_prescription",
+        )
+    # ── Handle sync button clicks ─────────────────────────────────────
     if sync_clicked or sync_all_clicked or reanalyze_clicked:
-        if st.session_state.get("sync_thread") and st.session_state.get("sync_thread").is_alive():
-            st.info("Sync already running in background...")
+        if st.session_state.get("syncing"):
+            st.info("Sync already running...")
         else:
             mode = "update" if sync_clicked else ("all" if sync_all_clicked else "reanalyze")
             days = 7 if mode == "update" else (3650 if mode == "all" else 0)
             st.session_state.sync_mode = mode
             st.session_state.sync_days = days
-            st.session_state.sync_status = "starting"
             st.session_state.sync_result = None
             st.session_state.sync_error = None
+            st.session_state.syncing = True
+            st.rerun()
 
-            def _run_sync():
-                try:
+    if prescribe_clicked:
+        if st.session_state.get("syncing"):
+            st.info("Sync already running...")
+        else:
+            st.session_state.sync_mode = "prescribe"
+            st.session_state.syncing = True
+            st.session_state.sync_result = None
+            st.session_state.sync_error = None
+            st.rerun()
+
+    # ── Run sync in main thread with spinner ──────────────────────────
+    if st.session_state.get("syncing"):
+        mode = st.session_state.get("sync_mode", "update")
+        days = st.session_state.get("sync_days", 7)
+        with st.spinner("Syncing data and running analytics..."):
+            try:
+                if mode == "prescribe":
+                    from src.main import run_analyze, run_prescribe
+                    analyze_result = run_analyze()
+                    prescription = run_prescribe(analyze_result)
+                    st.session_state.sync_result = {
+                        "analysis": {
+                            "cp": analyze_result.get("cp"),
+                            "readiness": analyze_result.get("readiness"),
+                            "training_load": analyze_result.get("training_load"),
+                        },
+                        "prescription": prescription,
+                    }
+                else:
                     from src.ingestion.garmin_connect import sync_garmin, sync_activities
-                    st.session_state.sync_status = "fetching_wellness"
+                    from src.main import run_analyze
                     if mode != "reanalyze":
                         unbounded = mode == "all"
                         wellness = sync_garmin(days=days, db_path=str(config.db_path("cycling_agent.sqlite")), unbounded=unbounded)
-                        st.session_state.sync_status = "fetching_activities"
                         activities = sync_activities(days=days, db_path=str(config.db_path("cycling_agent.sqlite")), unbounded=unbounded)
                     else:
                         wellness = {"wellness_records": 0}
                         activities = {"activities_processed": 0}
-
-                    st.session_state.sync_status = "analyzing"
-                    from src.main import run_analyze
                     analyze_result = run_analyze()
-
                     st.session_state.sync_result = {
                         "wellness": wellness,
                         "activities": activities,
@@ -1220,56 +1251,25 @@ def _render_garmin_setup():
                             "training_load": analyze_result.get("training_load"),
                         },
                     }
-                    st.session_state.sync_status = "done"
-                except Exception as exc:
-                    exc_str = str(exc)
-                    if "MFA" in exc_str or "mfa" in exc_str or "two-factor" in exc_str:
-                        st.session_state.sync_error = exc_str
-                        st.session_state.sync_status = "mfa_error"
-                        st.session_state.garmin_auth_state = "idle"
-                        st.session_state.garmin_auth_instance = None
-                    else:
-                        st.session_state.sync_error = exc_str
-                        st.session_state.sync_status = "error"
+            except Exception as exc:
+                exc_str = str(exc)
+                if "MFA" in exc_str or "mfa" in exc_str or "two-factor" in exc_str:
+                    st.session_state.sync_error = exc_str
+                    st.session_state.garmin_auth_state = "idle"
+                    st.session_state.garmin_auth_instance = None
+                else:
+                    st.session_state.sync_error = exc_str
+            finally:
+                st.session_state.syncing = False
+                st.rerun()
 
-            thread = threading.Thread(target=_run_sync, daemon=True)
-            st.session_state.sync_thread = thread
-            thread.start()
-            st.rerun()
-
-    # ── Show sync progress (no polling — thread writes trigger reruns) ──
-    sync_status = st.session_state.get("sync_status")
-    thread = st.session_state.get("sync_thread")
-
-    if sync_status == "done":
-        st.session_state.sync_status = None
-        st.session_state.sync_thread = None
-        st.session_state.syncing = False
-        st.toast("Sync and analytics complete!")
-        st.rerun()
-
-    if sync_status in ("error", "mfa_error"):
-        err = st.session_state.get("sync_error", "")
+    # ── Show sync errors ──────────────────────────────────────────────
+    if st.session_state.get("sync_error"):
+        err = st.session_state.sync_error
         st.error(f"Sync failed: {err}")
-        if sync_status == "mfa_error":
+        if "MFA" in err or "mfa" in err or "two-factor" in err:
             st.info("Your session has expired. Please sign in again.")
-        st.session_state.sync_status = None
-        st.session_state.sync_thread = None
-        st.session_state.syncing = False
-
-    if sync_status and sync_status not in ("done", "error", "mfa_error"):
-        with st.status("⏳ Syncing data...", expanded=True) as status:
-            status_map = {
-                "starting": "Starting sync...",
-                "fetching_wellness": "Fetching wellness data...",
-                "fetching_activities": "Fetching activities...",
-                "analyzing": "Running analytics...",
-            }
-            status.update(label=f"⏳ {status_map.get(sync_status, 'Syncing...')}")
-
-        if thread and not thread.is_alive():
-            st.session_state.sync_status = None
-            st.session_state.sync_thread = None
+        st.session_state.sync_error = None
 
     # ── Show sync results ────────────────────────────────────────────
     if st.session_state.get("sync_result"):
@@ -1290,28 +1290,6 @@ def _render_garmin_setup():
             st.markdown(result["prescription"])
         if "prescription_error" in result:
             st.error(f"Prescription failed: {result['prescription_error']}")
-
-    # ── Prescription ─────────────────────────────────────────────────
-    st.subheader("Training Prescription")
-    col_prescribe, col_download = st.columns([3, 1])
-    with col_prescribe:
-        st.caption("Generate an AI-powered training prescription based on your latest data.")
-    with col_download:
-        prescribe_clicked = st.button(
-            "Generate Prescription",
-            help="Run analytics and generate a training prescription via LLM.",
-            key="generate_prescription",
-        )
-
-    if prescribe_clicked:
-        if st.session_state.get("syncing"):
-            st.info("Sync already running...")
-        else:
-            st.session_state.sync_mode = "prescribe"
-            st.session_state.syncing = True
-            st.session_state.sync_result = None
-            st.rerun()
-
 
 # ---------------------------------------------------------------------------
 # Coach Page — AI-powered chat with cycling context
