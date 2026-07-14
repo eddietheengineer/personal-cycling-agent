@@ -557,6 +557,52 @@ def _fetch_activity_streams(
 
 
 
+def _garmin_activity_to_store_format(activity: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert a Garmin API activity dict to the format expected by db.store_activities()."""
+    activity_id = activity.get("activityId")
+    if not activity_id:
+        return None
+
+    start_time_local = activity.get("startTimeLocal", "")
+
+    activity_type_raw = activity.get("activityType", {})
+    if isinstance(activity_type_raw, dict):
+        activity_type_key = activity_type_raw.get("typeKey", "")
+    else:
+        activity_type_key = str(activity_type_raw)
+
+    type_map = {
+        "cycling": "Ride",
+        "running": "Run",
+        "walking": "Walk",
+        "swimming": "Swim",
+        "indoor_cycling": "Indoor Cycle",
+        "virtual_ride": "Virtual Ride",
+        "strength_training": "Strength Training",
+    }
+    activity_type = type_map.get(
+        activity_type_key.lower(),
+        activity_type_key.title() if activity_type_key else "Activity",
+    )
+
+    return {
+        "id": f"garmin_{activity_id}",
+        "start_date_local": start_time_local,
+        "type": activity_type,
+        "duration": activity.get("duration"),
+        "distance": activity.get("distance"),
+        "average_power": activity.get("avgPower"),
+        "max_power": activity.get("maxPower"),
+        "average_hr": activity.get("avgHeartRate"),
+        "max_hr": activity.get("maxHeartRate"),
+        "calories": activity.get("calories"),
+        "tss": activity.get("trainingStressScore"),
+        "ifr": None,
+        "normalized_power": activity.get("normPower"),
+        "file_type": None,
+    }
+
+
 def _sync_activities_batch(
     client: "garminconnect.Garmin",
     db: CyclingDB,
@@ -568,6 +614,8 @@ def _sync_activities_batch(
 
     Phase 1 (Blueprint): Fetch activity summaries in batches of 100 via
     get_activities(start, limit). Build a list of new activity IDs.
+    Phase 1.5 (Store Summaries): Write activity summaries to the activities
+    table so they appear in the Activity Detail page.
     Phase 2 (Download): For each new activity, download FIT file and
     parse streams via _fetch_activity_streams().
 
@@ -582,6 +630,7 @@ def _sync_activities_batch(
     new_activities: list[dict[str, Any]] = []
     batch_size = 100
     offset = 0
+    date_cutoff_reached = False
 
     # Try to get total count for progress estimation
     try:
@@ -613,12 +662,12 @@ def _sync_activities_batch(
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
             logger.warning(f"Rate limited during activity discovery: {e}")
-            # Save resume offset for crash recovery
-            db.set_last_synced(
-                "garmin_activities",
-                datetime.now().date().isoformat(),
-                resume_offset=offset,
-            )
+            if offset > 0:
+                db.set_last_synced(
+                    "garmin_activities",
+                    db.get_last_synced("garmin_activities") or datetime.now().date().isoformat(),
+                    resume_offset=offset,
+                )
             db.close()
             return (len(new_activities), 0)
         except Exception as e:
@@ -651,14 +700,17 @@ def _sync_activities_batch(
             # Incremental mode: skip activities at or before last_synced_date
             if not unbounded and last_synced_date is not None and activity_date is not None:
                 if activity_date <= last_synced_date:
-                    # Results are newest-first, so once we hit old activities we're done
                     logger.info(
                         f"Activity {activity_date} <= last synced {last_synced_date}, "
                         "stopping discovery"
                     )
+                    date_cutoff_reached = True
                     break
 
             new_activities.append(activity)
+
+        if date_cutoff_reached:
+            break
 
         if not batch_activities or len(batch_activities) < batch_size:
             # Last batch or fewer results than requested
@@ -671,6 +723,17 @@ def _sync_activities_batch(
             break
 
     logger.info(f"Phase 1 complete: {len(new_activities)} new activities to process")
+
+    # --- Phase 1.5: Store Activity Summaries ---
+    if new_activities:
+        store_records = []
+        for activity in new_activities:
+            rec = _garmin_activity_to_store_format(activity)
+            if rec is not None:
+                store_records.append(rec)
+        if store_records:
+            stored_count = db.store_activities(store_records)
+            logger.info(f"Phase 1.5: Stored {stored_count} activity summaries")
 
     if progress_callback is not None:
         progress_callback(50, "Downloaded activity list, now processing FIT files...")
@@ -701,7 +764,6 @@ def _sync_activities_batch(
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
             logger.warning(f"Rate limited during activity {activity_id}: {e}")
-            # Save resume offset for crash recovery
             db.set_last_synced(
                 "garmin_activities",
                 activity_date_str,
@@ -722,9 +784,15 @@ def _sync_activities_batch(
 
     # Clear any resume offset on successful completion
     if new_activities:
+        last_activity_date = ""
+        for activity in reversed(new_activities):
+            stl = activity.get("startTimeLocal", "")
+            if stl:
+                last_activity_date = stl[:10]
+                break
         db.set_last_synced(
             "garmin_activities",
-            new_activities[-1].get("startTimeLocal", "")[:10] or datetime.now().date().isoformat(),
+            last_activity_date or datetime.now().date().isoformat(),
             resume_offset=0,
         )
 
