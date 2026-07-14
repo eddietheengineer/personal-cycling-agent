@@ -491,13 +491,13 @@ def generate_ai_plan() -> WeeklyPlan:
         ds = d.isoformat()
         fc = forecast_map.get(ds, {})
         weekday = d.weekday()
-        tmax_f = fc.get("temp_max", 0) * 9/5 + 32
-        tmin_f = fc.get("temp_min", 0) * 9/5 + 32
+        tmax_f = fc.get("temp_max", 0)
+        tmin_f = fc.get("temp_min", 0)
         slots_info = []
         for slot_name in ["morning", "afternoon", "evening"]:
             sd = fc.get(slot_name, {})
             if sd and sd.get("condition"):
-                st_f = sd.get("temp", 0) * 9/5 + 32
+                st_f = sd.get("temp", 0)
                 slots_info.append(f"{slot_name}: {sd['condition']} {st_f:.0f}F precip {sd.get('precip', 0)}%")
         slot_str = " | ".join(slots_info) if slots_info else ""
 

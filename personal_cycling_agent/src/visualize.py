@@ -211,8 +211,8 @@ def _render_week_strip():
             fc = {"condition": day.weather_condition, "temp_max": day.weather_temp_max,
                   "temp_min": day.weather_temp_min, "precipitation_prob": day.weather_precip}
         w_icon = weather_icons.get(fc.get("condition", ""), "🌤")
-        tmax_f = fc.get("temp_max", 0) * 9/5 + 32
-        tmin_f = fc.get("temp_min", 0) * 9/5 + 32
+        tmax_f = fc.get("temp_max", 0)
+        tmin_f = fc.get("temp_min", 0)
         w_precip = fc.get("precipitation_prob", 0)
 
         if is_today:
@@ -2146,8 +2146,8 @@ def _render_weekly_calendar():
         # Weather icon
         weather_icons = {"clear": "☀️", "cloudy": "⛅", "rain": "🌧", "snow": "❄️", "storm": "⛈"}
         w_icon = weather_icons.get(day.weather_condition, "")
-        tmax_f = day.weather_temp_max * 9/5 + 32 if day.weather_temp_max else 0
-        tmin_f = day.weather_temp_min * 9/5 + 32 if day.weather_temp_min else 0
+        tmax_f = day.weather_temp_max if day.weather_temp_max else 0
+        tmin_f = day.weather_temp_min if day.weather_temp_min else 0
         w_temp = f"{tmax_f:.0f}°F/{tmin_f:.0f}°F" if tmax_f else ""
 
         if day.rest_day:
