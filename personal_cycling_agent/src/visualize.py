@@ -1134,6 +1134,14 @@ def _render_garmin_setup():
         if "prescription_error" in result:
             st.error(f"Prescription failed: {result['prescription_error']}")
 
+    # ── Reload ─────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("Reload")
+    st.caption("Reload the app to pick up any code or config changes.")
+    if st.button("🔄 Reload App", type="primary", use_container_width=True):
+        st.session_state.clear()
+        st.rerun()
+
 # ---------------------------------------------------------------------------
 # Coach Page — AI-powered chat with cycling context
 # ---------------------------------------------------------------------------
