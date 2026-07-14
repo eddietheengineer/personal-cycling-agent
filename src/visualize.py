@@ -1237,16 +1237,15 @@ def _render_garmin_setup():
             thread.start()
             st.rerun()
 
-    # ── Show sync progress (polling) ─────────────────────────────────
+    # ── Show sync progress (no polling — thread writes trigger reruns) ──
     sync_status = st.session_state.get("sync_status")
     thread = st.session_state.get("sync_thread")
 
     if sync_status == "done":
-        # Thread finished — clear state and rerun once to show results
         st.session_state.sync_status = None
         st.session_state.sync_thread = None
         st.session_state.syncing = False
-        st.success("Sync and analytics complete!")
+        st.toast("Sync and analytics complete!")
         st.rerun()
 
     if sync_status in ("error", "mfa_error"):
@@ -1259,21 +1258,18 @@ def _render_garmin_setup():
         st.session_state.syncing = False
 
     if sync_status and sync_status not in ("done", "error", "mfa_error"):
-        progress = st.progress(0)
-        status = st.empty()
-        status_map = {
-            "starting": ("⏳ Starting sync...", 5),
-            "fetching_wellness": ("⏳ Fetching wellness data...", 15),
-            "fetching_activities": ("⏳ Fetching activities...", 45),
-            "analyzing": ("⏳ Running analytics...", 80),
-        }
-        msg, pct = status_map.get(sync_status, ("⏳ Syncing...", 50))
-        status.markdown(msg)
-        progress.progress(pct)
+        with st.status("⏳ Syncing data...", expanded=True) as status:
+            status_map = {
+                "starting": "Starting sync...",
+                "fetching_wellness": "Fetching wellness data...",
+                "fetching_activities": "Fetching activities...",
+                "analyzing": "Running analytics...",
+            }
+            status.update(label=f"⏳ {status_map.get(sync_status, 'Syncing...')}")
 
-        # Non-blocking poll: rerun immediately if thread is still alive
-        if thread and thread.is_alive():
-            st.rerun()
+        if thread and not thread.is_alive():
+            st.session_state.sync_status = None
+            st.session_state.sync_thread = None
 
     # ── Show sync results ────────────────────────────────────────────
     if st.session_state.get("sync_result"):
