@@ -224,12 +224,12 @@ def _create_client(tokenstore: str | None = None) -> "garminconnect.Garmin":
 
 
 def _prompt_mfa_interactive() -> str:
-    """Prompt for MFA code; exit gracefully in non-interactive mode."""
+    """Prompt for MFA code; raise in non-interactive mode."""
     if not sys.stdin.isatty():
-        logger.warning("Non-interactive mode: cannot prompt for MFA code. "
-                       "Skipping Garmin sync.")
-        raise SystemExit("MFA required but running non-interactively. "
-                         "Run manually or pre-cache tokens.")
+        raise RuntimeError(
+            "MFA required but running non-interactively. "
+            "Run manually or pre-cache tokens."
+        )
     code = input("  Enter Garmin MFA code: ").strip()
     return code
 
@@ -771,11 +771,10 @@ def sync_activities(
 
     email, password, _ = _get_garmin_credentials()
     if not email or not password:
-        logger.error(
+        raise RuntimeError(
             "Garmin credentials not set in config.env. "
             "Run 'python setup.py' and set GARMIN_EMAIL and GARMIN_PASSWORD."
         )
-        raise SystemExit(1)
 
     db = CyclingDB(db_path)
     last_synced = db.get_last_synced("garmin_activities")
@@ -862,11 +861,10 @@ def sync_garmin(
 
     email, password, _ = _get_garmin_credentials()
     if not email or not password:
-        logger.error(
+        raise RuntimeError(
             "Garmin credentials not set in config.env. "
             "Run 'python setup.py' and set GARMIN_EMAIL and GARMIN_PASSWORD."
         )
-        raise SystemExit(1)
 
     db = CyclingDB(db_path)
     last_synced = db.get_last_synced("garmin_wellness")
