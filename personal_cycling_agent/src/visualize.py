@@ -1052,148 +1052,107 @@ def _render_garmin_setup():
             st.session_state.sync_error = None
             st.rerun()
 
-    # ── Run sync in background thread with live progress ──────────────
+    # ── Run sync synchronously with progress feedback ─────────────────
     if st.session_state.get("syncing"):
         if "sync_log" not in st.session_state:
             st.session_state.sync_log = []
         if "sync_progress" not in st.session_state:
             st.session_state.sync_progress = 0
 
-        # Launch background thread on first entry
-        if "sync_thread" not in st.session_state:
-            mode = st.session_state.get("sync_mode", "update")
-            days = st.session_state.get("sync_days", 7)
+        mode = st.session_state.get("sync_mode", "update")
+        days = st.session_state.get("sync_days", 7)
 
-            import json
-            import threading
-
-            # File for thread-safe progress communication
-            progress_file = str(Path(config.vault_path()) / ".sync_progress.json")
-
-            def progress_callback(pct: int, message: str) -> None:
-                try:
-                    with open(progress_file, "w") as f:
-                        json.dump({"pct": pct, "msg": message, "done": False}, f)
-                except Exception:
-                    pass
-
-            def run_sync() -> None:
-                try:
-                    if mode == "prescribe":
-                        from src.main import run_analyze, run_prescribe
-                        progress_callback(10, "Running analysis...")
-                        analyze_result = run_analyze()
-                        progress_callback(50, "Generating prescription...")
-                        prescription = run_prescribe(analyze_result)
-                        progress_callback(90, "Prescription generated.")
-                        st.session_state.sync_result = {
-                            "analysis": {
-                                "cp": analyze_result.get("cp"),
-                                "readiness": analyze_result.get("readiness"),
-                                "training_load": analyze_result.get("training_load"),
-                            },
-                            "prescription": prescription,
-                        }
-                        progress_callback(100, "Prescription complete.")
-                    else:
-                        from src.ingestion.garmin_connect import sync_garmin, sync_activities
-                        from src.main import run_analyze
-                        if mode != "reanalyze":
-                            unbounded = mode == "all"
-                            logging.getLogger(
-                                "src.ingestion.garmin_connect"
-                            ).setLevel(logging.CRITICAL)
-                            progress_callback(5, "Syncing wellness data...")
-                            wellness = sync_garmin(
-                                days=days,
-                                db_path=str(config.db_path("cycling_agent.sqlite")),
-                                unbounded=unbounded,
-                                progress_callback=progress_callback,
-                            )
-                            progress_callback(60, "Syncing activities...")
-                            activities = sync_activities(
-                                days=days,
-                                db_path=str(config.db_path("cycling_agent.sqlite")),
-                                unbounded=unbounded,
-                                progress_callback=progress_callback,
-                            )
-                            logging.getLogger(
-                                "src.ingestion.garmin_connect"
-                            ).setLevel(logging.DEBUG)
-                        else:
-                            wellness = {"wellness_records": 0}
-                            activities = {"activities_processed": 0}
-                        progress_callback(80, "Running analytics...")
-                        analyze_result = run_analyze()
-                        st.session_state.sync_result = {
-                            "wellness": wellness,
-                            "activities": activities,
-                            "analysis": {
-                                "cp": analyze_result.get("cp"),
-                                "readiness": analyze_result.get("readiness"),
-                                "training_load": analyze_result.get("training_load"),
-                            },
-                        }
-                        progress_callback(100, "All done.")
-                except Exception as exc:
-                    exc_str = str(exc)
-                    progress_callback(0, f"Error: {exc_str}")
-                    if "MFA" in exc_str or "mfa" in exc_str or "two-factor" in exc_str:
-                        st.session_state.sync_error = exc_str
-                        st.session_state.garmin_auth_state = "idle"
-                        st.session_state.garmin_auth_instance = None
-                    else:
-                        st.session_state.sync_error = exc_str
-                finally:
-                    st.session_state.syncing = False
-                    try:
-                        with open(progress_file, "w") as f:
-                            json.dump({"pct": 100, "msg": "Done", "done": True}, f)
-                    except Exception:
-                        pass
-
-            t = threading.Thread(target=run_sync, daemon=True)
-            st.session_state.sync_thread = t
-            st.session_state.sync_progress_file = progress_file
-            t.start()
-
-        # Poll progress file from main thread
-        progress_file = st.session_state.get("sync_progress_file")
-        if progress_file and Path(progress_file).exists():
-            try:
-                with open(progress_file) as f:
-                    data = json.load(f)
-                pct = data.get("pct", 0)
-                msg = data.get("msg", "")
-                is_done = data.get("done", False)
-                last = st.session_state.sync_log[-1] if st.session_state.sync_log else ""
-                new_msg = f"[{pct}%] {msg}"
-                if new_msg != last:
-                    st.session_state.sync_log.append(new_msg)
-                st.session_state.sync_progress = pct
-                if is_done:
-                    del st.session_state.sync_thread
-                    del st.session_state.sync_progress_file
-                    st.rerun()
-            except Exception:
-                pass
+        # Progress callback that collects log messages
+        def progress_callback(pct: int, message: str) -> None:
+            st.session_state.sync_log.append(f"[{pct}%] {message}")
+            st.session_state.sync_progress = pct
 
         # Show progress panel
         with st.container():
             st.subheader("Sync Progress")
             st.progress(st.session_state.sync_progress / 100.0)
 
+            # Show latest message prominently
+            if st.session_state.sync_log:
+                st.info(st.session_state.sync_log[-1])
+            else:
+                st.info("Starting sync...")
+
+            # Scrollable log
             log_container = st.container(border=True)
             with log_container:
                 if st.session_state.sync_log:
                     for msg in st.session_state.sync_log:
                         st.code(msg, language=None)
-                else:
-                    st.info("Starting sync...")
 
-        # Trigger periodic rerun while thread is alive
-        thread = st.session_state.get("sync_thread")
-        if thread is not None and thread.is_alive():
+        try:
+            if mode == "prescribe":
+                from src.main import run_analyze, run_prescribe
+                progress_callback(10, "Running analysis...")
+                analyze_result = run_analyze()
+                progress_callback(50, "Generating prescription...")
+                prescription = run_prescribe(analyze_result)
+                progress_callback(90, "Prescription generated.")
+                st.session_state.sync_result = {
+                    "analysis": {
+                        "cp": analyze_result.get("cp"),
+                        "readiness": analyze_result.get("readiness"),
+                        "training_load": analyze_result.get("training_load"),
+                    },
+                    "prescription": prescription,
+                }
+                progress_callback(100, "Prescription complete.")
+            else:
+                from src.ingestion.garmin_connect import sync_garmin, sync_activities
+                from src.main import run_analyze
+                if mode != "reanalyze":
+                    unbounded = mode == "all"
+                    logging.getLogger("src.ingestion.garmin_connect").setLevel(
+                        logging.CRITICAL
+                    )
+                    progress_callback(5, "Syncing wellness data...")
+                    wellness = sync_garmin(
+                        days=days,
+                        db_path=str(config.db_path("cycling_agent.sqlite")),
+                        unbounded=unbounded,
+                        progress_callback=progress_callback,
+                    )
+                    progress_callback(60, "Syncing activities...")
+                    activities = sync_activities(
+                        days=days,
+                        db_path=str(config.db_path("cycling_agent.sqlite")),
+                        unbounded=unbounded,
+                        progress_callback=progress_callback,
+                    )
+                    logging.getLogger(
+                        "src.ingestion.garmin_connect"
+                    ).setLevel(logging.DEBUG)
+                else:
+                    wellness = {"wellness_records": 0}
+                    activities = {"activities_processed": 0}
+                progress_callback(80, "Running analytics...")
+                analyze_result = run_analyze()
+                st.session_state.sync_result = {
+                    "wellness": wellness,
+                    "activities": activities,
+                    "analysis": {
+                        "cp": analyze_result.get("cp"),
+                        "readiness": analyze_result.get("readiness"),
+                        "training_load": analyze_result.get("training_load"),
+                    },
+                }
+                progress_callback(100, "All done.")
+        except Exception as exc:
+            exc_str = str(exc)
+            st.session_state.sync_log.append(f"Error: {exc_str}")
+            if "MFA" in exc_str or "mfa" in exc_str or "two-factor" in exc_str:
+                st.session_state.sync_error = exc_str
+                st.session_state.garmin_auth_state = "idle"
+                st.session_state.garmin_auth_instance = None
+            else:
+                st.session_state.sync_error = exc_str
+        finally:
+            st.session_state.syncing = False
             st.rerun()
 
     # ── Show sync errors ──────────────────────────────────────────────
