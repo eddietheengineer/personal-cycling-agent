@@ -1305,84 +1305,58 @@ def _render_llm_settings():
 
     cfg = load_llm_config()
 
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        base_url = st.text_input(
-            "Base URL",
-            value=cfg.get("base_url", ""),
-            key="llm_base_url",
-            help="OpenAI-compatible /v1 endpoint (e.g. http://localhost:8010/v1)",
-        )
-        api_key = st.text_input(
-            "API Key",
-            value=cfg.get("api_key", ""),
-            type="password",
-            key="llm_api_key",
-            help="API key (optional for local servers)",
-        )
-        model = st.text_input(
-            "Model",
-            value=cfg.get("model", ""),
-            key="llm_model",
-            help="Model name. Leave blank to auto-detect from /v1/models.",
-        )
-        timeout = st.number_input(
-            "Timeout (seconds)",
-            min_value=10,
-            max_value=600,
-            value=int(cfg.get("timeout", 120)),
-            key="llm_timeout",
-            help="Request timeout in seconds",
-        )
+    base_url = st.text_input(
+        "Base URL",
+        value=cfg.get("base_url", ""),
+        key="llm_base_url",
+        help="OpenAI-compatible /v1 endpoint (e.g. http://192.168.1.119:8013/v1)",
+    )
+    api_key = st.text_input(
+        "API Key",
+        value=cfg.get("api_key", ""),
+        type="password",
+        key="llm_api_key",
+        help="API key (optional for local servers)",
+    )
+    timeout = st.number_input(
+        "Timeout (seconds)",
+        min_value=10,
+        max_value=600,
+        value=int(cfg.get("timeout", 120)),
+        key="llm_timeout",
+        help="Request timeout in seconds",
+    )
 
-    with c2:
-        st.markdown("---")
-        if st.button("🔍 Test Connection", type="primary", use_container_width=True, key="test_llm"):
-            import requests
-            test_url = base_url.rstrip("/") + "/models"
-            headers = {"Content-Type": "application/json"}
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            try:
-                resp = requests.get(test_url, headers=headers, timeout=10)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    models = [m.get("id", "") for m in data.get("data", [])]
-                    if models:
-                        st.session_state.llm_models = models
-                        st.session_state.llm_test_ok = True
-                        st.rerun()
-                    else:
-                        st.error("Connected but no models returned. Check your endpoint config.")
+    if st.button("🔍 Test Connection", type="primary", use_container_width=True, key="test_llm"):
+        import requests
+        test_url = base_url.rstrip("/") + "/models"
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            resp = requests.get(test_url, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                models = [m.get("id", "") for m in data.get("data", [])]
+                if models:
+                    st.session_state.llm_models = models
+                    st.session_state.llm_test_ok = True
+                    st.rerun()
                 else:
-                    st.error(f"Server returned HTTP {resp.status_code}: {resp.text[:200]}")
-            except requests.exceptions.ConnectionError as e:
-                st.error(f"Cannot connect to {test_url}. Is the server running and reachable from the container?")
-            except Exception as e:
-                st.error(f"Connection failed: {e}")
+                    st.error("Connected but no models returned. Check your endpoint config.")
+            else:
+                st.error(f"Server returned HTTP {resp.status_code}: {resp.text[:200]}")
+        except requests.exceptions.ConnectionError:
+            st.error(f"Cannot connect to {test_url}. Is the server running and reachable from the container?")
+        except Exception as e:
+            st.error(f"Connection failed: {e}")
 
-        if st.session_state.get("llm_test_ok"):
-            st.success(f"Connected! {len(st.session_state.llm_models)} model(s) found.")
-            st.session_state.llm_test_ok = False
+    if st.session_state.get("llm_test_ok"):
+        st.success(f"Connected! {len(st.session_state.llm_models)} model(s) found.")
+        st.session_state.llm_test_ok = False
 
-        st.markdown("---")
-        if st.button("💾 Save", type="primary", use_container_width=True, key="save_llm"):
-            save_llm_config({
-                "base_url": base_url,
-                "api_key": api_key,
-                "model": model,
-                "timeout": timeout,
-            })
-            st.session_state.llm_saved = True
-
-        if st.session_state.get("llm_saved"):
-            st.success("Saved!")
-            st.session_state.llm_saved = False
-
-    # Model selector from discovered models
     if st.session_state.get("llm_models"):
         models = st.session_state.llm_models
-        st.markdown("---")
         st.caption("Select a model from the discovered list:")
         selected = st.selectbox(
             "Available Models",
@@ -1394,6 +1368,20 @@ def _render_llm_settings():
             cfg["model"] = selected
             save_llm_config(cfg)
             st.success(f"Model set to **{selected}**")
+
+    st.divider()
+    if st.button("💾 Save", type="primary", use_container_width=True, key="save_llm"):
+        save_llm_config({
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": cfg.get("model", ""),
+            "timeout": timeout,
+        })
+        st.session_state.llm_saved = True
+
+    if st.session_state.get("llm_saved"):
+        st.success("Saved!")
+        st.session_state.llm_saved = False
 
 
 # ---------------------------------------------------------------------------
