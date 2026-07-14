@@ -369,6 +369,12 @@ def generate_weekly_plan() -> WeeklyPlan:
         day_readiness = readiness_score if day_date == today else max(50, readiness_score + (i - 1) * 3)
         day_readiness = min(90, day_readiness)
 
+        # Weather vars needed for TSB floor rest day below
+        w_temp_max = day_forecast.get("temp_max", 0) if day_forecast else 0
+        w_temp_min = day_forecast.get("temp_min", 0) if day_forecast else 0
+        w_precip = day_forecast.get("precipitation_prob", 0) if day_forecast else 0
+        w_condition = day_forecast.get("condition", "") if day_forecast else ""
+
         # Project CTL/ATL forward to this day to get real TSB
         past_tss = [d.target_tss for d in days if not d.rest_day]
         run_ctl, run_atl = _project_ctl_atl(current_ctl, current_atl, past_tss + [0.0])
@@ -424,10 +430,6 @@ def generate_weekly_plan() -> WeeklyPlan:
         window_label = f"{avail_hours[0]:02d}:00-{avail_hours[-1]+1:02d}:00" if avail_hours else "morning"
         description = _build_description(session_type, zone, duration, tss, indoor, window_label)
 
-        w_temp_max = day_forecast.get("temp_max", 0) if day_forecast else 0
-        w_temp_min = day_forecast.get("temp_min", 0) if day_forecast else 0
-        w_precip = day_forecast.get("precipitation_prob", 0) if day_forecast else 0
-        w_condition = day_forecast.get("condition", "") if day_forecast else ""
         rationale_parts = []
         if day_date == today:
             rationale_parts.append(f"Today's readiness: {readiness_score:.0f}/100")
