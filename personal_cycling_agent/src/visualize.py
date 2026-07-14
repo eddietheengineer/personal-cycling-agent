@@ -2240,7 +2240,7 @@ def _render_schedule_config():
         for day_idx, day_name in enumerate(DAY_NAMES):
             hours = set(schedule.get(day_name, {}).get("available_hours", []))
             with cols[day_idx]:
-                selected = st.multi_select(
+                selected = st.multiselect(
                     day_labels[day_idx],
                     options=[f"{h:02d}:00" for h in range(24)],
                     default=[f"{h:02d}:00" for h in sorted(hours)],
