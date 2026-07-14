@@ -1060,6 +1060,18 @@ def _render_profile():
             power_meter = st.text_input("Power Meter", value=profile["power_meter"], key="prof_power_meter")
             hr_monitor = st.text_input("HR Monitor", value=profile["hr_monitor"], key="prof_hr_monitor")
 
+        st.subheader("Location & Schedule")
+        loc_col1, loc_col2 = st.columns(2)
+        from src.config.schedule import load_weather_location, save_weather_location
+        wl = load_weather_location()
+        with loc_col1:
+            weather_lat = st.number_input("Latitude", value=wl.get("lat", 0.0),
+                                          format="%.6f", key="prof_lat")
+        with loc_col2:
+            weather_lon = st.number_input("Longitude", value=wl.get("lon", 0.0),
+                                          format="%.6f", key="prof_lon")
+        st.caption("Used for weather forecasts. Leave at 0 to auto-detect from Garmin GPS.")
+
         submitted = st.form_submit_button("Save Profile")
 
         if submitted:
@@ -1094,7 +1106,13 @@ def _render_profile():
 """
             profile_path.parent.mkdir(parents=True, exist_ok=True)
             profile_path.write_text(content)
+            if weather_lat != 0.0 or weather_lon != 0.0:
+                save_weather_location(weather_lat, weather_lon)
             st.success("Profile saved!")
+
+    # Hour availability grid (outside form to avoid re-render issues)
+    st.divider()
+    _render_schedule_config()
 
 
 # ---------------------------------------------------------------------------
