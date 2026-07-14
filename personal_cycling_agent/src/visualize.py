@@ -2181,8 +2181,6 @@ def _render_weekly_calendar():
         else:
             indoor_icon = "🏠" if day.indoor else "🚴"
             ride_line = f'<div style="color: #555; font-size: 0.75em; margin-top: 2px;">{day.ride_note}</div>' if day.ride_note else ''
-            desc_text = day.description.replace("\n", " ").replace("<", "&lt;").replace(">", "&gt;") if day.description else ""
-            desc_line = f'<div style="color: #ccc; font-size: 0.75em; margin-top: 4px; font-style: italic; line-height: 1.3;">{desc_text}</div>' if desc_text else ''
             content = f"""
             <div style="padding: 12px; border: {border}; border-radius: 8px; background: {bg}; text-align: center; min-height: 110px;">
                 <div style="font-weight: 600; color: {color_display};">{day_name} {day_date}</div>
@@ -2191,20 +2189,17 @@ def _render_weekly_calendar():
                 <div style="color: {color_display}; font-size: 0.8em;">{day.target_zone}</div>
                 <div style="color: #555; font-size: 0.8em; margin-top: 4px;">{w_line}</div>
                 {ride_line}
-                {desc_line}
             </div>"""
 
         st.markdown(content, unsafe_allow_html=True)
 
-        # Expandable details
-        if not day.rest_day:
-            with st.expander("Details"):
-                st.write(day.description)
-                if day.ride_note:
-                    st.info(f"🚴 {day.ride_note}")
-                if day.weather_note:
-                    st.info(f"🌤 {day.weather_note}")
-                st.caption(f"Rationale: {day.rationale}")
+        # Workout description always visible
+        if not day.rest_day and day.description:
+            st.caption(day.description)
+        if day.ride_note:
+            st.caption(f"🚴 {day.ride_note}")
+        if day.weather_note:
+            st.caption(f"🌤 {day.weather_note}")
 
     st.divider()
 
