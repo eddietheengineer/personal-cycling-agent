@@ -1162,34 +1162,33 @@ def _render_profile():
         st.subheader("Training Safety")
         st.caption("TSB floor: minimum TSB the planner will allow. Going below this risks injury.")
 
-        # Color-coded slider track: Red <-10 | Grey -10 to +10 | Green >+10
-        st.markdown("""
-        <style>
-        .tsb-slider-track {
-            height: 8px; border-radius: 4px;
-            background: linear-gradient(to right, #dc3545 0%, #dc3545 30%, #868e96 30%, #868e96 60%, #28a745 60%, #28a745 100%);
-            margin: 8px 0 4px 0;
-        }
-        .tsb-slider-labels { display: flex; justify-content: space-between; font-size: 11px; color: #666; margin-bottom: 4px; }
-        </style>
-        """, unsafe_allow_html=True)
-        st.markdown('<div class="tsb-slider-labels"><span>Red (Tired)</span><span>Grey</span><span>Green (Fresh)</span></div>', unsafe_allow_html=True)
-
         tsb_floor = st.slider(
             "TSB Floor", min_value=-30, max_value=10, value=profile["tsb_floor"],
             step=1, key="prof_tsb_floor",
         )
         profile["tsb_floor"] = tsb_floor
 
-        # Color bar under slider
+        # Color-coded reference bar matching slider range (-30 to +10)
+        # -10 is at 50% of the range
         if tsb_floor < -10:
-            bar_color, zone = "#dc3545", "Red (Tired)"
+            zone_color, zone = "#dc3545", "Red (Tired)"
         elif tsb_floor <= 10:
-            bar_color, zone = "#868e96", "Grey (Zero Form)"
+            zone_color, zone = "#868e96", "Grey (Zero Form)"
         else:
-            bar_color, zone = "#28a745", "Green (Fresh)"
-        st.markdown(f'<div style="height:6px;border-radius:3px;background:{bar_color}"></div>', unsafe_allow_html=True)
-        st.caption(f"Floor: {tsb_floor:+d} → {zone}")
+            zone_color, zone = "#28a745", "Green (Fresh)"
+
+        st.markdown(f"""
+        <div style="display:flex;align-items:center;gap:6px;margin-top:4px">
+          <span style="font-size:11px;color:#dc3545">Red</span>
+          <div style="flex:1;height:6px;border-radius:3px;
+            background:linear-gradient(to right, #dc3545 0%, #dc3545 50%, #868e96 50%, #868e96 100%)">
+          </div>
+          <span style="font-size:11px;color:#868e96">Grey</span>
+        </div>
+        <div style="text-align:center;font-size:12px;color:{zone_color};font-weight:bold;margin-top:2px">
+          {tsb_floor:+d} → {zone}
+        </div>
+        """, unsafe_allow_html=True)
 
         st.subheader("Location & Schedule")
         loc_col1, loc_col2 = st.columns(2)
