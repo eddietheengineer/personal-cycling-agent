@@ -997,6 +997,112 @@ def _render_garmin_setup():
         f"Last activity sync: {last_activities or 'never'}"
     )
 
+    # ── Historical sync ──────────────────────────────────────────────
+    col1, col2 = st.columns(2)
+    with col1:
+        st.caption("Re-sync all historical data from Garmin (may take a while).")
+    with col2:
+        sync_all_clicked = st.button(
+            "Sync All Historical Data",
+            disabled=not is_connected,
+            key="sync_all_historical",
+        )
+    if sync_all_clicked:
+        if not st.session_state.get("syncing"):
+            st.session_state.sync_mode = "all"
+            st.session_state.sync_days = 3650
+            st.session_state.sync_result = None
+            st.session_state.sync_error = None
+            st.session_state.syncing = True
+            st.rerun()
+
+    # ── Run sync with progress ────────────────────────────────────────
+    if st.session_state.get("syncing"):
+        if "sync_log" not in st.session_state:
+            st.session_state.sync_log = []
+        if "sync_progress" not in st.session_state:
+            st.session_state.sync_progress = 0
+
+        mode = st.session_state.get("sync_mode", "update")
+        days = st.session_state.get("sync_days", 7)
+
+        def progress_callback(pct: int, message: str) -> None:
+            st.session_state.sync_log.append(f"[{pct}%] {message}")
+            st.session_state.sync_progress = pct
+
+        with st.container():
+            st.subheader("Sync Progress")
+            st.progress(st.session_state.sync_progress / 100.0)
+            if st.session_state.sync_log:
+                st.info(st.session_state.sync_log[-1])
+            else:
+                st.info("Starting sync...")
+
+        try:
+            from src.ingestion.garmin_connect import sync_garmin, sync_activities
+            from src.main import run_analyze
+            unbounded = mode == "all"
+            logging.getLogger("src.ingestion.garmin_connect").setLevel(logging.CRITICAL)
+            progress_callback(5, "Syncing wellness data...")
+            wellness = sync_garmin(
+                days=days,
+                db_path=str(config.db_path("cycling_agent.sqlite")),
+                unbounded=unbounded,
+                progress_callback=progress_callback,
+            )
+            progress_callback(60, "Syncing activities...")
+            activities = sync_activities(
+                days=days,
+                db_path=str(config.db_path("cycling_agent.sqlite")),
+                unbounded=unbounded,
+                progress_callback=progress_callback,
+            )
+            logging.getLogger("src.ingestion.garmin_connect").setLevel(logging.DEBUG)
+            progress_callback(80, "Running analytics...")
+            analyze_result = run_analyze()
+            st.session_state.sync_result = {
+                "wellness": wellness,
+                "activities": activities,
+                "analysis": {
+                    "cp": analyze_result.get("cp"),
+                    "readiness": analyze_result.get("readiness"),
+                    "training_load": analyze_result.get("training_load"),
+                },
+            }
+            progress_callback(100, "All done.")
+        except Exception as exc:
+            exc_str = str(exc)
+            st.session_state.sync_log.append(f"Error: {exc_str}")
+            st.session_state.sync_error = exc_str
+        finally:
+            st.session_state.syncing = False
+            st.rerun()
+
+    # ── Show sync errors ──────────────────────────────────────────────
+    if st.session_state.get("sync_error"):
+        err = st.session_state.sync_error
+        st.error(f"Sync failed: {err}")
+        st.session_state.sync_error = None
+
+    # ── Show sync results ─────────────────────────────────────────────
+    if st.session_state.get("sync_result"):
+        result = st.session_state.sync_result
+        with st.expander("Sync Results", expanded=True):
+            if "wellness" in result:
+                st.write(f"**Wellness:** {result['wellness']}")
+            if "activities" in result:
+                st.write(f"**Activities:** {result['activities']}")
+            if "analysis" in result:
+                analysis = result["analysis"]
+                if analysis.get("cp"):
+                    st.write(f"**Critical Power:** {analysis['cp']:.0f} W")
+                if analysis.get("readiness"):
+                    st.write(f"**Readiness:** {analysis['readiness']}")
+            if st.button("Done", type="primary", use_container_width=True, key="dismiss_sync_results"):
+                st.session_state.sync_result = None
+                st.session_state.sync_log = []
+                st.session_state.sync_progress = 0
+                st.rerun()
 
 # ---------------------------------------------------------------------------
 # Garmin connection check (session state or cached tokens)
