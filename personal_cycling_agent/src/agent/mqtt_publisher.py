@@ -85,8 +85,14 @@ def publish(prescription: str, metadata: dict[str, Any] | None = None) -> bool:
         client.connect(MQTT_BROKER, MQTT_PORT, 10)
         client.loop_start()
         client.loop_wait(timeout=10.0)
+    except (ConnectionRefusedError, OSError, Exception) as e:
+        logger.warning(f"MQTT connection failed (broker unavailable): {e}")
+        return False
     finally:
         client.loop_stop()
-        client.disconnect()
+        try:
+            client.disconnect()
+        except Exception:
+            pass
 
     return published

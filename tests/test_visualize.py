@@ -17,12 +17,9 @@ Each test class covers one page of the dashboard. Tests verify:
 
 import os
 import re
-import sqlite3
 import sys
-import tempfile
 from datetime import date, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -179,18 +176,12 @@ def env_setup(tmp_path):
 class TestCheckinDataContracts:
     """Validate check-in data contracts: field types, ranges, persistence."""
 
-    def test_checkin_field_ranges(self, seed_db):
-        """All check-in slider fields must be in [1, 5] range."""
-        valid_values = [1, 2, 3, 4, 5]
-        for val in valid_values:
-            assert 1 <= val <= 5
 
     def test_checkin_persistence_roundtrip(self, seed_db):
         """Store a check-in and verify it reads back correctly.
 
-        NOTE: store_morning_checkin maps 'stress' -> 'life_stress', but the
-        morning_checkin table has 'stress' column. So 'stress' is silently
-        dropped. Tests verify the fields that do persist.
+        The morning_checkin table uses 'stress' column matching the
+        store_morning_checkin key. Stress persists correctly.
         """
         db = CyclingDB(seed_db)
         tomorrow = (date.today() + timedelta(days=1)).isoformat()
@@ -212,8 +203,7 @@ class TestCheckinDataContracts:
         result = db.get_morning_checkin(tomorrow)
         assert result is not None
         assert result["soreness"] == 4
-        # stress is mapped to life_stress in store, but table has 'stress' column
-        # so it gets dropped — verify the fields that do persist
+        assert result["stress"] == 2
         assert result["sleep_quality"] == 5
         assert result["mood"] == 3
         assert result["energy"] == 4
@@ -245,7 +235,7 @@ class TestCheckinDataContracts:
         result = db.get_morning_checkin(today)
         assert result is not None
         assert result["soreness"] == 5
-        # stress silently dropped due to life_stress mapping mismatch
+        assert result["stress"] == 1
         assert result["sleep_quality"] == 2
         assert result["mood"] == 1
         db.close()
@@ -256,15 +246,6 @@ class TestCheckinDataContracts:
         history = db.get_morning_checkins(limit=2)
         assert len(history) <= 2
         db.close()
-
-    def test_checkin_date_validation(self, seed_db):
-        """Check-in date must be a valid ISO date string."""
-        db = CyclingDB(seed_db)
-        # Valid ISO date
-        valid_date = date.today().isoformat()
-        assert re.match(r"^\d{4}-\d{2}-\d{2}$", valid_date)
-        db.close()
-
 
 # ---------------------------------------------------------------------------
 # Activity Detail Tests
@@ -328,16 +309,7 @@ class TestActivityDetailContracts:
 
     def test_format_duration_correct(self, seed_db):
         """Duration formatting converts milliseconds to human-readable."""
-        # Test the formatting logic directly
-        def _format_duration(ms):
-            if ms is None:
-                return "—"
-            h = int(ms // 3600000)
-            m = int((ms % 3600000) // 60000)
-            s = int((ms % 60000) // 1000)
-            if h > 0:
-                return f"{h}h {m}m {s}s"
-            return f"{m}m {s}s"
+        from src.ui_helpers import _format_duration
 
         assert _format_duration(3600000) == "1h 0m 0s"
         assert _format_duration(900000) == "15m 0s"
@@ -345,10 +317,7 @@ class TestActivityDetailContracts:
 
     def test_distance_km_conversion(self, seed_db):
         """Distance formatting converts centimeters to km."""
-        def _distance_km(cm):
-            if cm is None:
-                return "—"
-            return f"{cm / 100000:.2f} km"
+        from src.ui_helpers import _distance_km
 
         assert _distance_km(5000000) == "50.00 km"
         assert _distance_km(1234567) == "12.35 km"
@@ -453,20 +422,6 @@ class TestMapContracts:
         assert 38.0 < centroid[0] < 39.0  # Near Louisville
         assert -86.0 < centroid[1] < -85.0
         db.close()
-
-    def test_city_input_default(self, seed_db):
-        """City input has a sensible default."""
-        # The default in the code is "Louisville, Kentucky"
-        default_city = "Louisville, Kentucky"
-        assert isinstance(default_city, str)
-        assert len(default_city) > 0
-
-    def test_radius_slider_bounds(self, seed_db):
-        """Radius slider has valid min/max."""
-        # From the code: min_value=10, max_value=500, step=10
-        assert 10 >= 1  # min is positive
-        assert 500 <= 1000  # max is reasonable
-        assert 10 > 0  # step is positive
 
 
 # ---------------------------------------------------------------------------
@@ -604,19 +559,6 @@ class TestProfileContracts:
         assert profile["max_hr"] == 190
         assert profile["resting_hr"] == 48
 
-    def test_profile_discipline_options(self, seed_db):
-        """Discipline selector has valid options."""
-        disciplines = ["road", "gravel", "MTB", "TT"]
-        assert len(disciplines) == 4
-        assert "road" in disciplines
-
-    def test_profile_numeric_non_negative(self, seed_db):
-        """Numeric profile fields must be non-negative."""
-        # Simulate number_input with min_value=0
-        for field in ["weight_kg", "height_cm", "ftp_watts", "max_hr", "resting_hr", "lt1_power", "lt2_power"]:
-            value = int(os.getenv(f"{field.upper()}", "0"))
-            assert value >= 0, f"{field} must be non-negative, got {value}"
-
 
 # ---------------------------------------------------------------------------
 # Settings / Garmin Page Tests
@@ -624,35 +566,6 @@ class TestProfileContracts:
 
 class TestSettingsContracts:
     """Validate settings page data contracts."""
-
-    def test_auth_state_machine_transitions(self, seed_db):
-        """Auth state machine has valid transitions."""
-        # States: idle -> mfa_pending -> connected
-        #         idle -> connected (cached tokens)
-        #         idle -> error
-        #         error -> idle (retry)
-        #         connected -> idle (clear credentials)
-        states = {"idle", "mfa_pending", "connected", "error"}
-        assert "idle" in states
-        assert "connected" in states
-        assert "error" in states
-
-    def test_sync_modes(self, seed_db):
-        """Sync has three valid modes."""
-        modes = {"update", "all", "reanalyze"}
-        assert len(modes) == 3
-
-    def test_sync_days_mapping(self, seed_db):
-        """Sync modes map to correct day ranges."""
-        # From the code: update=7, all=3650, reanalyze=0
-        mode_days = {
-            "update": 7,
-            "all": 3650,
-            "reanalyze": 0,
-        }
-        assert mode_days["update"] == 7
-        assert mode_days["all"] == 3650
-        assert mode_days["reanalyze"] == 0
 
     def test_sync_state_tracking(self, seed_db):
         """Sync state is correctly stored and retrieved."""
@@ -662,23 +575,6 @@ class TestSettingsContracts:
         assert last_wellness is not None
         assert last_activities is not None
         db.close()
-
-    def test_credentials_check(self, seed_db):
-        """Credential check correctly identifies missing auth."""
-        email = os.environ.get("GARMIN_EMAIL", "")
-        password = os.environ.get("GARMIN_PASSWORD", "")
-        has_credentials = bool(email and password)
-        assert has_credentials is False  # No credentials set in test env
-
-    def test_sync_button_disabled_logic(self, seed_db):
-        """Sync buttons are disabled when not connected."""
-        is_connected = False  # No auth
-        assert not is_connected  # Buttons should be disabled
-
-    def test_reanalyze_always_enabled(self, seed_db):
-        """Reanalyze button is always enabled regardless of auth state."""
-        # From the code: disabled=False for reanalyze
-        assert True  # Always enabled
 
     def test_metrics_query(self, seed_db):
         """Settings page metrics queries return correct counts."""
@@ -696,98 +592,3 @@ class TestSettingsContracts:
 
         db.close()
 
-
-# ---------------------------------------------------------------------------
-# Navigation Tests
-# ---------------------------------------------------------------------------
-
-class TestNavigationContracts:
-    """Validate navigation between pages."""
-
-    def test_page_list_complete(self, seed_db):
-        """All 6 pages are defined in the navigation."""
-        pages = ["Check-in", "Activity Detail", "Trends", "Map", "Profile", "Settings"]
-        assert len(pages) == 6
-
-    def test_page_dispatch_logic(self, seed_db):
-        """Each page maps to a render function."""
-        page_to_function = {
-            "Check-in": "_render_checkin",
-            "Activity Detail": "_render_activity_detail",
-            "Trends": "_render_trends",
-            "Map": "_render_map",
-            "Profile": "_render_profile",
-            "Settings": "_render_garmin_setup",
-        }
-        assert len(page_to_function) == 6
-        for page, func in page_to_function.items():
-            assert isinstance(func, str)
-            assert func.startswith("_render_")
-
-
-# ---------------------------------------------------------------------------
-# Input Validation Tests
-# ---------------------------------------------------------------------------
-
-class TestInputValidation:
-    """Validate input constraints across all pages."""
-
-    def test_checkin_slider_range(self, seed_db):
-        """Check-in sliders accept only 1-5."""
-        slider_options = [1, 2, 3, 4, 5]
-        for val in slider_options:
-            assert 1 <= val <= 5
-
-    def test_checkin_checkbox_types(self, seed_db):
-        """Check-in checkboxes are boolean."""
-        for val in [True, False]:
-            assert isinstance(val, bool)
-
-    def test_profile_number_min_value(self, seed_db):
-        """Profile number inputs have min_value=0."""
-        # All number_input calls in profile have min_value=0
-        fields = ["weight", "height", "ftp", "max_hr", "resting_hr", "lt1", "lt2"]
-        for field in fields:
-            # Verify the constraint: min_value=0 means value >= 0
-            assert 0 >= 0  # min_value itself is valid
-
-    def test_map_radius_constraints(self, seed_db):
-        """Map radius slider has valid bounds."""
-        min_val, max_val, step = 10, 500, 10
-        assert min_val > 0
-        assert max_val > min_val
-        assert step > 0
-        assert (max_val - min_val) % step == 0
-
-    def test_date_input_validity(self, seed_db):
-        """Date inputs produce valid ISO date strings."""
-        today = date.today()
-        iso = today.isoformat()
-        assert re.match(r"^\d{4}-\d{2}-\d{2}$", iso)
-
-    def test_email_format_validation(self, seed_db):
-        """Garmin email input expects valid email format."""
-        valid_emails = ["user@garmin.com", "test@example.org"]
-        invalid_emails = ["", "not-an-email", "@no-local"]
-        for email in valid_emails:
-            assert "@" in email
-            assert "." in email
-        for email in invalid_emails:
-            if not email:
-                assert not email  # empty is invalid
-            elif "@" not in email:
-                assert True  # correctly identified as invalid
-
-    def test_mfa_code_length(self, seed_db):
-        """MFA verification code is 6 digits."""
-        valid_codes = ["123456", "000000", "999999"]
-        for code in valid_codes:
-            assert len(code) == 6
-            assert code.isdigit()
-
-    def test_profile_text_fields_not_empty_on_save(self, seed_db):
-        """Profile name should not be empty when saving."""
-        name = ""
-        assert not name.strip(), "Empty name should be caught"
-        name = "  "
-        assert not name.strip(), "Whitespace-only name should be caught"

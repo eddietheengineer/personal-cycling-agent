@@ -363,8 +363,8 @@ def fetch_wellness_for_date(
         rmssd = None
         if hrv_data and "hrvSummary" in hrv_data:
             summary = hrv_data["hrvSummary"]
-            # Garmin returns overnightHRVValue as the primary RMSSD
-            rmssd = summary.get("overnightHRVValue")
+            # Garmin returns lastNight as the primary RMSSD value
+            rmssd = summary.get("lastNight")
 
         # Extract stress
         stress = None
@@ -398,6 +398,7 @@ def fetch_wellness_for_date(
                     sleep_hours = sleep_ms / 3600.0
         except Exception:
             pass
+
 
         if not any([resting_hr, rmssd, stress, steps, weight]):
             return None
@@ -893,7 +894,9 @@ def sync_garmin(
                 last_date = today - timedelta(days=1)
         else:
             last_date = today - timedelta(days=1)
-        days = max(days, (today - last_date).days)
+        # Use the requested days limit, capped by the gap since last sync
+        gap = max(0, (today - last_date).days)
+        days = min(days, gap)
         last_date = today
 
     reset_rate_limiter()
@@ -934,6 +937,8 @@ def sync_garmin(
             )
         )
         for entry in weigh_ins:
+            if not isinstance(entry, dict):
+                continue
             d = entry.get("dateTimestamp")
             date_str = _safe_timestamp_to_date(d)
             w = entry.get("weightGrams")
@@ -998,7 +1003,7 @@ def sync_garmin(
             _rate_limiter.wait()
             hrv_data = _retry_on_rate_limit(lambda: client.get_hrv_data(target_str))
             if hrv_data and "hrvSummary" in hrv_data:
-                rmssd = hrv_data["hrvSummary"].get("overnightHRVValue")
+                rmssd = hrv_data["hrvSummary"].get("lastNight")
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
             logger.warning(f"Rate limited during HRV sync: {e}")

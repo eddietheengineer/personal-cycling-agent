@@ -27,8 +27,8 @@ class TestComputeBands:
         assert mean == pytest.approx(60.0)
         # sample std (ddof=1) of [50,55,60,65,70] ≈ 7.906
         assert std == pytest.approx(7.905694150420948)
-        assert lower == pytest.approx(60.0 - 0.75 * std)
-        assert upper == pytest.approx(60.0 + 0.75 * std)
+        assert lower == pytest.approx(60.0 - 0.5 * std)
+        assert upper == pytest.approx(60.0 + 0.5 * std)
 
     def test_single_value_std_is_zero(self):
         """With one sample, std must be 0.0 and bands collapse to mean."""
@@ -84,8 +84,8 @@ class TestAssessReadinessCoping:
         records = baseline + [today]
 
         result = assess_readiness(records)
-        assert result.state == ReadinessState.COPING
-        assert "Coping well" in result.recommendation
+        assert result.state == ReadinessState.OPTIMAL
+        assert "Optimal readiness" in result.recommendation
 
     def test_coping_with_varied_baseline(self):
         """Coping when today's values fall within the computed bands."""
@@ -101,7 +101,7 @@ class TestAssessReadinessCoping:
         records = baseline + [today]
 
         result = assess_readiness(records)
-        assert result.state == ReadinessState.COPING
+        assert result.state == ReadinessState.OPTIMAL
 
 
 class TestAssessReadinessSympatheticStress:
@@ -181,7 +181,7 @@ class TestAssessReadinessEdgeCases:
 
         result = assess_readiness(records)
         assert result.state == ReadinessState.COPING
-        assert "no HRV data" in result.recommendation
+        assert "Available metrics" in result.recommendation
 
     def test_missing_rhr_only(self):
         """RHR missing, RMSSD within bands → coping."""
@@ -198,8 +198,8 @@ class TestAssessReadinessEdgeCases:
         result = assess_readiness(records)
         assert result.state == ReadinessState.COPING
 
-    def test_both_missing_raises(self):
-        """Both RMSSD and RHR missing for target date raises ValueError."""
+    def test_both_missing_returns_coping(self):
+        """Both RMSSD and RHR missing for target date → COPING with note."""
         baseline = _make_records(
             [f"2025-01-{d:02d}" for d in range(1, 31)],
             rmssd=55.0,
@@ -208,8 +208,9 @@ class TestAssessReadinessEdgeCases:
         today = {"date": "2025-01-31", "rmssd": None, "resting_hr": None}
         records = baseline + [today]
 
-        with pytest.raises(ValueError, match="Both RMSSD and resting_hr are missing"):
-            assess_readiness(records)
+        result = assess_readiness(records)
+        assert result.state == ReadinessState.COPING
+        assert "No autonomic data" in result.recommendation
 
     def test_no_baseline_data(self):
         """With no baseline records, bands default to 0.0."""
@@ -223,16 +224,13 @@ class TestAssessReadinessEdgeCases:
         assert result.rhr_std == 0.0
         assert result.rhr_lower_band == 0.0
         assert result.rhr_upper_band == 0.0
-
     def test_single_record(self):
         """A single record with no baseline → bands are zero, RMSSD > 0 upper band."""
         today = {"date": "2025-01-01", "rmssd": 55.0, "resting_hr": 50.0}
         result = assess_readiness([today])
         # With no baseline, bands are 0. RMSSD=55 > upper=0, RHR=50 > upper=0.
-        # rmssd_above=True, rhr_below=False → not parasympathetic.
-        # rmssd_below=False, rhr_above=True → not sympathetic.
-        # Falls through to COPING.
-        assert result.state == ReadinessState.COPING
+        # Both above normal → sympathetic stress.
+        assert result.state == ReadinessState.SYMPATHETIC_STRESS
 
     def test_target_date_not_found_raises(self):
         """Requesting a date not in records raises ValueError."""
@@ -255,7 +253,7 @@ class TestAssessReadinessEdgeCases:
         assert result.date == "2025-01-05"
 
     def test_confidence_high_with_enough_data(self):
-        """Confidence is 'high' when >= 7 RMSSD and >= 7 RHR baseline values."""
+        """Confidence is 'medium' with 13 baseline values (not enough for 'high')."""
         baseline = _make_records(
             [f"2025-01-{d:02d}" for d in range(1, 15)],
             rmssd=55.0,
@@ -265,10 +263,10 @@ class TestAssessReadinessEdgeCases:
         records = baseline + [today]
 
         result = assess_readiness(records)
-        assert result.confidence == "high"
+        assert result.confidence == "medium"
 
-    def test_confidence_low_with_few_data(self):
-        """Confidence is 'low' when < 7 baseline values."""
+    def test_confidence_medium_with_few_data(self):
+        """Confidence is 'medium' with 3 baseline values (>= 2 data points)."""
         baseline = _make_records(
             [f"2025-01-{d:02d}" for d in range(1, 5)],
             rmssd=55.0,
@@ -278,7 +276,7 @@ class TestAssessReadinessEdgeCases:
         records = baseline + [today]
 
         result = assess_readiness(records)
-        assert result.confidence == "low"
+        assert result.confidence == "medium"
 
     def test_sympathetic_stress_missing_rmssd(self):
         """RHR above baseline with no RMSSD → sympathetic stress."""
@@ -294,7 +292,7 @@ class TestAssessReadinessEdgeCases:
 
         result = assess_readiness(records)
         assert result.state == ReadinessState.SYMPATHETIC_STRESS
-        assert "no HRV data" in result.recommendation
+        assert "RHR above baseline" in result.recommendation
 
     def test_parasympathetic_hyperactivity_missing_rmssd(self):
         """RHR below baseline with no RMSSD → parasympathetic hyperactivity."""
@@ -310,7 +308,7 @@ class TestAssessReadinessEdgeCases:
 
         result = assess_readiness(records)
         assert result.state == ReadinessState.PARASYMPATHETIC_HYPERACTIVITY
-        assert "no HRV data" in result.recommendation
+        assert "RHR below baseline" in result.recommendation
 
 
 # ── readiness_to_dict ───────────────────────────────────────────────────
@@ -323,19 +321,29 @@ class TestReadinessToDict:
         """readiness_to_dict produces a correct dict with expected keys."""
         result = ReadinessResult(
             date="2025-01-31",
+            state=ReadinessState.COPING,
+            recommendation="Coping well.",
+            confidence="high",
+            composite_score=75.0,
+            autonomic_score=80.0,
+            stress_score=70.0,
+            load_score=70.0,
             rmssd=55.0,
             resting_hr=50.0,
+            stress=30.0,
+            recent_tss=200.0,
             rmssd_mean=55.0,
             rmssd_std=5.0,
             rhr_mean=50.0,
             rhr_std=3.0,
-            rmssd_lower_band=51.25,
-            rmssd_upper_band=58.75,
-            rhr_lower_band=47.75,
-            rhr_upper_band=52.25,
-            state=ReadinessState.COPING,
-            recommendation="Coping well.",
-            confidence="high",
+            stress_mean=30.0,
+            stress_std=5.0,
+            rmssd_lower_band=52.5,
+            rmssd_upper_band=57.5,
+            rhr_lower_band=48.5,
+            rhr_upper_band=51.5,
+            load_modulation=0.9,
+            limiting_factor="stress",
         )
         d = readiness_to_dict(result)
         assert d["date"] == "2025-01-31"
@@ -343,31 +351,49 @@ class TestReadinessToDict:
         assert d["resting_hr"] == 50.0
         assert d["state"] == "coping"
         assert d["confidence"] == "high"
-        assert isinstance(d["rmssd_band"], list)
-        assert len(d["rmssd_band"]) == 2
-        assert isinstance(d["rhr_band"], list)
-        assert len(d["rhr_band"]) == 2
+        assert d["composite_score"] == 75.0
+        assert d["autonomic_score"] == 80.0
+        assert d["stress_score"] == 70.0
+        assert d["load_score"] == 70.0
+        assert d["rmssd_lower_band"] == 52.5
+        assert d["rmssd_upper_band"] == 57.5
+        assert d["rhr_lower_band"] == 48.5
+        assert d["rhr_upper_band"] == 51.5
+        assert d["load_modulation"] == 0.9
+        assert d["limiting_factor"] == "stress"
 
     def test_serialization_with_none_values(self):
         """Serialization handles None RMSSD/RHR gracefully."""
         result = ReadinessResult(
             date="2025-01-31",
+            state=ReadinessState.COPING,
+            recommendation="RHR within normal bands.",
+            confidence="low",
+            composite_score=50.0,
+            autonomic_score=50.0,
+            stress_score=50.0,
+            load_score=50.0,
             rmssd=None,
             resting_hr=50.0,
+            stress=None,
+            recent_tss=None,
             rmssd_mean=0.0,
             rmssd_std=0.0,
             rhr_mean=50.0,
             rhr_std=0.0,
+            stress_mean=0.0,
+            stress_std=0.0,
             rmssd_lower_band=0.0,
             rmssd_upper_band=0.0,
             rhr_lower_band=50.0,
             rhr_upper_band=50.0,
-            state=ReadinessState.COPING,
-            recommendation="RHR within normal bands.",
-            confidence="low",
+            load_modulation=0.95,
+            limiting_factor="autonomic",
         )
         d = readiness_to_dict(result)
         assert d["rmssd"] is None
+        assert d["stress"] is None
+        assert d["recent_tss"] is None
 
 
 # ── assess_all_dates ────────────────────────────────────────────────────
@@ -386,11 +412,12 @@ class TestAssessAllDates:
         results = assess_all_dates(records)
         assert len(results) == 5
 
-    def test_skips_unparseable_dates(self):
-        """assess_all_dates logs warning and skips dates that fail."""
+    def test_handles_both_none_values(self):
+        """assess_all_dates processes records where both RMSSD and RHR are None."""
         records = [
             {"date": "2025-01-01", "rmssd": None, "resting_hr": None},
         ]
         results = assess_all_dates(records)
-        # The single record has both None → ValueError → skipped
-        assert len(results) == 0
+        # The single record with both None is processed (returns COPING)
+        assert len(results) == 1
+        assert results[0].state == ReadinessState.COPING

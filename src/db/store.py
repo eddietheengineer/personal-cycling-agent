@@ -224,7 +224,7 @@ class CyclingDB:
                 date            TEXT    NOT NULL,
                 perceived_readiness REAL,
                 soreness        REAL,
-                life_stress     REAL,
+                stress          REAL,
                 sleep_quality   REAL,
                 mood            REAL,
                 energy          REAL,
@@ -252,7 +252,7 @@ class CyclingDB:
                 sleep_score     REAL,
                 perceived_readiness REAL,
                 soreness        REAL,
-                life_stress     REAL,
+                stress          REAL,
                 mood            REAL,
                 readiness_score REAL,
                 readiness_state TEXT,
@@ -727,13 +727,13 @@ class CyclingDB:
         """Insert or replace a morning checkin record. Returns the row id."""
         self.conn.execute(
             "INSERT INTO morning_checkin "
-            "(athlete_id, date, perceived_readiness, soreness, life_stress, "
+            "(athlete_id, date, perceived_readiness, soreness, stress, "
             " sleep_quality, mood, energy, motivation, pain_score, pain_location, notes) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(athlete_id, date) DO UPDATE SET "
             "perceived_readiness = excluded.perceived_readiness, "
             "soreness = excluded.soreness, "
-            "life_stress = excluded.life_stress, "
+            "stress = excluded.stress, "
             "sleep_quality = excluded.sleep_quality, "
             "mood = excluded.mood, "
             "energy = excluded.energy, "
@@ -747,7 +747,7 @@ class CyclingDB:
                 record.get("date"),
                 record.get("perceived_readiness"),
                 record.get("soreness"),
-                record.get("life_stress"),
+                record.get("stress"),
                 record.get("sleep_quality"),
                 record.get("mood"),
                 record.get("energy"),
@@ -809,7 +809,7 @@ class CyclingDB:
             "INSERT INTO daily_readiness "
             "(athlete_id, date, rmssd, resting_hr, rmssd_mean_30d, rmssd_std_30d, "
             " rhr_mean_30d, rhr_std_30d, sleep_hours, sleep_score, "
-            " perceived_readiness, soreness, life_stress, mood, "
+            " perceived_readiness, soreness, stress, mood, "
             " readiness_score, readiness_state, recommendation, "
             " ctl, atl, tsb, acwr) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
@@ -824,7 +824,7 @@ class CyclingDB:
             "sleep_score = excluded.sleep_score, "
             "perceived_readiness = excluded.perceived_readiness, "
             "soreness = excluded.soreness, "
-            "life_stress = excluded.life_stress, "
+            "stress = excluded.stress, "
             "mood = excluded.mood, "
             "readiness_score = excluded.readiness_score, "
             "readiness_state = excluded.readiness_state, "
@@ -847,7 +847,7 @@ class CyclingDB:
                 record.get("sleep_score"),
                 record.get("perceived_readiness"),
                 record.get("soreness"),
-                record.get("life_stress"),
+                record.get("stress"),
                 record.get("mood"),
                 record.get("readiness_score"),
                 record.get("readiness_state"),
@@ -1134,7 +1134,7 @@ class CyclingDB:
             "athlete_id": athlete_id,
             "date": data["date"],
             "soreness": data.get("soreness"),
-            "life_stress": data.get("stress"),  # map stress -> life_stress
+            "stress": data.get("stress"),
             "sleep_quality": data.get("sleep_quality"),
             "mood": data.get("mood"),
             "energy": data.get("energy"),
