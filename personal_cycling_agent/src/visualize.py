@@ -232,6 +232,33 @@ def _render_week_strip():
             if day.description:
                 col.caption(day.description)
 
+    # Projected fitness/fatigue/load chart
+    if plan and plan.ctl_series:
+        import pandas as pd
+        import plotly.graph_objects as go
+
+        dates = [d.date for d in plan.days]
+        labels = [f"{d.date.split('-')[1]}/{d.date.split('-')[2]}" for d in plan.days]
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=labels, y=plan.ctl_series, name="CTL (Fitness)",
+                                  line=dict(color="#2196f3", width=2), mode="lines+markers"))
+        fig.add_trace(go.Scatter(x=labels, y=plan.atl_series, name="ATL (Fatigue)",
+                                  line=dict(color="#f44336", width=2), mode="lines+markers"))
+        fig.add_trace(go.Scatter(x=labels, y=plan.tsb_series, name="TSB (Form)",
+                                  line=dict(color="#4caf50", width=2), mode="lines+markers"))
+
+        fig.update_layout(
+            height=200, margin=dict(l=50, r=20, t=10, b=30),
+            xaxis_title="", yaxis_title="",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(size=11),
+        )
+        fig.update_xaxes(showgrid=False)
+        fig.update_yaxes(showgrid=True, gridcolor="#333")
+        st.plotly_chart(fig, use_container_width=True)
+
 
 def _render_readiness_card():
     """Compact readiness status card with metrics."""

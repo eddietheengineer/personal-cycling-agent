@@ -55,6 +55,9 @@ class WeeklyPlan:
     weekly_tss_planned: float = 0.0
     generated_at: str = ""
     readiness_summary: str = ""
+    ctl_series: list[float] = field(default_factory=list)
+    atl_series: list[float] = field(default_factory=list)
+    tsb_series: list[float] = field(default_factory=list)
 
 
 def _load_analysis() -> dict[str, Any]:
@@ -104,21 +107,21 @@ def _project_ctl_atl(current_ctl: float, current_atl: float, daily_tss: list[flo
     """
     import math
 
-    w_ctl = math.exp(-math.log(2) / 18.0)
-    w_atl = math.exp(-math.log(2) / 7.0)
+    alpha_ctl = 1 - math.exp(-math.log(2) / 18.0)  # ~0.0378
+    alpha_atl = 1 - math.exp(-math.log(2) / 7.0)   # ~0.0943
 
     ctl = current_ctl
     atl = current_atl
-    ctl_series = [ctl]
-    atl_series = [atl]
+    ctl_series = []
+    atl_series = []
 
     for tss in daily_tss:
-        ctl = (1 - w_ctl) * ctl + w_ctl * tss
-        atl = (1 - w_atl) * atl + w_atl * tss
+        ctl = (1 - alpha_ctl) * ctl + alpha_ctl * tss
+        atl = (1 - alpha_atl) * atl + alpha_atl * tss
         ctl_series.append(ctl)
         atl_series.append(atl)
 
-    return ctl_series[1:], atl_series[1:]
+    return ctl_series, atl_series
 
 
 
@@ -445,6 +448,11 @@ def generate_weekly_plan() -> WeeklyPlan:
                 day.duration_min = max(20, int(day.duration_min * scale))
         weekly_tss = weekly_tss_target
 
+    # Project CTL/ATL/TSB across the week
+    daily_tss = [d.target_tss for d in days]
+    ctl_proj, atl_proj = _project_ctl_atl(current_ctl, current_atl, daily_tss)
+    tsb_proj = [ctl - atl for ctl, atl in zip(ctl_proj, atl_proj)]
+
     plan = WeeklyPlan(
         week_start=week_start.isoformat(),
         days=days,
@@ -452,6 +460,9 @@ def generate_weekly_plan() -> WeeklyPlan:
         weekly_tss_planned=round(weekly_tss, 1),
         generated_at=today.isoformat() + "T" + "__TIME__",
         readiness_summary=f"Readiness {readiness_score:.0f}/100, CTL {current_ctl:.0f}, ATL {current_atl:.0f}, TSB {current_tsb:.0f}",
+        ctl_series=[round(c, 1) for c in ctl_proj],
+        atl_series=[round(a, 1) for a in atl_proj],
+        tsb_series=[round(t, 1) for t in tsb_proj],
     )
 
     return plan
