@@ -683,6 +683,9 @@ def save_weekly_plan(plan: WeeklyPlan) -> None:
         "weekly_tss_planned": plan.weekly_tss_planned,
         "generated_at": plan.generated_at,
         "readiness_summary": plan.readiness_summary,
+        "ctl_series": plan.ctl_series,
+        "atl_series": plan.atl_series,
+        "tsb_series": plan.tsb_series,
         "days": [asdict(d) for d in plan.days],
     }
     with open(path, "w") as f:
