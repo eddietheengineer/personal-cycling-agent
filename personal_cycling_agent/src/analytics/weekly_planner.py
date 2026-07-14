@@ -374,6 +374,7 @@ def generate_weekly_plan() -> WeeklyPlan:
 def save_weekly_plan(plan: WeeklyPlan) -> None:
     """Save weekly plan to vault."""
     path = vault_path() / "data" / "latest_weekly_plan.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
     data = {
         "week_start": plan.week_start,
         "weekly_tss_target": plan.weekly_tss_target,
