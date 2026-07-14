@@ -522,6 +522,8 @@ def generate_ai_plan() -> WeeklyPlan:
                 ride_slot_note = f" [RIDEABLE: {slot_note}]"
             else:
                 ride_slot_note = f" [NOT RIDEABLE: {slot_note}]"
+        else:
+            slot_note = ""
 
         weather_lines.append(
             f"{ds}: {fc.get('condition','unknown')} {tmax_f:.0f}F/{tmin_f:.0f}F precip {fc.get('precipitation_prob',0)}% {slot_str}{ride_slot_note}"
