@@ -1052,16 +1052,43 @@ def _render_garmin_setup():
             st.session_state.sync_error = None
             st.rerun()
 
-    # ── Run sync in main thread with spinner ──────────────────────────
+    # ── Run sync with live log panel ─────────────────────────────────
     if st.session_state.get("syncing"):
+        if "sync_log" not in st.session_state:
+            st.session_state.sync_log = []
+        if "sync_progress" not in st.session_state:
+            st.session_state.sync_progress = 0
+
         mode = st.session_state.get("sync_mode", "update")
         days = st.session_state.get("sync_days", 7)
-        with st.spinner("Syncing data and running analytics..."):
+
+        # Progress callback that feeds the log and triggers rerun
+        def progress_callback(pct: int, message: str) -> None:
+            st.session_state.sync_log.append(message)
+            st.session_state.sync_progress = pct
+            st.rerun()
+
+        with st.container():
+            st.subheader("Sync Progress")
+            st.progress(st.session_state.sync_progress)
+
+            # Scrollable log panel
+            log_container = st.container(border=True)
+            with log_container:
+                if st.session_state.sync_log:
+                    for msg in st.session_state.sync_log:
+                        st.code(msg, language=None)
+                else:
+                    st.info("Starting sync...")
+
             try:
                 if mode == "prescribe":
                     from src.main import run_analyze, run_prescribe
+                    progress_callback(10, "Running analysis...")
                     analyze_result = run_analyze()
+                    progress_callback(50, "Generating prescription...")
                     prescription = run_prescribe(analyze_result)
+                    progress_callback(90, "Prescription generated.")
                     st.session_state.sync_result = {
                         "analysis": {
                             "cp": analyze_result.get("cp"),
@@ -1070,20 +1097,32 @@ def _render_garmin_setup():
                         },
                         "prescription": prescription,
                     }
+                    progress_callback(100, "Prescription complete.")
                 else:
                     from src.ingestion.garmin_connect import sync_garmin, sync_activities
                     from src.main import run_analyze
                     if mode != "reanalyze":
                         unbounded = mode == "all"
-                        # Suppress logging output during UI sync to avoid
-                        # interfering with the Streamlit server process
                         logging.getLogger("src.ingestion.garmin_connect").setLevel(logging.CRITICAL)
-                        wellness = sync_garmin(days=days, db_path=str(config.db_path("cycling_agent.sqlite")), unbounded=unbounded)
-                        activities = sync_activities(days=days, db_path=str(config.db_path("cycling_agent.sqlite")), unbounded=unbounded)
+                        progress_callback(5, "Syncing wellness data...")
+                        wellness = sync_garmin(
+                            days=days,
+                            db_path=str(config.db_path("cycling_agent.sqlite")),
+                            unbounded=unbounded,
+                            progress_callback=progress_callback,
+                        )
+                        progress_callback(60, "Syncing activities...")
+                        activities = sync_activities(
+                            days=days,
+                            db_path=str(config.db_path("cycling_agent.sqlite")),
+                            unbounded=unbounded,
+                            progress_callback=progress_callback,
+                        )
                         logging.getLogger("src.ingestion.garmin_connect").setLevel(logging.DEBUG)
                     else:
                         wellness = {"wellness_records": 0}
                         activities = {"activities_processed": 0}
+                    progress_callback(80, "Running analytics...")
                     analyze_result = run_analyze()
                     st.session_state.sync_result = {
                         "wellness": wellness,
@@ -1094,8 +1133,10 @@ def _render_garmin_setup():
                             "training_load": analyze_result.get("training_load"),
                         },
                     }
+                    progress_callback(100, "All done.")
             except Exception as exc:
                 exc_str = str(exc)
+                st.session_state.sync_log.append(f"Error: {exc_str}")
                 if "MFA" in exc_str or "mfa" in exc_str or "two-factor" in exc_str:
                     st.session_state.sync_error = exc_str
                     st.session_state.garmin_auth_state = "idle"
@@ -1114,25 +1155,41 @@ def _render_garmin_setup():
             st.info("Your session has expired. Please sign in again.")
         st.session_state.sync_error = None
 
-    # ── Show sync results ────────────────────────────────────────────
+    # ── Show sync results in expandable panel ────────────────────────
     if st.session_state.get("sync_result"):
         result = st.session_state.sync_result
-        st.subheader("Sync Results")
-        if "wellness" in result:
-            st.write(f"**Wellness:** {result['wellness']}")
-        if "activities" in result:
-            st.write(f"**Activities:** {result['activities']}")
-        if "analysis" in result:
-            analysis = result["analysis"]
-            if analysis.get("cp"):
-                st.write(f"**Critical Power:** {analysis['cp']:.0f} W")
-            if analysis.get("readiness"):
-                st.write(f"**Readiness:** {analysis['readiness']}")
-        if "prescription" in result:
-            st.subheader("Today's Prescription")
-            st.markdown(result["prescription"])
-        if "prescription_error" in result:
-            st.error(f"Prescription failed: {result['prescription_error']}")
+        with st.expander("Sync Results", expanded=True):
+            # Show sync log if available
+            sync_log = st.session_state.get("sync_log", [])
+            if sync_log:
+                st.markdown("**Sync Log**")
+                for msg in sync_log:
+                    st.code(msg, language=None)
+                st.divider()
+
+            # Show results
+            if "wellness" in result:
+                st.write(f"**Wellness:** {result['wellness']}")
+            if "activities" in result:
+                st.write(f"**Activities:** {result['activities']}")
+            if "analysis" in result:
+                analysis = result["analysis"]
+                if analysis.get("cp"):
+                    st.write(f"**Critical Power:** {analysis['cp']:.0f} W")
+                if analysis.get("readiness"):
+                    st.write(f"**Readiness:** {analysis['readiness']}")
+            if "prescription" in result:
+                st.subheader("Today's Prescription")
+                st.markdown(result["prescription"])
+            if "prescription_error" in result:
+                st.error(f"Prescription failed: {result['prescription_error']}")
+
+            # Done button to dismiss results
+            if st.button("Done", type="primary", use_container_width=True, key="dismiss_sync_results"):
+                st.session_state.sync_result = None
+                st.session_state.sync_log = []
+                st.session_state.sync_progress = 0
+                st.rerun()
 
     # ── Reload ─────────────────────────────────────────────────────
     st.divider()
