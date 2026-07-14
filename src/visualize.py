@@ -1168,6 +1168,27 @@ def _render_profile():
         )
         profile["tsb_floor"] = tsb_floor
 
+        # Visual zone indicator
+        tz_col1, tz_col2, tz_col3 = st.columns([1, 1, 1])
+        with tz_col1:
+            st.markdown('<div style="padding:4px 8px;border-radius:4px;background:#d4edda;color:#155724;text-align:center">Green (Fresh)</div>', unsafe_allow_html=True)
+            st.caption("TSB > +10")
+        with tz_col2:
+            st.markdown('<div style="padding:4px 8px;border-radius:4px;background:#e2e3e5;color:#383d41;text-align:center">Grey (Zero Form)</div>', unsafe_allow_html=True)
+            st.caption("TSB -10 to +10")
+        with tz_col3:
+            st.markdown('<div style="padding:4px 8px;border-radius:4px;background:#f8d7da;color:#721c24;text-align:center">Red (Tired)</div>', unsafe_allow_html=True)
+            st.caption("TSB < -10")
+
+        # Show where your floor falls
+        if tsb_floor > 10:
+            zone, color = "Green (Fresh)", "#d4edda"
+        elif tsb_floor >= -10:
+            zone, color = "Grey (Zero Form)", "#e2e3e5"
+        else:
+            zone, color = "Red (Tired)", "#f8d7da"
+        st.markdown(f'<div style="padding:6px 12px;border-radius:4px;background:{color};text-align:center;font-weight:bold">Your floor: {tsb_floor:+d} → {zone}</div>', unsafe_allow_html=True)
+
         st.subheader("Location & Schedule")
         loc_col1, loc_col2 = st.columns(2)
         from src.config.schedule import load_weather_location, save_weather_location
