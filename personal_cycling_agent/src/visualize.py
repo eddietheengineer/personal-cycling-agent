@@ -1494,6 +1494,10 @@ def _render_coach():
 
         # Detailed explanation
         explanation = analysis.get("readiness_explanation")
+        if not explanation and readiness:
+            explanation = _generate_readiness_explanation(analysis)
+            _save_readiness_explanation(explanation, analysis)
+
         if explanation:
             st.markdown(explanation)
         else:
