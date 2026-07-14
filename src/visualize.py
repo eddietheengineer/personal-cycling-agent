@@ -2241,10 +2241,10 @@ def _render_schedule_config():
         for i, label in enumerate(day_labels):
             hdr_cols[i + 1].markdown(f"**{label}**")
 
-        # One row per hour — 8 columns locked together
+        # One row per hour — use markdown wrapper for vertical alignment
         for hour in range(24):
             row_cols = st.columns([0.8, 1, 1, 1, 1, 1, 1, 1])
-            row_cols[0].caption(f"{hour:02d}:00")
+            row_cols[0].markdown(f'<span style="vertical-align:middle;display:flex;align-items:center;height:100%;font-size:0.8em;color:#888;">{hour:02d}:00</span>', unsafe_allow_html=True)
             for day_idx, day_name in enumerate(DAY_NAMES):
                 hours = set(schedule.get(day_name, {}).get("available_hours", []))
                 checked = hour in hours
