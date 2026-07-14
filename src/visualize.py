@@ -2185,15 +2185,14 @@ def _render_weekly_calendar():
 
 
 def _render_schedule_config():
-    """Render training schedule configuration in Settings/Week page."""
+    """Render training schedule configuration with ride window pickers."""
     from src.config.schedule import load_schedule, save_schedule, DAY_NAMES
 
     schedule = load_schedule()
-    day_labels = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    slot_labels = ["morning", "afternoon", "evening"]
+    day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
     with st.expander("⚙️ Training Schedule", expanded=False):
-        st.caption("Configure which days you can train and your available time slots.")
+        st.caption("Configure which days you can train and your available ride windows.")
 
         cols = st.columns(7)
         for i, day_name in enumerate(DAY_NAMES):
@@ -2205,29 +2204,28 @@ def _render_schedule_config():
                     key=f"schedule_{day_name}",
                 )
 
-                # Multi-select time slots
-                current_slots = entry.get("time_slots", ["morning"])
-                if isinstance(current_slots, str):
-                    current_slots = [current_slots]
+                windows = entry.get("ride_windows", [{"start": 6, "end": 12}])
+                if not windows:
+                    windows = [{"start": 6, "end": 12}]
 
-                for slot in slot_labels:
-                    slot_checked = st.checkbox(
-                        slot.capitalize(),
-                        value=slot in current_slots,
-                        key=f"slot_{day_name}_{slot}",
-                        disabled=not available,
-                    )
-                    if slot_checked and slot not in current_slots:
-                        current_slots.append(slot)
-                    elif not slot_checked and slot in current_slots:
-                        current_slots.remove(slot)
-
-                if not current_slots:
-                    current_slots = ["morning"]
+                start = st.number_input(
+                    "From", min_value=0, max_value=23,
+                    value=windows[0]["start"],
+                    key=f"win_start_{day_name}",
+                    disabled=not available,
+                    label_visibility="collapsed",
+                )
+                end = st.number_input(
+                    "To", min_value=1, max_value=23,
+                    value=windows[0]["end"],
+                    key=f"win_end_{day_name}",
+                    disabled=not available,
+                    label_visibility="collapsed",
+                )
 
                 schedule[day_name] = {
                     "available": available,
-                    "time_slots": current_slots,
+                    "ride_windows": [{"start": start, "end": max(end, start + 1)}],
                 }
 
         if st.button("Save Schedule", type="primary", use_container_width=True, key="save_schedule"):

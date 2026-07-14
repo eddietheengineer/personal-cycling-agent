@@ -237,3 +237,55 @@ def get_weekly_forecast(lat: float, lon: float) -> list[dict]:
             continue
 
     return forecast
+def is_rideable_window(hourly_data: dict, start_hour: int, end_hour: int, min_clear_hours: int = 1) -> tuple[bool, str]:
+    """Check if there's a contiguous block of clear-enough hours within a ride window.
+
+    Args:
+        hourly_data: dict with morning/afternoon/evening keys, each {condition, temp, precip, wind}.
+        start_hour: start of ride window (0-23)
+        end_hour: end of ride window (0-23)
+        min_clear_hours: minimum contiguous clear hours needed (default 1)
+
+    Returns:
+        (rideable: bool, note: str)
+    """
+    slot_hours = {
+        "morning": range(6, 12),
+        "afternoon": range(12, 18),
+        "evening": range(18, 22),
+    }
+
+    hour_weather: dict[int, dict] = {}
+    for slot_name, hours in slot_hours.items():
+        sd = hourly_data.get(slot_name, {})
+        if sd and sd.get("condition"):
+            for h in hours:
+                hour_weather[h] = sd
+
+    window_hours = list(range(start_hour, end_hour))
+    if not window_hours:
+        return False, "Empty ride window"
+
+    best_streak = 0
+    current_streak = 0
+    bad_hours = []
+
+    for h in window_hours:
+        hw = hour_weather.get(h, {})
+        condition = hw.get("condition", "unknown")
+        precip = hw.get("precip", 0)
+
+        if condition in ("storm", "snow") or precip >= 40:
+            current_streak = 0
+            bad_hours.append(h)
+        else:
+            current_streak += 1
+            best_streak = max(best_streak, current_streak)
+
+    if best_streak >= min_clear_hours:
+        if bad_hours:
+            bad_labels = [f"{h}:00" for h in bad_hours[:3]]
+            return True, f"Rideable ({best_streak}h clear), avoid {', '.join(bad_labels)}"
+        return True, f"{best_streak}h clear window available"
+
+    return False, f"Only {best_streak}h clear, need {min_clear_hours}h"
