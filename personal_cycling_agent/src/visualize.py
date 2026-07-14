@@ -211,7 +211,7 @@ def _render_checkin():
     if history:
         rows = []
         for h in sorted(history, key=lambda r: r["date"], reverse=True):
-            stress_val = h.get("stress")
+            stress_val = h.get("stress") or h.get("life_stress")
             rows.append({
                 "Date": h["date"],
                 "Soreness": h.get("soreness"),
@@ -223,6 +223,7 @@ def _render_checkin():
                 "Caffeine": "☕" if h.get("caffeine") else "—",
                 "Alcohol": "🍺" if h.get("alcohol") else "—",
                 "Late Meals": "🌙" if h.get("late_meals") else "—",
+                "Notes": h.get("notes") or "—",
             })
         st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
     else:

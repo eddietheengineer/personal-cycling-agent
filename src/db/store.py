@@ -1135,6 +1135,7 @@ class CyclingDB:
             "date": data["date"],
             "soreness": data.get("soreness"),
             "stress": data.get("stress"),
+            "life_stress": data.get("stress"),
             "sleep_quality": data.get("sleep_quality"),
             "mood": data.get("mood"),
             "energy": data.get("energy"),
@@ -1142,6 +1143,7 @@ class CyclingDB:
             "caffeine": 1 if data.get("caffeine") else 0,
             "alcohol": 1 if data.get("alcohol") else 0,
             "late_meals": 1 if data.get("late_meals") else 0,
+            "notes": data.get("notes"),
         }
         
         # Only insert columns that exist in the table
