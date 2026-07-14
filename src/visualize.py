@@ -58,7 +58,6 @@ from src.ui_helpers import (
 # Handle Home Assistant Ingress path prefix
 # Streamlit checks HASSIO_INGRESS env var for native ingress support
 st.set_page_config(page_title="Cycling Agent", layout="wide")
-st.title("Cycling Dashboard")
 
 
 # ---------------------------------------------------------------------------
@@ -80,30 +79,330 @@ db = st.session_state.db
 
 
 # ---------------------------------------------------------------------------
-# Sidebar navigation
+# Sidebar navigation (compact icon-based)
 # ---------------------------------------------------------------------------
-st.sidebar.header("Dashboard")
+st.sidebar.markdown(
+    "<style>"
+    ".stSidebar .stButton button {width: 100%; text-align: left; padding: 8px 12px;}"
+    ".nav-section {font-size: 0.7em; text-transform: uppercase; color: #666; "
+    "padding: 12px 0 4px 12px; letter-spacing: 0.05em;}"
+    "</style>",
+    unsafe_allow_html=True,
+)
 
 if "nav_page" not in st.session_state:
-    # Default to Coach if today's check-in is done, otherwise Check-in
-    _today_checkin = db.get_morning_checkin(date.today().isoformat())
-    st.session_state.nav_page = "Coach" if _today_checkin else "Check-in"
+    st.session_state.nav_page = "Dashboard"
 
-pages = ["Check-in", "Activity Detail", "Trends", "Map", "Profile", "Week", "Settings", "Coach"]
-nav_page = st.sidebar.selectbox(
-    "Navigate",
-    pages,
-    index=pages.index(st.session_state.nav_page) if st.session_state.nav_page in pages else 0,
-    label_visibility="collapsed",
-)
-if nav_page != st.session_state.nav_page:
-    st.session_state.nav_page = nav_page
-    st.rerun()
+pages = [
+    ("🏠 Dashboard", "Dashboard"),
+    ("📋 Activities", "Activity Detail"),
+    ("📈 Trends", "Trends"),
+    ("🗺 Map", "Map"),
+    ("👤 Profile", "Profile"),
+    ("⚙️ Settings", "Settings"),
+]
+
+for label, page_id in pages:
+    active = st.session_state.nav_page == page_id
+    if st.sidebar.button(label, use_container_width=True, type="primary" if active else "secondary",
+                         key=f"nav_{page_id}"):
+        st.session_state.nav_page = page_id
+        st.rerun()
+
+nav_page = st.session_state.nav_page
 
 # ---------------------------------------------------------------------------
 # Zone helpers (theme-aware; kept here due to Streamlit dependency)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Dashboard — primary view
+# ---------------------------------------------------------------------------
+def _render_dashboard():
+    """Single-page dashboard: week strip, readiness, check-in, coach chat."""
+    from src.analytics.weekly_planner import generate_weekly_plan, save_weekly_plan, load_weekly_plan
+    from src.memory.journal import load_recent, extract_memories, append_entry
+
+    st.title("Cycling Dashboard")
+
+    # ── 7-Day Week Strip ────────────────────────────────────────────────
+    _render_week_strip()
+
+    st.divider()
+
+    # ── Readiness Summary ───────────────────────────────────────────────
+    _render_readiness_card()
+
+    st.divider()
+
+    # ── Check-in ────────────────────────────────────────────────────────
+    _render_dashboard_checkin()
+
+    st.divider()
+
+    # ── Coach Chat ──────────────────────────────────────────────────────
+    _render_dashboard_coach()
+
+
+def _render_week_strip():
+    """Compact horizontal 7-day week strip with generate buttons."""
+    from src.analytics.weekly_planner import generate_weekly_plan, save_weekly_plan, load_weekly_plan
+
+    plan = load_weekly_plan()
+
+    # Header row with generate buttons
+    h_cols = st.columns([4, 1, 1])
+    with h_cols[0]:
+        st.markdown("**7-Day Plan**", help="Shows today + next 6 days")
+        if plan:
+            st.caption(f"Plan from {plan.week_start} · {plan.readiness_summary}")
+    with h_cols[1]:
+        if st.button("📊 Rules", type="primary", use_container_width=True, key="gen_rules_dash"):
+            try:
+                p = generate_weekly_plan()
+                save_weekly_plan(p)
+                st.session_state.week_generated = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed: {e}")
+    with h_cols[2]:
+        if st.button("🤖 AI", use_container_width=True, key="gen_ai_dash"):
+            try:
+                from src.analytics.weekly_planner import generate_ai_plan
+                p = generate_ai_plan()
+                save_weekly_plan(p)
+                st.session_state.week_generated = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"AI failed: {e}")
+
+    if st.session_state.get("week_generated"):
+        st.success("Plan generated!")
+        st.session_state.week_generated = False
+
+    if not plan:
+        st.info("Click **Rules** or **AI** above to generate your weekly plan.")
+        return
+
+    zone_colors = {
+        "rest": "#555", "recovery": "#4caf50", "endurance": "#2196f3",
+        "threshold": "#ff9800", "vo2": "#f44336", "anaerobic": "#9c27b0", "mixed": "#00bcd4",
+    }
+    weather_icons = {"clear": "☀️", "cloudy": "⛅", "rain": "🌧", "snow": "❄️", "storm": "⛈"}
+    day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    cols = st.columns(7)
+    for i, day in enumerate(plan.days):
+        col = cols[i]
+        color = zone_colors.get(day.session_type, "#555")
+        is_today = day.date == date.today().isoformat()
+        w_icon = weather_icons.get(day.weather_condition, "")
+        w_temp = f"{day.weather_temp_max:.0f}°" if day.weather_temp_max else ""
+        w_precip = f"{day.weather_precip}%" if day.weather_precip else ""
+
+        if is_today:
+            col.markdown(f"**{day_labels[day.weekday]}**", help=f"{day.date}")
+        else:
+            col.markdown(day_labels[day.weekday], help=f"{day.date}")
+
+        if day.rest_day:
+            col.markdown("<div style='color:#666; font-size:0.85em;'>Rest</div>", unsafe_allow_html=True)
+        else:
+            indoor = "🏠" if day.indoor else "🚴"
+            col.markdown(f"<div style='color:{color}; font-weight:600;'>{indoor} {day.session_type.title()}</div>", unsafe_allow_html=True)
+            col.caption(f"{day.duration_min}min · TSS {day.target_tss:.0f}")
+
+        if w_icon:
+            col.caption(f"{w_icon} {w_temp} {w_precip}".strip())
+
+
+def _render_readiness_card():
+    """Compact readiness status card with metrics."""
+    from src import config as cfg
+
+    result_path = cfg.vault_path() / "data" / "latest_analysis.json"
+    if not result_path.exists():
+        st.info("No analysis data yet. Use **Update Latest Data** in Settings.")
+        return
+
+    try:
+        import json
+        with open(result_path) as f:
+            analysis = json.load(f)
+    except Exception:
+        return
+
+    readiness = analysis.get("readiness", {})
+    training_load = analysis.get("training_load", {})
+    cp = analysis.get("cp")
+
+    state = readiness.get("state", "unknown").replace("_", " ").title()
+    score = readiness.get("composite_score", 0)
+    if score >= 70:
+        color = "#4caf50"
+    elif score >= 50:
+        color = "#ff9800"
+    else:
+        color = "#f44336"
+
+    st.markdown(f"""
+    <div style="background:{color}15; border-left: 4px solid {color};
+                 padding: 12px 20px; border-radius: 4px;">
+        <div style="font-size: 1.1em; font-weight: 600; color: {color};">
+            {state} — Readiness {score:.0f}/100
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    m_cols = st.columns(5)
+    m_cols[0].metric("CP", f"{cp:.0f}W" if cp else "—")
+    m_cols[1].metric("CTL", f"{training_load.get('ctl', 0):.0f}")
+    m_cols[2].metric("ATL", f"{training_load.get('atl', 0):.0f}")
+    m_cols[3].metric("HRV", f"{readiness.get('rmssd', '—')}")
+    m_cols[4].metric("RHR", f"{readiness.get('resting_hr', '—')}")
+
+    rec = readiness.get("recommendation", "")
+    if rec:
+        st.caption(rec)
+
+
+def _render_dashboard_checkin():
+    """Compact check-in form, expanded if no check-in today."""
+    from src.db.store import CyclingDB
+
+    today_str = date.today().isoformat()
+    existing = db.get_morning_checkin(today_str)
+    expanded = not bool(existing)
+
+    label = "✅ Checked in" if existing else "📝 Morning Check-in"
+    with st.expander(label, expanded=expanded):
+        if existing:
+            st.caption(f"Soreness {existing.get('soreness')} · Stress {existing.get('stress')} · Sleep {existing.get('sleep_quality')} · Mood {existing.get('mood')} · Energy {existing.get('energy')}")
+            notes = existing.get("notes")
+            if notes:
+                st.caption(f"📝 {notes}")
+            return
+
+        if "checkin_date" not in st.session_state:
+            st.session_state.checkin_date = today_str
+
+        with st.form("dash_checkin_form", clear_on_submit=False):
+            c1, c2 = st.columns(2)
+            with c1:
+                soreness = st.select_slider("Soreness", options=[1,2,3,4,5], value=3,
+                    format_func=lambda v: {1:"None",2:"Mild",3:"Moderate",4:"High",5:"Severe"}[v])
+                stress = st.select_slider("Life Stress", options=[1,2,3,4,5], value=3,
+                    format_func=lambda v: {1:"None",2:"Low",3:"Moderate",4:"High",5:"Overwhelming"}[v])
+                sleep_quality = st.select_slider("Sleep Quality", options=[1,2,3,4,5], value=3,
+                    format_func=lambda v: {1:"Terrible",2:"Poor",3:"Okay",4:"Good",5:"Great"}[v])
+            with c2:
+                mood = st.select_slider("Mood", options=[1,2,3,4,5], value=3,
+                    format_func=lambda v: {1:"Terrible",2:"Low",3:"Okay",4:"Good",5:"Great"}[v])
+                energy = st.select_slider("Energy", options=[1,2,3,4,5], value=3,
+                    format_func=lambda v: {1:"None",2:"Low",3:"Moderate",4:"High",5:"Peak"}[v])
+                motivation = st.select_slider("Motivation", options=[1,2,3,4,5], value=3,
+                    format_func=lambda v: {1:"None",2:"Low",3:"Moderate",4:"High",5:"Peak"}[v])
+
+            cb1, cb2, cb3 = st.columns(3)
+            caffeine = cb1.checkbox("☕ Caffeine")
+            alcohol = cb2.checkbox("🍺 Alcohol")
+            late_meals = cb3.checkbox("🌙 Late Meals")
+
+            notes = st.text_area("Notes", placeholder="Travel day, feeling off...", key="dash_checkin_notes")
+
+            if st.form_submit_button("Save Check-in", type="primary"):
+                db.store_morning_checkin({
+                    "date": today_str, "soreness": soreness, "stress": stress,
+                    "sleep_quality": sleep_quality, "mood": mood, "energy": energy,
+                    "motivation": motivation, "caffeine": caffeine, "alcohol": alcohol,
+                    "late_meals": late_meals, "notes": notes,
+                })
+                st.rerun()
+
+
+def _render_dashboard_coach():
+    """Compact coach chat section."""
+    if "coach_messages" not in st.session_state:
+        st.session_state.coach_messages = []
+
+    st.markdown("**💬 Coach**")
+
+    # Show last few messages
+    chat_area = st.container()
+    with chat_area:
+        for msg in st.session_state.coach_messages[-6:]:
+            if msg["role"] == "user":
+                st.markdown(f"**You:** {msg['content']}")
+            else:
+                st.markdown(f"*Coach:* {msg['content']}")
+
+    # Input row
+    ic1, ic2, ic3 = st.columns([4, 1, 1])
+    with ic1:
+        user_input = st.text_input("Ask your coach...", key="dash_coach_input",
+            placeholder="Should I train today? How's my recovery?")
+    with ic2:
+        send_clicked = st.button("Send", type="primary", use_container_width=True, key="dash_coach_send")
+    with ic3:
+        clear_clicked = st.button("Clear", use_container_width=True, key="dash_coach_clear")
+
+    if clear_clicked:
+        st.session_state.coach_messages = []
+        st.rerun()
+
+    if send_clicked and user_input.strip():
+        st.session_state.coach_messages.append({"role": "user", "content": user_input.strip()})
+
+        from src.agent import prompt_builder, llm_client
+        from src import config as cfg
+
+        analysis = None
+        result_path = cfg.vault_path() / "data" / "latest_analysis.json"
+        if result_path.exists():
+            try:
+                import json
+                with open(result_path) as f:
+                    analysis = json.load(f)
+            except Exception:
+                pass
+
+        system_prompt = prompt_builder.build_system_prompt(
+            readiness=analysis.get("readiness") if analysis else None,
+            recent_activities=analysis.get("recent_activities") if analysis else None,
+            thresholds=analysis.get("thresholds") if analysis else None,
+            w_prime=analysis.get("w_prime") if analysis else None,
+            durability=analysis.get("durability") if analysis else None,
+            decoupling=analysis.get("decoupling") if analysis else None,
+        )
+
+        journal_context = load_recent(30)
+        if journal_context:
+            system_prompt = f"## Memory Journal\n{journal_context}\n\n{system_prompt}"
+
+        conv_text = "\n".join(
+            f"{m['role'].upper()}: {m['content']}"
+            for m in st.session_state.coach_messages
+        )
+        full_prompt = f"{system_prompt}\n\nConversation:\n{conv_text}\n\nASSISTANT:"
+
+        try:
+            with st.spinner("Coach is thinking..."):
+                response = llm_client.generate(full_prompt, stream=False)
+            st.session_state.coach_messages.append({"role": "assistant", "content": response})
+
+            def _extract_and_save():
+                try:
+                    bullets = extract_memories(user_input.strip(), response)
+                    for bullet in bullets:
+                        append_entry(bullet)
+                except Exception:
+                    pass
+            import threading
+            threading.Thread(target=_extract_and_save, daemon=True).start()
+        except Exception as e:
+            st.error(f"Coach error: {e}")
+
+        st.rerun()
 def _zone_colors():
     """Return zone color list matching current Streamlit theme."""
     theme = st.get_option("theme.base")
@@ -1954,9 +2253,9 @@ def _render_schedule_config():
 # ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
-if nav_page == "Check-in":
-    _render_checkin()
-if nav_page == "Activity Detail":
+if nav_page == "Dashboard":
+    _render_dashboard()
+elif nav_page == "Activity Detail":
     _render_activity_detail()
 elif nav_page == "Trends":
     _render_trends()
@@ -1970,7 +2269,3 @@ elif nav_page == "Settings":
     _render_llm_settings()
     st.divider()
     _render_memory_settings()
-elif nav_page == "Week":
-    _render_weekly_calendar()
-elif nav_page == "Coach":
-    _render_coach()
