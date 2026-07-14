@@ -364,7 +364,7 @@ def fetch_wellness_for_date(
         if hrv_data and "hrvSummary" in hrv_data:
             summary = hrv_data["hrvSummary"]
             # Garmin returns lastNight as the primary RMSSD value
-            rmssd = summary.get("lastNight")
+            rmssd = summary.get("lastNightAvg")
 
         # Extract stress
         stress = None
@@ -1069,7 +1069,7 @@ def sync_garmin(
             _rate_limiter.wait()
             hrv_data = _retry_on_rate_limit(lambda: client.get_hrv_data(target_str))
             if hrv_data and "hrvSummary" in hrv_data:
-                rmssd = hrv_data["hrvSummary"].get("lastNight")
+                rmssd = hrv_data["hrvSummary"].get("lastNightAvg")
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
             logger.warning(f"Rate limited during HRV sync: {e}")

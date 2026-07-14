@@ -224,12 +224,12 @@ def _create_client(tokenstore: str | None = None) -> "garminconnect.Garmin":
 
 
 def _prompt_mfa_interactive() -> str:
-    """Prompt for MFA code; exit gracefully in non-interactive mode."""
+    """Prompt for MFA code; raise in non-interactive mode."""
     if not sys.stdin.isatty():
-        logger.warning("Non-interactive mode: cannot prompt for MFA code. "
-                       "Skipping Garmin sync.")
-        raise SystemExit("MFA required but running non-interactively. "
-                         "Run manually or pre-cache tokens.")
+        raise RuntimeError(
+            "MFA required but running non-interactively. "
+            "Run manually or pre-cache tokens."
+        )
     code = input("  Enter Garmin MFA code: ").strip()
     return code
 
@@ -364,7 +364,7 @@ def fetch_wellness_for_date(
         if hrv_data and "hrvSummary" in hrv_data:
             summary = hrv_data["hrvSummary"]
             # Garmin returns lastNight as the primary RMSSD value
-            rmssd = summary.get("lastNight")
+            rmssd = summary.get("lastNightAvg")
 
         # Extract stress
         stress = None
@@ -839,11 +839,10 @@ def sync_activities(
 
     email, password, _ = _get_garmin_credentials()
     if not email or not password:
-        logger.error(
+        raise RuntimeError(
             "Garmin credentials not set in config.env. "
             "Run 'python setup.py' and set GARMIN_EMAIL and GARMIN_PASSWORD."
         )
-        raise SystemExit(1)
 
     db = CyclingDB(db_path)
     last_synced = db.get_last_synced("garmin_activities")
@@ -930,11 +929,10 @@ def sync_garmin(
 
     email, password, _ = _get_garmin_credentials()
     if not email or not password:
-        logger.error(
+        raise RuntimeError(
             "Garmin credentials not set in config.env. "
             "Run 'python setup.py' and set GARMIN_EMAIL and GARMIN_PASSWORD."
         )
-        raise SystemExit(1)
 
     db = CyclingDB(db_path)
     last_synced = db.get_last_synced("garmin_wellness")
@@ -1071,7 +1069,7 @@ def sync_garmin(
             _rate_limiter.wait()
             hrv_data = _retry_on_rate_limit(lambda: client.get_hrv_data(target_str))
             if hrv_data and "hrvSummary" in hrv_data:
-                rmssd = hrv_data["hrvSummary"].get("lastNight")
+                rmssd = hrv_data["hrvSummary"].get("lastNightAvg")
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
             logger.warning(f"Rate limited during HRV sync: {e}")

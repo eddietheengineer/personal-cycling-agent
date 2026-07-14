@@ -26,13 +26,6 @@ import numpy as np
 PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VENV_DIR = PROJECT_ROOT / ".venv"
 
-# Use venv Python if available (guard against infinite re-exec loop)
-_venv_python = VENV_DIR / "bin" / "python"
-if _venv_python.exists() and _venv_python != Path(sys.executable):
-    if not os.environ.get("_CYCLING_REEXEC"):
-        os.environ["_CYCLING_REEXEC"] = "1"
-        os.execv(str(_venv_python), [str(_venv_python), "-m", "src.main"] + sys.argv[1:])
-
 from src import config
 
 config.setup()
@@ -567,6 +560,13 @@ def run_prescribe(analysis: dict | None = None) -> str:
 
 
 def main():
+    # Re-exec under venv Python if available (only when run as entry point)
+    _venv_python = VENV_DIR / "bin" / "python"
+    if _venv_python.exists() and _venv_python != Path(sys.executable):
+        if not os.environ.get("_CYCLING_REEXEC"):
+            os.environ["_CYCLING_REEXEC"] = "1"
+            os.execv(str(_venv_python), [str(_venv_python), "-m", "src.main"] + sys.argv[1:])
+
     parser = argparse.ArgumentParser(description="Cycling AI Agent Pipeline")
     parser.add_argument("--ingest", action="store_true", help="Run data ingestion only")
     parser.add_argument("--analyze", action="store_true", help="Run analytics only")
