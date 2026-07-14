@@ -511,7 +511,12 @@ def generate_ai_plan() -> WeeklyPlan:
         f"Recommendation: {readiness_rec}\n"
         f"Goals: {profile.get('primary_goal', 'VO2 max')}\n"
         f"Max session: {_parse_float(profile.get('max_session_duration'), 90.0):.0f}min\n\n"
-        f"CONSTRAINTS: Max 3 training days. Available: {available_days_str}\n\n"
+        f"## HARD CONSTRAINTS (must follow exactly):\n"
+        f"1. EXACTLY 3 training days. No more, no less. All other days must be rest (rest_day=true).\n"
+        f"2. Available days: {available_days_str}. Only pick from these.\n"
+        f"3. PICK THE 3 DAYS WITH THE BEST WEATHER. Avoid storm and rain days.\n"
+        f"   If weather is bad on a picked day, set indoor=true.\n"
+        f"4. If readiness < 60, use only recovery or endurance. No threshold/VO2.\n\n"
         + weather_block
         + journal_block
         + f"Return ONLY a JSON array of 7 day objects:\n"
@@ -554,6 +559,11 @@ def generate_ai_plan() -> WeeklyPlan:
                 weather_precip=fc.get("precipitation_prob", 0),
                 weather_condition=fc.get("condition", ""),
             ))
+        # Validate: must have exactly 3 training days
+        train_count = sum(1 for d in days if not d.rest_day)
+        if train_count != 3:
+            logger.warning(f"AI plan has {train_count} training days (expected 3), falling back to rules")
+            return generate_weekly_plan()
 
         weekly_tss = sum(d.target_tss for d in days if not d.rest_day)
         return WeeklyPlan(
