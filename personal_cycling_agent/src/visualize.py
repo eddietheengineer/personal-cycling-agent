@@ -1167,13 +1167,6 @@ def _render_garmin_setup():
     if st.session_state.get("sync_result"):
         result = st.session_state.sync_result
         with st.expander("Sync Results", expanded=True):
-            # Show sync log if available
-            sync_log = st.session_state.get("sync_log", [])
-            if sync_log:
-                st.markdown("**Sync Log**")
-                for msg in sync_log:
-                    st.code(msg, language=None)
-                st.divider()
 
             # Show results
             if "wellness" in result:
@@ -1199,13 +1192,6 @@ def _render_garmin_setup():
                 st.session_state.sync_progress = 0
                 st.rerun()
 
-    # ── Reload ─────────────────────────────────────────────────────
-    st.divider()
-    st.subheader("Reload")
-    st.caption("Reload the app to pick up any code or config changes.")
-    if st.button("🔄 Reload App", type="primary", use_container_width=True):
-        st.session_state.clear()
-        st.rerun()
 
 # ---------------------------------------------------------------------------
 # Coach Page — AI-powered chat with cycling context

@@ -1167,13 +1167,6 @@ def _render_garmin_setup():
     if st.session_state.get("sync_result"):
         result = st.session_state.sync_result
         with st.expander("Sync Results", expanded=True):
-            # Show sync log if available
-            sync_log = st.session_state.get("sync_log", [])
-            if sync_log:
-                st.markdown("**Sync Log**")
-                for msg in sync_log:
-                    st.code(msg, language=None)
-                st.divider()
 
             # Show results
             if "wellness" in result:
