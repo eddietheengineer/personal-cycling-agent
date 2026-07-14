@@ -2163,6 +2163,7 @@ def _render_weekly_calendar():
         color = zone_colors.get(day.session_type, "#666")
         is_today = day.date == date.today().isoformat()
         border = "2px solid #fff" if is_today else "1px solid #333"
+        bg = "#1e1e2e" if is_today else "#0f1117"
 
         # Weather icon
         weather_icons = {"clear": "☀️", "cloudy": "⛅", "rain": "🌧", "snow": "❄️", "storm": "⛈"}
