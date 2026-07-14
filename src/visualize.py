@@ -1292,6 +1292,96 @@ def _save_readiness_explanation(explanation: str, analyze_result: dict) -> None:
             json.dump(data, f, indent=2)
     except Exception:
         pass
+# ---------------------------------------------------------------------------
+# LLM Settings
+# ---------------------------------------------------------------------------
+def _render_llm_settings():
+    """Render OpenAI-compatible LLM endpoint configuration."""
+    from src.agent.llm_client import _discover_models
+    from src.config.llm_config import load_llm_config, save_llm_config
+
+    st.subheader("LLM Endpoint")
+    st.caption("Configure your OpenAI-compatible API endpoint (vLLM, Ollama, LM Studio, etc.).")
+
+    cfg = load_llm_config()
+
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        base_url = st.text_input(
+            "Base URL",
+            value=cfg.get("base_url", ""),
+            key="llm_base_url",
+            help="OpenAI-compatible /v1 endpoint (e.g. http://localhost:8010/v1)",
+        )
+        api_key = st.text_input(
+            "API Key",
+            value=cfg.get("api_key", ""),
+            type="password",
+            key="llm_api_key",
+            help="API key (optional for local servers)",
+        )
+        model = st.text_input(
+            "Model",
+            value=cfg.get("model", ""),
+            key="llm_model",
+            help="Model name. Leave blank to auto-detect from /v1/models.",
+        )
+        timeout = st.number_input(
+            "Timeout (seconds)",
+            min_value=10,
+            max_value=600,
+            value=int(cfg.get("timeout", 120)),
+            key="llm_timeout",
+            help="Request timeout in seconds",
+        )
+
+    with c2:
+        st.markdown("---")
+        if st.button("🔍 Test Connection", type="primary", use_container_width=True, key="test_llm"):
+            try:
+                models = _discover_models()
+                if models:
+                    st.session_state.llm_models = models
+                    st.session_state.llm_test_ok = True
+                    st.rerun()
+                else:
+                    st.error("Connected but no models returned.")
+            except Exception as e:
+                st.error(f"Connection failed: {e}")
+
+        if st.session_state.get("llm_test_ok"):
+            st.success(f"Connected! {len(st.session_state.llm_models)} model(s) found.")
+            st.session_state.llm_test_ok = False
+
+        st.markdown("---")
+        if st.button("💾 Save", type="primary", use_container_width=True, key="save_llm"):
+            save_llm_config({
+                "base_url": base_url,
+                "api_key": api_key,
+                "model": model,
+                "timeout": timeout,
+            })
+            st.session_state.llm_saved = True
+
+        if st.session_state.get("llm_saved"):
+            st.success("Saved!")
+            st.session_state.llm_saved = False
+
+    # Model selector from discovered models
+    if st.session_state.get("llm_models"):
+        models = st.session_state.llm_models
+        st.markdown("---")
+        st.caption("Select a model from the discovered list:")
+        selected = st.selectbox(
+            "Available Models",
+            models,
+            index=0 if not cfg.get("model") else (models.index(cfg["model"]) if cfg["model"] in models else 0),
+            key="llm_model_select",
+        )
+        if selected:
+            cfg["model"] = selected
+            save_llm_config(cfg)
+            st.success(f"Model set to **{selected}**")
 
 
 # ---------------------------------------------------------------------------
@@ -1793,6 +1883,8 @@ elif nav_page == "Profile":
     _render_profile()
 elif nav_page == "Settings":
     _render_garmin_setup()
+    st.divider()
+    _render_llm_settings()
 elif nav_page == "Week":
     _render_weekly_calendar()
 elif nav_page == "Coach":

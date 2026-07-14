@@ -37,15 +37,18 @@ logger = logging.getLogger(__name__)
 
 def _get_base_url() -> str:
     """Resolve the LLM base URL (OpenAI-compatible /v1 endpoint)."""
-    return os.getenv("LLM_BASE_URL", "http://localhost:11434/v1").rstrip("/")
+    from src.config.llm_config import get_llm_base_url
+    return get_llm_base_url().rstrip("/")
 
 
 def _get_api_key() -> str:
-    return os.getenv("LLM_API_KEY", "")
+    from src.config.llm_config import get_llm_api_key
+    return get_llm_api_key()
 
 
 def _get_timeout() -> int:
-    return int(os.getenv("LLM_TIMEOUT", "120"))
+    from src.config.llm_config import get_llm_timeout
+    return get_llm_timeout()
 
 
 def _discover_models() -> list[str]:
@@ -67,7 +70,8 @@ def _discover_models() -> list[str]:
 
 def _get_model() -> str:
     """Get the LLM model, auto-detecting from /v1/models if not set."""
-    model = os.getenv("LLM_MODEL", "")
+    from src.config.llm_config import get_llm_model
+    model = get_llm_model()
     if model:
         return model
     # Auto-detect: pick first available model
