@@ -16,6 +16,7 @@ NOTE on units from Garmin Connect:
 """
 
 import os
+import logging
 import sys
 from datetime import date
 from pathlib import Path
@@ -1074,8 +1075,12 @@ def _render_garmin_setup():
                     from src.main import run_analyze
                     if mode != "reanalyze":
                         unbounded = mode == "all"
+                        # Suppress logging output during UI sync to avoid
+                        # interfering with the Streamlit server process
+                        logging.getLogger("src.ingestion.garmin_connect").setLevel(logging.CRITICAL)
                         wellness = sync_garmin(days=days, db_path=str(config.db_path("cycling_agent.sqlite")), unbounded=unbounded)
                         activities = sync_activities(days=days, db_path=str(config.db_path("cycling_agent.sqlite")), unbounded=unbounded)
+                        logging.getLogger("src.ingestion.garmin_connect").setLevel(logging.DEBUG)
                     else:
                         wellness = {"wellness_records": 0}
                         activities = {"activities_processed": 0}
