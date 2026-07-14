@@ -844,7 +844,7 @@ def _render_trends():
             # Add zone bands for TSB
             fig.add_hline(y=10, line_dash="dot", line_color="#2ca02c", opacity=0.4, annotation_text="Fresh")
             fig.add_hline(y=-10, line_dash="dot", line_color="#dc3545", opacity=0.4, annotation_text="Tired")
-            fig.add_hrect(y0=-10, y1=10, filling=True, color="grey", opacity=0.06, layer_below=True)
+            fig.add_hrect(y0=-10, y1=10, fillcolor="grey", opacity=0.06, layer_below=True)
 
             st.plotly_chart(fig, width="stretch")
 
