@@ -85,7 +85,9 @@ db = st.session_state.db
 st.sidebar.header("Dashboard")
 
 if "nav_page" not in st.session_state:
-    st.session_state.nav_page = "Check-in"
+    # Default to Coach if today's check-in is done, otherwise Check-in
+    _today_checkin = db.get_morning_checkin(date.today().isoformat())
+    st.session_state.nav_page = "Coach" if _today_checkin else "Check-in"
 
 pages = ["Check-in", "Activity Detail", "Trends", "Map", "Profile", "Settings", "Coach"]
 nav_page = st.sidebar.selectbox(
@@ -995,64 +997,52 @@ def _render_garmin_setup():
         f"Last activity sync: {last_activities or 'never'}"
     )
 
-    # ── Sync controls ────────────────────────────────────────────────
-    col1, col2, col3 = st.columns(3)
+
+# ---------------------------------------------------------------------------
+# Shared sync controls (used by Coach page)
+# ---------------------------------------------------------------------------
+def _render_sync_controls():
+    """Render sync/prescribe buttons, progress, and results."""
+    from src.ingestion.garmin_connect import sync_garmin, sync_activities
+    from src.main import run_analyze, run_prescribe
+
+    is_connected = st.session_state.get("garmin_auth_state") == "connected"
+
+    # ── Buttons ───────────────────────────────────────────────────────
+    col1, col2 = st.columns(2)
     with col1:
         sync_clicked = st.button(
             "Update Latest Data", type="primary",
             disabled=not is_connected,
-            help="Pull new activities and wellness from Garmin since the last sync, then re-run analytics.",
+            help="Pull new activities and wellness from Garmin, then re-run analytics.",
             key="sync_since_last",
         )
     with col2:
-        sync_all_clicked = st.button(
-            "Pull All Data from Garmin",
-            disabled=not is_connected,
-            help="Re-sync all historical data from Garmin and re-run analytics (may take a while).",
-            key="sync_all_historical",
-        )
-    with col3:
-        reanalyze_clicked = st.button(
-            "Reanalyze All Data",
-            disabled=False,
-            help="Re-run analytics on all locally stored data (no Garmin API call).",
-            key="reanalyze_all",
-        )
-
-    col4, col5 = st.columns([3, 1])
-    with col4:
-        st.caption("Generate an AI-powered training prescription based on your latest data.")
-    with col5:
         prescribe_clicked = st.button(
             "Generate Prescription",
             help="Run analytics and generate a training prescription via LLM.",
             key="generate_prescription",
         )
-    # ── Handle sync button clicks ─────────────────────────────────────
-    if sync_clicked or sync_all_clicked or reanalyze_clicked:
-        if st.session_state.get("syncing"):
-            st.info("Sync already running...")
-        else:
-            mode = "update" if sync_clicked else ("all" if sync_all_clicked else "reanalyze")
-            days = 7 if mode == "update" else (3650 if mode == "all" else 0)
-            st.session_state.sync_mode = mode
-            st.session_state.sync_days = days
+
+    # ── Handle button clicks ──────────────────────────────────────────
+    if sync_clicked:
+        if not st.session_state.get("syncing"):
+            st.session_state.sync_mode = "update"
+            st.session_state.sync_days = 7
             st.session_state.sync_result = None
             st.session_state.sync_error = None
             st.session_state.syncing = True
             st.rerun()
 
     if prescribe_clicked:
-        if st.session_state.get("syncing"):
-            st.info("Sync already running...")
-        else:
+        if not st.session_state.get("syncing"):
             st.session_state.sync_mode = "prescribe"
-            st.session_state.syncing = True
             st.session_state.sync_result = None
             st.session_state.sync_error = None
+            st.session_state.syncing = True
             st.rerun()
 
-    # ── Run sync synchronously with progress feedback ─────────────────
+    # ── Run sync with progress ────────────────────────────────────────
     if st.session_state.get("syncing"):
         if "sync_log" not in st.session_state:
             st.session_state.sync_log = []
@@ -1062,32 +1052,20 @@ def _render_garmin_setup():
         mode = st.session_state.get("sync_mode", "update")
         days = st.session_state.get("sync_days", 7)
 
-        # Progress callback that collects log messages
         def progress_callback(pct: int, message: str) -> None:
             st.session_state.sync_log.append(f"[{pct}%] {message}")
             st.session_state.sync_progress = pct
 
-        # Show progress panel
         with st.container():
             st.subheader("Sync Progress")
             st.progress(st.session_state.sync_progress / 100.0)
-
-            # Show latest message prominently
             if st.session_state.sync_log:
                 st.info(st.session_state.sync_log[-1])
             else:
                 st.info("Starting sync...")
 
-            # Scrollable log
-            log_container = st.container(border=True)
-            with log_container:
-                if st.session_state.sync_log:
-                    for msg in st.session_state.sync_log:
-                        st.code(msg, language=None)
-
         try:
             if mode == "prescribe":
-                from src.main import run_analyze, run_prescribe
                 progress_callback(10, "Running analysis...")
                 analyze_result = run_analyze()
                 progress_callback(50, "Generating prescription...")
@@ -1103,33 +1081,23 @@ def _render_garmin_setup():
                 }
                 progress_callback(100, "Prescription complete.")
             else:
-                from src.ingestion.garmin_connect import sync_garmin, sync_activities
-                from src.main import run_analyze
-                if mode != "reanalyze":
-                    unbounded = mode == "all"
-                    logging.getLogger("src.ingestion.garmin_connect").setLevel(
-                        logging.CRITICAL
-                    )
-                    progress_callback(5, "Syncing wellness data...")
-                    wellness = sync_garmin(
-                        days=days,
-                        db_path=str(config.db_path("cycling_agent.sqlite")),
-                        unbounded=unbounded,
-                        progress_callback=progress_callback,
-                    )
-                    progress_callback(60, "Syncing activities...")
-                    activities = sync_activities(
-                        days=days,
-                        db_path=str(config.db_path("cycling_agent.sqlite")),
-                        unbounded=unbounded,
-                        progress_callback=progress_callback,
-                    )
-                    logging.getLogger(
-                        "src.ingestion.garmin_connect"
-                    ).setLevel(logging.DEBUG)
-                else:
-                    wellness = {"wellness_records": 0}
-                    activities = {"activities_processed": 0}
+                unbounded = mode == "all"
+                logging.getLogger("src.ingestion.garmin_connect").setLevel(logging.CRITICAL)
+                progress_callback(5, "Syncing wellness data...")
+                wellness = sync_garmin(
+                    days=days,
+                    db_path=str(config.db_path("cycling_agent.sqlite")),
+                    unbounded=unbounded,
+                    progress_callback=progress_callback,
+                )
+                progress_callback(60, "Syncing activities...")
+                activities = sync_activities(
+                    days=days,
+                    db_path=str(config.db_path("cycling_agent.sqlite")),
+                    unbounded=unbounded,
+                    progress_callback=progress_callback,
+                )
+                logging.getLogger("src.ingestion.garmin_connect").setLevel(logging.DEBUG)
                 progress_callback(80, "Running analytics...")
                 analyze_result = run_analyze()
                 st.session_state.sync_result = {
@@ -1145,12 +1113,10 @@ def _render_garmin_setup():
         except Exception as exc:
             exc_str = str(exc)
             st.session_state.sync_log.append(f"Error: {exc_str}")
+            st.session_state.sync_error = exc_str
             if "MFA" in exc_str or "mfa" in exc_str or "two-factor" in exc_str:
-                st.session_state.sync_error = exc_str
                 st.session_state.garmin_auth_state = "idle"
                 st.session_state.garmin_auth_instance = None
-            else:
-                st.session_state.sync_error = exc_str
         finally:
             st.session_state.syncing = False
             st.rerun()
@@ -1163,12 +1129,10 @@ def _render_garmin_setup():
             st.info("Your session has expired. Please sign in again.")
         st.session_state.sync_error = None
 
-    # ── Show sync results in expandable panel ────────────────────────
+    # ── Show sync results ─────────────────────────────────────────────
     if st.session_state.get("sync_result"):
         result = st.session_state.sync_result
         with st.expander("Sync Results", expanded=True):
-
-            # Show results
             if "wellness" in result:
                 st.write(f"**Wellness:** {result['wellness']}")
             if "activities" in result:
@@ -1185,7 +1149,6 @@ def _render_garmin_setup():
             if "prescription_error" in result:
                 st.error(f"Prescription failed: {result['prescription_error']}")
 
-            # Done button to dismiss results
             if st.button("Done", type="primary", use_container_width=True, key="dismiss_sync_results"):
                 st.session_state.sync_result = None
                 st.session_state.sync_log = []
@@ -1204,6 +1167,10 @@ def _render_coach():
     """
     st.header("AI Coach")
     st.caption("Chat with your AI coach about training, recovery, and performance.")
+
+    # Sync/prescribe controls at top
+    _render_sync_controls()
+    st.divider()
 
     # Initialize chat history
     if "coach_messages" not in st.session_state:
@@ -1232,7 +1199,7 @@ def _render_coach():
         col2.metric("CTL", f"{training_load.get('ctl', 0):.0f}")
         col3.metric("ATL", f"{training_load.get('atl', 0):.0f}")
     else:
-        st.info("No analysis data yet. Run 'Reanalyze All Data' in Settings first.")
+        st.info("No analysis data yet. Use 'Update Latest Data' above to sync and analyze.")
 
     # Display chat history
     chat_container = st.container()
