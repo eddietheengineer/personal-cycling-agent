@@ -782,7 +782,7 @@ def _render_trends():
 
     all_dates = [r["date"] for r in wellness_rows]
     min_date = min(all_dates)
-    max_date = max(default(max(all_dates), date.today().isoformat()), date.today().isoformat())
+    max_date = max(max(all_dates), date.today().isoformat())
 
     today = date.today()
     this_year_start = date(today.year, 1, 1).isoformat()
