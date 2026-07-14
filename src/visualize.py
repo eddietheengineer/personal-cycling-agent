@@ -257,6 +257,43 @@ def _render_week_strip():
         fig.update_yaxes(showgrid=True, gridcolor="#333")
         st.plotly_chart(fig, use_container_width=True)
 
+        # Context indicators
+        last_ctl = plan.ctl_series[-1]
+        last_atl = plan.atl_series[-1]
+        last_tsb = plan.tsb_series[-1]
+        ctl_change = plan.ctl_series[-1] - plan.ctl_series[0]
+        tsb_change = plan.tsb_series[-1] - plan.tsb_series[0]
+
+        c_cols = st.columns(3)
+        # CTL interpretation
+        if last_ctl > 100:
+            ctl_status = "🟢 High fitness base"
+        elif last_ctl > 50:
+            ctl_status = "🟡 Building fitness"
+        else:
+            ctl_status = "🔴 Low fitness base"
+        c_cols[0].markdown(f"**CTL {last_ctl:.0f}** {ctl_status} {'↑' if ctl_change > 0 else '↓'}{abs(ctl_change):.0f} this week")
+
+        # ATL interpretation
+        if last_atl > last_ctl:
+            atl_status = "🔴 Overreaching"
+        elif last_atl > last_ctl * 0.9:
+            atl_status = "🟡 High fatigue"
+        else:
+            atl_status = "🟢 Manageable fatigue"
+        c_cols[1].markdown(f"**ATL {last_atl:.0f}** {atl_status}")
+
+        # TSB interpretation
+        if last_tsb > 10:
+            tsb_status = "🟢 Fresh / peaking"
+        elif last_tsb > 0:
+            tsb_status = "🟡 Recovering"
+        elif last_tsb > -10:
+            tsb_status = "🟡 Normal training"
+        else:
+            tsb_status = "🔴 Fatigued"
+        c_cols[2].markdown(f"**TSB {last_tsb:.0f}** {tsb_status} {'↑' if tsb_change > 0 else '↓'}{abs(tsb_change):.0f} this week")
+
 
 def _render_readiness_card():
     """Compact readiness status card with metrics."""
