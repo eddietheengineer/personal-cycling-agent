@@ -18,7 +18,7 @@ NOTE on units from Garmin Connect:
 import os
 import logging
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
