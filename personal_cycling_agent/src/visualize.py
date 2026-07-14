@@ -1383,6 +1383,63 @@ def _render_llm_settings():
         st.success("Saved!")
         st.session_state.llm_saved = False
 
+# ---------------------------------------------------------------------------
+# Memory Journal Settings
+# ---------------------------------------------------------------------------
+def _render_memory_settings():
+    """Render memory journal viewer and management controls."""
+    from src.memory.journal import load_journal, append_entry
+    from pathlib import Path
+    from src.config import vault_path
+
+    st.subheader("Memory Journal")
+    st.caption("Facts your AI coach remembers across sessions. Edit the file directly or use controls below.")
+
+    journal_text = load_journal()
+
+    # Scrollable journal viewer
+    st.markdown(
+        '<div style="max-height: 300px; overflow-y: auto; border: 1px solid #ddd; '
+        'border-radius: 4px; padding: 12px; background: #fafafa; font-family: monospace; '
+        'font-size: 0.85em; white-space: pre-wrap;">'
+        + (journal_text if journal_text else "<em>No entries yet. Chat with the coach to build memory.</em>")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    col1, col2, col3 = st.columns([1, 1, 3])
+
+    with col1:
+        if st.button("🗑️ Clear Journal", use_container_width=True, key="clear_journal"):
+            journal_path = vault_path() / "memory_journal.md"
+            if journal_path.exists():
+                journal_path.write_text("", encoding="utf-8")
+            st.rerun()
+
+    with col2:
+        if st.button("📝 Add Entry", use_container_width=True, key="add_entry_btn"):
+            st.session_state.show_manual_entry = True
+
+    # Manual entry form
+    if st.session_state.get("show_manual_entry"):
+        st.markdown("---")
+        entry_text = st.text_area(
+            "New Journal Entry",
+            key="manual_journal_entry",
+            placeholder="e.g., Left knee hurts after long rides",
+            height=80,
+        )
+        entry_col1, entry_col2 = st.columns(2)
+        with entry_col1:
+            if st.button("💾 Save Entry", type="primary", use_container_width=True, key="save_manual_entry"):
+                if entry_text.strip():
+                    append_entry(entry_text.strip())
+                    st.session_state.show_manual_entry = False
+                    st.rerun()
+        with entry_col2:
+            if st.button("Cancel", use_container_width=True, key="cancel_manual_entry"):
+                st.session_state.show_manual_entry = False
+                st.rerun()
 
 # ---------------------------------------------------------------------------
 # Shared sync controls (used by Coach page)
@@ -1642,6 +1699,7 @@ def _render_coach():
 
         # Build system prompt with context
         from src.agent import prompt_builder, llm_client
+        from src.memory.journal import load_recent, extract_memories, append_entry
 
         system_prompt = prompt_builder.build_system_prompt(
             readiness=analysis.get("readiness") if analysis else None,
@@ -1651,6 +1709,11 @@ def _render_coach():
             durability=analysis.get("durability") if analysis else None,
             decoupling=analysis.get("decoupling") if analysis else None,
         )
+
+        # Prepend recent memory journal entries to system prompt
+        journal_context = load_recent(30)
+        if journal_context:
+            system_prompt = f"## Memory Journal\n{journal_context}\n\n{system_prompt}"
 
         # Build conversation context
         messages = [{"role": "system", "content": system_prompt}]
@@ -1669,6 +1732,17 @@ def _render_coach():
 
                 response = llm_client.generate(full_prompt, stream=False)
                 st.session_state.coach_messages.append({"role": "assistant", "content": response})
+
+                # Extract memories in background thread (non-blocking)
+                def _extract_and_save():
+                    try:
+                        bullets = extract_memories(user_input.strip(), response)
+                        for bullet in bullets:
+                            append_entry(bullet)
+                    except Exception:
+                        pass  # Silently skip if extraction fails
+
+                threading.Thread(target=_extract_and_save, daemon=True).start()
             except Exception as e:
                 st.error(f"Coach error: {e}")
                 st.info("Check that your LLM server is running (LLM_BASE_URL env var).")
@@ -1894,6 +1968,8 @@ elif nav_page == "Settings":
     _render_garmin_setup()
     st.divider()
     _render_llm_settings()
+    st.divider()
+    _render_memory_settings()
 elif nav_page == "Week":
     _render_weekly_calendar()
 elif nav_page == "Coach":

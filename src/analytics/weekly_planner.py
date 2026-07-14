@@ -492,6 +492,17 @@ def generate_ai_plan() -> WeeklyPlan:
     day_names = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
     available_days_str = ", ".join(day_names[i] for i in available_days)
 
+    # Load recent memory journal entries for context
+    journal_context = ""
+    try:
+        from src.memory.journal import load_recent
+        journal_context = load_recent(30)
+    except Exception:
+        pass
+
+    weather_block = "WEATHER:\n" + "\n".join(weather_lines) + "\n\n"
+    journal_block = f"## Memory Journal\n{journal_context}\n\n" if journal_context else ""
+
     prompt = (
         f"You are a cycling coach. Generate a 7-day training plan.\n\n"
         f"ATHLETE: Readiness {readiness_score:.0f}/100 ({readiness_state}), "
@@ -501,12 +512,13 @@ def generate_ai_plan() -> WeeklyPlan:
         f"Goals: {profile.get('primary_goal', 'VO2 max')}\n"
         f"Max session: {_parse_float(profile.get('max_session_duration'), 90.0):.0f}min\n\n"
         f"CONSTRAINTS: Max 3 training days. Available: {available_days_str}\n\n"
-        f"WEATHER:\n" + "\n".join(weather_lines) + "\n\n"
-        f"Return ONLY a JSON array of 7 day objects:\n"
-        f'[{{"date":"YYYY-MM-DD","weekday":0-6,"rest_day":bool,"session_type":"rest|recovery|endurance|threshold|vo2|anaerobic|mixed",'
-        f'"target_zone":"Z1-Z5","duration_min":int,"target_tss":float,"indoor":bool,'
-        f'"description":"str","weather_note":"str","rationale":"str"}}]\n'
-        f"Rest days: rest_day=true, duration=0, tss=0. Total TSS ~{current_ctl*7/30:.0f}."
+        + weather_block
+        + journal_block
+        + f"Return ONLY a JSON array of 7 day objects:\n"
+        + f'[{{"date":"YYYY-MM-DD","weekday":0-6,"rest_day":bool,"session_type":"rest|recovery|endurance|threshold|vo2|anaerobic|mixed",'
+        + f'"target_zone":"Z1-Z5","duration_min":int,"target_tss":float,"indoor":bool,'
+        + f'"description":"str","weather_note":"str","rationale":"str"}}]\n'
+        + f"Rest days: rest_day=true, duration=0, tss=0. Total TSS ~{current_ctl*7/30:.0f}."
     )
 
     try:
