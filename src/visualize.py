@@ -1194,10 +1194,7 @@ def _render_garmin_setup():
         # Trigger periodic rerun while thread is alive
         thread = st.session_state.get("sync_thread")
         if thread is not None and thread.is_alive():
-            # Use Streamlit's rerun scheduler from background thread
-            import streamlit.runtime.scriptrunner as scriptrunner
-
-            scriptrunner.rerun()
+            st.rerun()
 
     # ── Show sync errors ──────────────────────────────────────────────
     if st.session_state.get("sync_error"):
