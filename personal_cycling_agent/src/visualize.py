@@ -827,6 +827,7 @@ def _render_trends():
         if history:
             df_load = pd.DataFrame(history)
 
+            # Plot historical data
             fig = px.line(
                 df_load, x="date", y=["ctl", "atl", "tsb"],
                 labels={"value": "", "variable": ""},
@@ -840,6 +841,22 @@ def _render_trends():
             )
             fig.update_traces(line=dict(width=2))
             fig.update_layout(height=350, legend=dict(title=""))
+
+            # Overlay projected plan data as dashed lines
+            from src.analytics.weekly_planner import load_weekly_plan
+            plan = load_weekly_plan()
+            if plan and plan.ctl_series:
+                plan_dates = [d.date for d in plan.days]
+                colors = {"ctl": "#1f77b4", "atl": "#ff7f0e", "tsb": "#2ca02c"}
+                series_map = {"ctl": plan.ctl_series, "atl": plan.atl_series, "tsb": plan.tsb_series}
+                for metric in ["ctl", "atl", "tsb"]:
+                    import plotly.graph_objects as go
+                    fig.add_trace(go.Scatter(
+                        x=plan_dates, y=series_map[metric],
+                        mode="lines", name=f"{metric} (projected)",
+                        line=dict(color=colors[metric], width=2, dash="dash"),
+                        opacity=0.7,
+                    ))
 
             # Add zone bands for TSB
             fig.add_hline(y=10, line_dash="dot", line_color="#2ca02c", opacity=0.4, annotation_text="Fresh")

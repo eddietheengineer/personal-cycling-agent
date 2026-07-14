@@ -713,6 +713,9 @@ def load_weekly_plan() -> WeeklyPlan | None:
             weekly_tss_planned=data.get("weekly_tss_planned", 0),
             generated_at=data.get("generated_at", ""),
             readiness_summary=data.get("readiness_summary", ""),
+            ctl_series=data.get("ctl_series", []),
+            atl_series=data.get("atl_series", []),
+            tsb_series=data.get("tsb_series", []),
         )
     except Exception:
         return None
