@@ -126,7 +126,7 @@ def _render_dashboard():
     st.title("Cycling Dashboard")
 
     # ── 7-Day Training Calendar ─────────────────────────────────────────
-    _render_weekly_calendar()
+    _render_week_strip()
 
     st.divider()
 
@@ -231,6 +231,31 @@ def _render_week_strip():
             col.caption(f"{day.duration_min}min · TSS {day.target_tss:.0f}")
             if day.description:
                 col.caption(day.description)
+
+    # Projected fitness/fatigue/load chart
+    if plan and plan.ctl_series:
+        import plotly.graph_objects as go
+
+        labels = [f"{d.date.split('-')[1]}/{d.date.split('-')[2]}" for d in plan.days]
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=labels, y=plan.ctl_series, name="CTL (Fitness)",
+                                  line=dict(color="#2196f3", width=2), mode="lines+markers"))
+        fig.add_trace(go.Scatter(x=labels, y=plan.atl_series, name="ATL (Fatigue)",
+                                  line=dict(color="#f44336", width=2), mode="lines+markers"))
+        fig.add_trace(go.Scatter(x=labels, y=plan.tsb_series, name="TSB (Form)",
+                                  line=dict(color="#4caf50", width=2), mode="lines+markers"))
+
+        fig.update_layout(
+            height=200, margin=dict(l=50, r=20, t=10, b=30),
+            xaxis_title="", yaxis_title="",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(size=11),
+        )
+        fig.update_xaxes(showgrid=False)
+        fig.update_yaxes(showgrid=True, gridcolor="#333")
+        st.plotly_chart(fig, use_container_width=True)
 
 
 def _render_readiness_card():
@@ -2162,7 +2187,6 @@ def _render_weekly_calendar():
     for i, day in enumerate(plan.days):
         day_name = day_labels[day.weekday]
         day_date = day.date.split("-")[2]
-        w_line = f"{w_icon} {w_temp}" if w_temp else ""
 
         color = zone_colors.get(day.session_type, "#666")
         is_today = day.date == date.today().isoformat()
@@ -2176,6 +2200,7 @@ def _render_weekly_calendar():
         tmax_f = day.weather_temp_max if day.weather_temp_max else 0
         tmin_f = day.weather_temp_min if day.weather_temp_min else 0
         w_temp = f"{tmax_f:.0f}°F/{tmin_f:.0f}°F" if tmax_f else ""
+        w_line = f"{w_icon} {w_temp}" if w_temp else ""
 
         if day.rest_day:
             ride_line = f'<div style="color: #555; font-size: 0.75em; margin-top: 2px;">{day.ride_note}</div>' if day.ride_note else ''
