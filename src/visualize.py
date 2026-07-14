@@ -2160,6 +2160,10 @@ def _render_weekly_calendar():
     }
 
     for i, day in enumerate(plan.days):
+        day_name = day_labels[day.weekday]
+        day_date = day.date.split("-")[2]
+        w_line = f"{w_icon} {w_temp}" if w_temp else ""
+
         color = zone_colors.get(day.session_type, "#666")
         is_today = day.date == date.today().isoformat()
         border = "2px solid #fff" if is_today else "1px solid #333"
