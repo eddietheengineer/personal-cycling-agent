@@ -22,13 +22,13 @@ DAY_NAMES = [
 ]
 
 DEFAULT_SCHEDULE: dict[str, dict[str, object]] = {
-    "monday": {"available": False, "time_slot": "morning"},
-    "tuesday": {"available": False, "time_slot": "morning"},
-    "wednesday": {"available": False, "time_slot": "morning"},
-    "thursday": {"available": False, "time_slot": "morning"},
-    "friday": {"available": False, "time_slot": "morning"},
-    "saturday": {"available": False, "time_slot": "morning"},
-    "sunday": {"available": False, "time_slot": "morning"},
+    "monday": {"available": False, "time_slots": ["morning"]},
+    "tuesday": {"available": False, "time_slots": ["morning"]},
+    "wednesday": {"available": False, "time_slots": ["morning"]},
+    "thursday": {"available": False, "time_slots": ["morning"]},
+    "friday": {"available": False, "time_slots": ["morning"]},
+    "saturday": {"available": False, "time_slots": ["morning"]},
+    "sunday": {"available": False, "time_slots": ["morning"]},
 }
 
 
@@ -52,9 +52,12 @@ def load_schedule() -> dict:
         result = {}
         for day in DAY_NAMES:
             entry = data.get(day, {})
+            slots = entry.get("time_slots", ["morning"])
+            if isinstance(slots, str):
+                slots = [slots]  # backward compat: single string -> list
             result[day] = {
                 "available": bool(entry.get("available", False)),
-                "time_slot": entry.get("time_slot", "morning"),
+                "time_slots": slots,
             }
         return result
     except (json.JSONDecodeError, OSError):
@@ -79,13 +82,13 @@ def get_available_days() -> list[int]:
     ]
 
 
-def get_time_slot(day: int) -> str:
-    """Return the time_slot string for a given weekday int (0=Mon … 6=Sun).
+def get_time_slots(day: int) -> list[str]:
+    """Return the time_slots list for a given weekday int (0=Mon … 6=Sun).
 
-    Returns 'morning' as the default if the day is out of range or
+    Returns ['morning'] as the default if the day is out of range or
     the schedule has no entry for it.
     """
     if not 0 <= day <= 6:
-        return "morning"
+        return ["morning"]
     schedule = load_schedule()
-    return schedule.get(DAY_NAMES[day], {}).get("time_slot", "morning")
+    return schedule.get(DAY_NAMES[day], {}).get("time_slots", ["morning"])

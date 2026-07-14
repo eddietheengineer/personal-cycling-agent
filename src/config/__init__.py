@@ -155,7 +155,7 @@ def raw_dir() -> Path:
 from src.config.schedule import (
     DEFAULT_SCHEDULE,
     get_available_days,
-    get_time_slot,
+    get_time_slots,
     load_schedule,
     save_schedule,
 )

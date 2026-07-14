@@ -1701,11 +1701,12 @@ def _render_schedule_config():
     """Render training schedule configuration in Settings/Week page."""
     from src.config.schedule import load_schedule, save_schedule, DAY_NAMES
 
-    with st.expander("⚙️ Training Schedule", expanded=False):
-        st.caption("Configure which days you can train and your preferred time slot.")
+    schedule = load_schedule()
+    day_labels = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    slot_labels = ["morning", "afternoon", "evening"]
 
-        schedule = load_schedule()
-        day_labels = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+    with st.expander("⚙️ Training Schedule", expanded=False):
+        st.caption("Configure which days you can train and your available time slots.")
 
         cols = st.columns(7)
         for i, day_name in enumerate(DAY_NAMES):
@@ -1716,26 +1717,39 @@ def _render_schedule_config():
                     value=entry.get("available", False),
                     key=f"schedule_{day_name}",
                 )
-                slot_options = ["morning", "afternoon", "evening", "any"]
-                slot_val = entry.get("time_slot", "morning")
-                slot_idx = slot_options.index(slot_val) if slot_val in slot_options else 0
-                time_slot = st.selectbox(
-                    "When",
-                    slot_options,
-                    index=slot_idx,
-                    key=f"slot_{day_name}",
-                    disabled=not available,
-                    label_visibility="collapsed",
-                )
+
+                # Multi-select time slots
+                current_slots = entry.get("time_slots", ["morning"])
+                if isinstance(current_slots, str):
+                    current_slots = [current_slots]
+
+                for slot in slot_labels:
+                    slot_checked = st.checkbox(
+                        slot.capitalize(),
+                        value=slot in current_slots,
+                        key=f"slot_{day_name}_{slot}",
+                        disabled=not available,
+                    )
+                    if slot_checked and slot not in current_slots:
+                        current_slots.append(slot)
+                    elif not slot_checked and slot in current_slots:
+                        current_slots.remove(slot)
+
+                if not current_slots:
+                    current_slots = ["morning"]
+
                 schedule[day_name] = {
                     "available": available,
-                    "time_slot": time_slot,
+                    "time_slots": current_slots,
                 }
 
         if st.button("Save Schedule", type="primary", use_container_width=True, key="save_schedule"):
             save_schedule(schedule)
+            st.session_state.schedule_saved = True
+
+        if st.session_state.get("schedule_saved"):
             st.success("Schedule saved!")
-            st.rerun()
+            st.session_state.schedule_saved = False
 
     # Location config for weather
     st.divider()

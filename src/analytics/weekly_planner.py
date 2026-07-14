@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from src.config import vault_path
-from src.config.schedule import load_schedule, get_available_days, get_time_slot
+from src.config.schedule import load_schedule, get_available_days, get_time_slots
 from src.services.weather import get_location, get_weekly_forecast
 
 logger = logging.getLogger(__name__)
@@ -283,7 +283,7 @@ def generate_weekly_plan() -> WeeklyPlan:
         weekday = day_date.weekday()
         date_str = day_date.isoformat()
         is_available = weekday in available_days
-        time_slot = get_time_slot(weekday)
+        time_slots = get_time_slots(weekday)
 
         # Weather for this day
         day_forecast = forecast_map.get(date_str)
@@ -329,7 +329,7 @@ def generate_weekly_plan() -> WeeklyPlan:
         if indoor and not session_type == "rest":
             pass  # description will note indoor
 
-        description = _build_description(session_type, zone, duration, tss, indoor, time_slot)
+        description = _build_description(session_type, zone, duration, tss, indoor, time_slots[0])
 
         rationale_parts = []
         if day_date == today:
