@@ -340,22 +340,26 @@ def _render_readiness_card():
             ctl_status = "🔴 Low fitness base"
         c_cols[0].markdown(f"**CTL {ctl:.0f}** {ctl_status}")
 
-        if atl > ctl:
+        if tsb < 0:
             atl_status = "🔴 Overreaching"
-        elif atl > ctl * 0.9:
-            atl_status = "🟡 High fatigue"
+        elif tsb < 10:
+            atl_status = "🟡 Tapering"
+        elif tsb < 20:
+            atl_status = "🟢 Normal training"
         else:
-            atl_status = "🟢 Manageable fatigue"
+            atl_status = "🟢 Well-recovered"
         c_cols[1].markdown(f"**ATL {atl:.0f}** {atl_status}")
 
-        if tsb > 10:
+        if tsb > 20:
             tsb_status = "🟢 Fresh / peaking"
-        elif tsb > 0:
+        elif tsb > 10:
             tsb_status = "🟡 Recovering"
-        elif tsb > -10:
+        elif tsb > 0:
             tsb_status = "🟡 Normal training"
+        elif tsb > -10:
+            tsb_status = "🟠 Fatigued"
         else:
-            tsb_status = "🔴 Fatigued"
+            tsb_status = "🔴 Overreaching"
         c_cols[2].markdown(f"**TSB {tsb:.0f}** {tsb_status}")
 
 
