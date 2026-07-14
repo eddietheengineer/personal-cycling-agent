@@ -1425,16 +1425,6 @@ def _render_sync_controls():
             st.info("Your session has expired. Please sign in again.")
         st.session_state.sync_error = None
 
-    # ── Show sync results ─────────────────────────────────────────────
-    if st.session_state.get("sync_result"):
-        result = st.session_state.sync_result
-        with st.expander("Sync Results", expanded=True):
-            _display_sync_results(result)
-            if st.button("Done", type="primary", use_container_width=True, key="dismiss_sync_results"):
-                st.session_state.sync_result = None
-                st.session_state.sync_log = []
-                st.session_state.sync_progress = 0
-                st.rerun()
 
 
 # ---------------------------------------------------------------------------
