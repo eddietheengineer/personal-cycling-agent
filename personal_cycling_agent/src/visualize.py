@@ -1064,11 +1064,12 @@ def _render_profile():
         loc_col1, loc_col2 = st.columns(2)
         from src.config.schedule import load_weather_location, save_weather_location
         wl = load_weather_location()
+        wl_lat, wl_lon = wl if wl else (0.0, 0.0)
         with loc_col1:
-            weather_lat = st.number_input("Latitude", value=wl.get("lat", 0.0),
+            weather_lat = st.number_input("Latitude", value=wl_lat,
                                           format="%.6f", key="prof_lat")
         with loc_col2:
-            weather_lon = st.number_input("Longitude", value=wl.get("lon", 0.0),
+            weather_lon = st.number_input("Longitude", value=wl_lon,
                                           format="%.6f", key="prof_lon")
         st.caption("Used for weather forecasts. Leave at 0 to auto-detect from Garmin GPS.")
 
