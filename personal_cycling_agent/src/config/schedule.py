@@ -92,3 +92,29 @@ def get_time_slots(day: int) -> list[str]:
         return ["morning"]
     schedule = load_schedule()
     return schedule.get(DAY_NAMES[day], {}).get("time_slots", ["morning"])
+def _weather_file() -> Path:
+    """Return the path to the weather location JSON file in the vault."""
+    return vault_path() / "weather_location.json"
+
+
+def load_weather_location() -> tuple[float, float] | None:
+    """Load saved weather location (lat, lon) from the vault."""
+    path = _weather_file()
+    if not path.exists():
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        lat = float(data.get("lat"))
+        lon = float(data.get("lon"))
+        return lat, lon
+    except (json.JSONDecodeError, OSError, ValueError, TypeError):
+        return None
+
+
+def save_weather_location(lat: float, lon: float) -> None:
+    """Persist weather location to the vault."""
+    path = _weather_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump({"lat": lat, "lon": lon}, f, indent=2)

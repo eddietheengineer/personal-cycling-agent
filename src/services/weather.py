@@ -33,12 +33,21 @@ def _map_weather_code(code: int) -> str:
 
 
 def get_location() -> Optional[tuple[float, float]]:
-    """Return (lat, lon) from config.env WEATHER_LAT/LON or auto-detect from
-    the latest Garmin activity GPS route stored in the local SQLite DB.
+    """Return (lat, lon) from saved vault location, config.env WEATHER_LAT/LON,
+    or auto-detect from the latest Garmin activity GPS route.
 
     Returns None when neither source is available.
     """
-    # 1. Try environment variables set by config.env
+    # 1. Try saved location in vault
+    try:
+        from src.config.schedule import load_weather_location
+        saved = load_weather_location()
+        if saved:
+            return saved
+    except Exception:
+        pass
+
+    # 2. Try environment variables set by config.env
     lat_str = os.environ.get("WEATHER_LAT")
     lon_str = os.environ.get("WEATHER_LON")
     if lat_str and lon_str:

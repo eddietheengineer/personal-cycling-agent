@@ -30,10 +30,14 @@ _HASHED_VARS = {"GARMIN_PASSWORD", "MQTT_PASSWORD"}
 
 
 def _vault_dir() -> Path:
-    """Resolve the vault directory path."""
-    override = os.environ.get("CYCLING_AGENT_VAULT")
-    if override:
-        return Path(override).expanduser().resolve()
+    """Resolve the vault directory path.
+
+    Priority: CYCLING_AGENT_VAULT > DATA_DIR > ~/cycling-agent-data
+    """
+    for var in ("CYCLING_AGENT_VAULT", "DATA_DIR"):
+        override = os.environ.get(var)
+        if override:
+            return Path(override).expanduser().resolve()
     return Path.home() / "cycling-agent-data"
 
 
