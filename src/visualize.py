@@ -999,6 +999,21 @@ def _render_garmin_setup():
 
 
 # ---------------------------------------------------------------------------
+# Garmin connection check (session state or cached tokens)
+# ---------------------------------------------------------------------------
+def _check_garmin_connected() -> bool:
+    """Return True if Garmin is connected via session state or has cached tokens."""
+    if st.session_state.get("garmin_auth_state") == "connected":
+        return True
+    # Check for cached tokens on disk
+    tokenstore = os.environ.get("GARMIN_TOKENSTORE", "")
+    if tokenstore and os.path.isdir(tokenstore):
+        files = [f for f in os.listdir(tokenstore) if f.endswith(('.json', '.pkl'))]
+        if files:
+            return True
+    return False
+
+# ---------------------------------------------------------------------------
 # Shared sync controls (used by Coach page)
 # ---------------------------------------------------------------------------
 def _render_sync_controls():
@@ -1006,7 +1021,7 @@ def _render_sync_controls():
     from src.ingestion.garmin_connect import sync_garmin, sync_activities
     from src.main import run_analyze, run_prescribe
 
-    is_connected = st.session_state.get("garmin_auth_state") == "connected"
+    is_connected = _check_garmin_connected()
 
     # ── Buttons ───────────────────────────────────────────────────────
     col1, col2 = st.columns(2)
