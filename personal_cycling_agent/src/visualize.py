@@ -229,6 +229,8 @@ def _render_week_strip():
             indoor = "🏠" if day.indoor else "🚴"
             col.markdown(f"<div style='color:{color}; font-weight:600;'>{indoor} {day.session_type.title()}</div>", unsafe_allow_html=True)
             col.caption(f"{day.duration_min}min · TSS {day.target_tss:.0f}")
+            if day.description:
+                col.caption(day.description)
 
 
 def _render_readiness_card():
