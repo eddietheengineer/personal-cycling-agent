@@ -9,8 +9,9 @@ set -e
 if command -v bashio >/dev/null 2>&1; then
     DATA_DIR="/data"
 else
-    DATA_DIR="${CYCLING_AGENT_VAULT:-${HOME}/cycling-agent-data}"
+    DATA_DIR="${DATA_DIR:-${CYCLING_AGENT_VAULT:-${HOME}/cycling-agent-data}}"
 fi
+export CYCLING_AGENT_VAULT="${DATA_DIR}"
 
 # ── Set up data directory ────────────────────────────────────────────
 mkdir -p "${DATA_DIR}/data" "${DATA_DIR}/raw/fit"
