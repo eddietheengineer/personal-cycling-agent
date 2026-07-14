@@ -1716,10 +1716,13 @@ def _render_schedule_config():
                     value=entry.get("available", False),
                     key=f"schedule_{day_name}",
                 )
+                slot_options = ["morning", "afternoon", "evening", "any"]
+                slot_val = entry.get("time_slot", "morning")
+                slot_idx = slot_options.index(slot_val) if slot_val in slot_options else 0
                 time_slot = st.selectbox(
-                    ["morning", "afternoon", "evening", "any"],
-                    index=["morning", "afternoon", "evening", "any"].index(entry.get("time_slot", "morning")),
-                    format_func=lambda v: v.capitalize(),
+                    "When",
+                    slot_options,
+                    index=slot_idx,
                     key=f"slot_{day_name}",
                     disabled=not available,
                     label_visibility="collapsed",
