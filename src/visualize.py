@@ -1177,6 +1177,114 @@ def _display_sync_results(result: dict) -> None:
     if "prescription_error" in result:
         st.error(f"Prescription failed: {result['prescription_error']}")
 
+def _generate_readiness_explanation(analyze_result: dict) -> str:
+    """Generate a plain-English readiness explanation from data (no LLM)."""
+    readiness = analyze_result.get("readiness", {})
+    training_load = analyze_result.get("training_load", {})
+    cp = analyze_result.get("cp")
+
+    if not readiness:
+        return ""
+
+    state = readiness.get("state", "unknown")
+    score = readiness.get("composite_score", 0)
+    rmssd = readiness.get("rmssd")
+    rmssd_mean = readiness.get("rmssd_mean")
+    rhr = readiness.get("resting_hr")
+    rhr_mean = readiness.get("rhr_mean")
+    limiting = readiness.get("limiting_factor", "")
+    ctl = training_load.get("ctl", 0)
+    atl = training_load.get("atl", 0)
+    tsb = training_load.get("tsb", 0)
+
+    parts = []
+
+    # State description
+    state_desc = {
+        "parasympathetic_hyperactivity": "Your nervous system is in a deep recovery mode. This usually means you've accumulated significant fatigue and your body is pushing back against more load. It's a sign to take it easy.",
+        "parasympathetic_dominance": "Your body is in a strong recovery state. The parasympathetic nervous system is active, meaning you're well-rested and ready for a harder session.",
+        "sympathetic_dominance": "Your sympathetic nervous system is elevated — you're in a 'fight or flight' state. This can come from stress, illness, or overreaching. Keep intensity low.",
+        "sympathetic_stress": "You're showing signs of sympathetic stress. Your body is under pressure from training or life stress. Consider reducing volume or intensity today.",
+        "eustress": "You're in a healthy stress zone — enough stimulus to adapt without being overwhelmed. A good day for a planned training session.",
+        "unknown": "Not enough data to determine readiness state yet.",
+    }
+    parts.append(state_desc.get(state, f"Readiness state is {state.replace('_', ' ')}."))
+
+    # HRV analysis
+    if rmssd is not None and rmssd_mean is not None:
+        if rmssd < rmssd_mean - 5:
+            parts.append(f"Your HRV ({rmssd:.0f}) is below your 7-day average ({rmssd_mean:.0f}), suggesting your body hasn't fully recovered. This often shows up after hard training blocks, poor sleep, or illness.")
+        elif rmssd > rmssd_mean + 5:
+            parts.append(f"Your HRV ({rmssd:.0f}) is above your 7-day average ({rmssd_mean:.0f}), which is a positive sign of good recovery.")
+        else:
+            parts.append(f"Your HRV ({rmssd:.0f}) is close to your 7-day average ({rmssd_mean:.0f}) — nothing unusual here.")
+
+    # RHR analysis
+    if rhr is not None and rhr_mean is not None:
+        if rhr > rhr_mean + 5:
+            parts.append(f"Your resting heart rate ({rhr:.0f}) is above your 7-day average ({rhr_mean:.0f}), which can indicate incomplete recovery, dehydration, or illness.")
+        elif rhr < rhr_mean - 5:
+            parts.append(f"Your resting heart rate ({rhr:.0f}) is below your 7-day average ({rhr_mean:.0f}) — a good sign of recovery.")
+
+    # Limiting factor
+    if limiting:
+        factor_desc = {
+            "stress": "Life stress is the main drag on your readiness right now.",
+            "load": "Recent training load is the limiting factor. Your body needs more time to adapt.",
+            "rmssd": "Low HRV is holding your readiness score down.",
+            "rhr": "Elevated resting heart rate is the main concern.",
+        }
+        parts.append(f"The main limiting factor is {limiting}: {factor_desc.get(limiting, '')}")
+
+    # Training load context
+    if ctl and atl:
+        if ctl > 100:
+            load_note = "Your chronic training load (CTL) is high, meaning you've built a solid fitness base."
+        elif ctl > 50:
+            load_note = f"Your chronic training load (CTL {ctl:.0f}) is moderate — you're building fitness steadily."
+        else:
+            load_note = f"Your chronic training load (CTL {ctl:.0f}) is low — there's room to build volume."
+        parts.append(load_note)
+
+        if tsb < -20:
+            parts.append("Your training stress balance is deeply negative — you're in a fatigue phase. Recovery sessions only.")
+        elif tsb < 0:
+            parts.append("Your training stress balance is slightly negative — you're accumulating some fatigue. Keep today moderate.")
+        elif tsb > 20:
+            parts.append("Your training stress balance is positive — you're in a recovery phase. Good day for a harder effort.")
+
+    # Recommendation
+    if score >= 70:
+        parts.append("Overall: you're in good shape to train today as planned.")
+    elif score >= 50:
+        parts.append("Overall: keep today moderate. If you feel off, err on the side of lighter effort.")
+    else:
+        parts.append("Overall: today should be easy — recovery ride, walk, or rest. Don't push it.")
+
+    return " ".join(parts)
+
+
+def _save_readiness_explanation(explanation: str, analyze_result: dict) -> None:
+    """Save readiness explanation to latest_analysis.json."""
+    try:
+        from src import config as cfg
+        import json
+
+        result_path = cfg.vault_path() / "data" / "latest_analysis.json"
+        data = {}
+        if result_path.exists():
+            with open(result_path) as f:
+                data = json.load(f)
+        data["readiness_explanation"] = explanation
+        data["cp"] = analyze_result.get("cp")
+        data["readiness"] = analyze_result.get("readiness")
+        data["training_load"] = analyze_result.get("training_load")
+        with open(result_path, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Shared sync controls (used by Coach page)
 # ---------------------------------------------------------------------------
@@ -1279,6 +1387,14 @@ def _render_sync_controls():
                 logging.getLogger("src.ingestion.garmin_connect").setLevel(logging.DEBUG)
                 progress_callback(80, "Running analytics...")
                 analyze_result = run_analyze()
+
+                # Generate detailed readiness explanation
+                progress_callback(90, "Generating readiness summary...")
+                readiness_explanation = _generate_readiness_explanation(analyze_result)
+
+                # Save explanation to latest_analysis.json for persistence
+                _save_readiness_explanation(readiness_explanation, analyze_result)
+
                 st.session_state.sync_result = {
                     "wellness": wellness,
                     "activities": activities,
@@ -1286,6 +1402,7 @@ def _render_sync_controls():
                         "cp": analyze_result.get("cp"),
                         "readiness": analyze_result.get("readiness"),
                         "training_load": analyze_result.get("training_load"),
+                        "readiness_explanation": readiness_explanation,
                     },
                 }
                 progress_callback(100, "All done.")
@@ -1352,16 +1469,47 @@ def _render_coach():
         except Exception:
             pass
 
-    # Show current status summary
+    # Show persistent status card
     if analysis:
         readiness = analysis.get("readiness", {})
         training_load = analysis.get("training_load", {})
-        col1, col2, col3 = st.columns(3)
-        state = readiness.get("state", "unknown")
+        cp = analysis.get("cp")
+
+        state = readiness.get("state", "unknown").replace("_", " ").title()
         score = readiness.get("composite_score", 0)
-        col1.metric("Readiness", f"{state} ({score:.0f}/100)")
-        col2.metric("CTL", f"{training_load.get('ctl', 0):.0f}")
-        col3.metric("ATL", f"{training_load.get('atl', 0):.0f}")
+        if score >= 70:
+            color = "#4caf50"
+        elif score >= 50:
+            color = "#ff9800"
+        else:
+            color = "#f44336"
+
+        # Build status card
+        st.markdown(f"""
+        <div style="background:#{color}15; border-left: 4px solid {color};
+                     padding: 16px 20px; border-radius: 4px; margin-bottom: 8px;">
+            <div style="font-size: 1.1em; font-weight: 600; color: {color};">
+                {state} — Readiness {score:.0f}/100
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Key metrics row
+        m_cols = st.columns(5)
+        m_cols[0].metric("CP", f"{cp:.0f}W" if cp else "—")
+        m_cols[1].metric("CTL", f"{training_load.get('ctl', 0):.0f}")
+        m_cols[2].metric("ATL", f"{training_load.get('atl', 0):.0f}")
+        m_cols[3].metric("HRV", f"{readiness.get('rmssd', '—')}")
+        m_cols[4].metric("RHR", f"{readiness.get('resting_hr', '—')}")
+
+        # Detailed explanation
+        explanation = analysis.get("readiness_explanation")
+        if explanation:
+            st.markdown(explanation)
+        else:
+            rec = readiness.get("recommendation", "")
+            if rec:
+                st.info(rec)
     else:
         st.info("No analysis data yet. Use 'Update Latest Data' above to sync and analyze.")
 
