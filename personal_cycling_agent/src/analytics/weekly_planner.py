@@ -20,7 +20,7 @@ from typing import Any
 
 from src.config import vault_path
 from src.config.schedule import load_schedule, get_available_days, get_available_hours
-from src.services.weather import get_location, get_weekly_forecast
+from src.services.weather import get_location, get_weekly_forecast, find_ride_slot
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ class DailyPlan:
     weather_temp_min: float = 0.0
     weather_precip: int = 0
     weather_condition: str = ""
+    ride_note: str = ""  # e.g. "Ride 06:00-07:30 ✓" or "Only 2/5 hours clear"
 
 
 @dataclass
@@ -119,16 +120,6 @@ def _project_ctl_atl(current_ctl: float, current_atl: float, daily_tss: list[flo
 
     return ctl_series[1:], atl_series[1:]
 
-
-def _hour_weather(forecast: dict, hour: int) -> dict:
-    """Get weather for a specific hour from forecast slot data."""
-    if hour < 6 or hour > 21:
-        return {}
-    if 6 <= hour <= 11:
-        return forecast.get("morning", {})
-    if 12 <= hour <= 17:
-        return forecast.get("afternoon", {})
-    return forecast.get("evening", {})
 
 
 def _weather_adjustment(forecast: dict | None) -> tuple[bool, str]:
@@ -284,9 +275,9 @@ def generate_weekly_plan() -> WeeklyPlan:
         for f in forecasts:
             forecast_map[f.get("date", "")] = f
 
-    # Score each available day by weather quality for the user's time slots
-    # Score each available day by weather quality for available hours
-    day_scores: list[tuple[int, date, float, dict | None, list[int]]] = []
+    # Score each available day using find_ride_slot
+    ride_duration_hours = _parse_float(profile.get("max_session_duration"), 90.0) / 60.0
+    day_scores: list[tuple[int, date, float, dict | None, list[int], str]] = []
     for i, day_date in enumerate(week_dates):
         weekday = day_date.weekday()
         date_str = day_date.isoformat()
@@ -295,19 +286,16 @@ def generate_weekly_plan() -> WeeklyPlan:
         avail_hours = get_available_hours(weekday)
         day_forecast = forecast_map.get(date_str)
 
-        # Score: fraction of available hours that are rideable
         score = 0.0
+        ride_note = ""
         if day_forecast and avail_hours:
-            clear_count = 0
-            for h in avail_hours:
-                slot_data = _hour_weather(day_forecast, h)
-                cond = slot_data.get("condition", "unknown")
-                precip = slot_data.get("precip", 0)
-                if cond not in ("storm", "snow") and precip < 40:
-                    clear_count += 1
-            score = (clear_count / len(avail_hours)) * 100
+            slot_start, ride_note = find_ride_slot(day_forecast, avail_hours, ride_duration_hours)
+            if slot_start is not None:
+                score = 100.0
+            else:
+                score = -1.0  # Not rideable
 
-        day_scores.append((i, day_date, score, day_forecast, avail_hours))
+        day_scores.append((i, day_date, score, day_forecast, avail_hours, ride_note))
 
     MAX_TRAINING_DAYS = 3
     # Sort by score descending, pick top MAX_TRAINING_DAYS
@@ -316,8 +304,8 @@ def generate_weekly_plan() -> WeeklyPlan:
     for entry in day_scores:
         if len(training_days) >= MAX_TRAINING_DAYS:
             break
-        # Skip days with terrible weather (score < 20) unless we have no other choice
-        if entry[2] < 20 and len(training_days) < len(day_scores):
+        # Skip days with no rideable slot (score < 0) unless we have no other choice
+        if entry[2] < 0 and len(training_days) < len(day_scores):
             continue
         training_days.add(entry[0])
 
@@ -328,6 +316,9 @@ def generate_weekly_plan() -> WeeklyPlan:
                 break
             if entry[0] not in training_days:
                 training_days.add(entry[0])
+
+    # Build a map of day_idx -> ride_note for later use
+    ride_notes = {x[0]: x[5] for x in day_scores}
 
     # Build daily plans
     days: list[DailyPlan] = []
@@ -349,6 +340,7 @@ def generate_weekly_plan() -> WeeklyPlan:
             w_temp_min = day_forecast.get("temp_min", 0) if day_forecast else 0
             w_precip = day_forecast.get("precipitation_prob", 0) if day_forecast else 0
             w_condition = day_forecast.get("condition", "") if day_forecast else ""
+            ride_note = ride_notes.get(i, "")
             days.append(DailyPlan(
                 date=date_str,
                 weekday=weekday,
@@ -365,6 +357,7 @@ def generate_weekly_plan() -> WeeklyPlan:
                 weather_temp_min=w_temp_min,
                 weather_precip=w_precip,
                 weather_condition=w_condition,
+                ride_note=ride_note,
             ))
             continue
 
@@ -417,6 +410,7 @@ def generate_weekly_plan() -> WeeklyPlan:
             rationale_parts.append(weather_note)
         rationale_parts.append("Selected as one of 3 best weather days")
 
+        ride_note = ride_notes.get(i, "")
         days.append(DailyPlan(
             date=date_str,
             weekday=weekday,
@@ -433,6 +427,7 @@ def generate_weekly_plan() -> WeeklyPlan:
             weather_temp_min=w_temp_min,
             weather_precip=w_precip,
             weather_condition=w_condition,
+            ride_note=ride_note,
         ))
 
         weekly_tss += tss
@@ -491,9 +486,11 @@ def generate_ai_plan() -> WeeklyPlan:
             forecast_map[f.get("date", "")] = f
 
     weather_lines = []
+    ride_duration = _parse_float(profile.get("max_session_duration"), 90.0) / 60.0
     for d in week_dates:
         ds = d.isoformat()
         fc = forecast_map.get(ds, {})
+        weekday = d.weekday()
         tmax_f = fc.get("temp_max", 0) * 9/5 + 32
         tmin_f = fc.get("temp_min", 0) * 9/5 + 32
         slots_info = []
@@ -503,8 +500,20 @@ def generate_ai_plan() -> WeeklyPlan:
                 st_f = sd.get("temp", 0) * 9/5 + 32
                 slots_info.append(f"{slot_name}: {sd['condition']} {st_f:.0f}F precip {sd.get('precip', 0)}%")
         slot_str = " | ".join(slots_info) if slots_info else ""
+
+        # Ride slot analysis
+        avail_hours = get_available_hours(weekday)
+        ride_slot_note = ""
+        if avail_hours and fc:
+            from src.services.weather import find_ride_slot
+            slot_start, slot_note = find_ride_slot(fc, avail_hours, ride_duration)
+            if slot_start is not None:
+                ride_slot_note = f" [RIDEABLE: {slot_note}]"
+            else:
+                ride_slot_note = f" [NOT RIDEABLE: {slot_note}]"
+
         weather_lines.append(
-            f"{ds}: {fc.get('condition','unknown')} {tmax_f:.0f}F/{tmin_f:.0f}F precip {fc.get('precipitation_prob',0)}% {slot_str}"
+            f"{ds}: {fc.get('condition','unknown')} {tmax_f:.0f}F/{tmin_f:.0f}F precip {fc.get('precipitation_prob',0)}% {slot_str}{ride_slot_note}"
         )
 
     day_names = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
@@ -531,10 +540,10 @@ def generate_ai_plan() -> WeeklyPlan:
         f"## HARD CONSTRAINTS:\n"
         f"1. Pick 2-3 training days (no more than 3). All other days must be rest.\n"
         f"2. Available days: {available_days_str}. Only pick from these.\n"
-        f"3. PICK THE BEST WEATHER DAYS. Avoid storm and rain days.\n"
-        f"   Weather includes morning/afternoon/evening breakdowns.\n"
-        f"   If morning is rainy but evening is clear, the day is still rideable (indoor=false).\n"
-        f"   Only set indoor=true if ALL time slots are bad.\n"
+        f"3. PICK THE BEST WEATHER DAYS. Each day has a [RIDEABLE] or [NOT RIDEABLE] tag.\n"
+        f"   [RIDEABLE] means there's a contiguous clear window for a {_parse_float(profile.get('max_session_duration'), 90.0):.0f}-min ride\n"
+        f"   with 1h buffer before/after. Prefer [RIDEABLE] days.\n"
+        f"   [NOT RIDEABLE] means weather blocks a clean ride window — set indoor=true if you pick it.\n"
         f"4. If readiness < 60, use only recovery or endurance. No threshold/VO2.\n"
         f"5. You may do 2 longer rides or 3 shorter ones — use your judgment.\n\n"
         + weather_block

@@ -2151,14 +2151,17 @@ def _render_weekly_calendar():
         w_temp = f"{tmax_f:.0f}°F/{tmin_f:.0f}°F" if tmax_f else ""
 
         if day.rest_day:
+            ride_line = f'<div style="color: #555; font-size: 0.75em; margin-top: 2px;">{day.ride_note}</div>' if day.ride_note else ''
             content = f"""
             <div style="padding: 12px; border: {border}; border-radius: 8px; background: {bg}; text-align: center; min-height: 90px;">
                 <div style="font-weight: 600; color: #888;">{day_name} {day_date}</div>
                 <div style="color: #666; margin-top: 8px;">Rest</div>
                 <div style="color: #555; font-size: 0.8em; margin-top: 4px;">{w_line}</div>
+                {ride_line}
             </div>"""
         else:
             indoor_icon = "🏠" if day.indoor else "🚴"
+            ride_line = f'<div style="color: #555; font-size: 0.75em; margin-top: 2px;">{day.ride_note}</div>' if day.ride_note else ''
             content = f"""
             <div style="padding: 12px; border: {border}; border-radius: 8px; background: {bg}; text-align: center; min-height: 90px;">
                 <div style="font-weight: 600; color: {color_display};">{day_name} {day_date}</div>
@@ -2166,6 +2169,7 @@ def _render_weekly_calendar():
                 <div style="color: #aaa; font-size: 0.85em;">{day.duration_min}min · TSS {day.target_tss:.0f}</div>
                 <div style="color: {color_display}; font-size: 0.8em;">{day.target_zone}</div>
                 <div style="color: #555; font-size: 0.8em; margin-top: 4px;">{w_line}</div>
+                {ride_line}
             </div>"""
 
         st.markdown(content, unsafe_allow_html=True)
@@ -2174,6 +2178,8 @@ def _render_weekly_calendar():
         if not day.rest_day:
             with st.expander(f"{day.description}"):
                 st.write(day.description)
+                if day.ride_note:
+                    st.info(f"🚴 {day.ride_note}")
                 if day.weather_note:
                     st.info(f"🌤 {day.weather_note}")
                 st.caption(f"Rationale: {day.rationale}")
