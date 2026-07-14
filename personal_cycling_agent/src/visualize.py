@@ -18,6 +18,7 @@ NOTE on units from Garmin Connect:
 import os
 import re
 import sys
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -73,7 +74,7 @@ st.sidebar.header("Dashboard")
 if "nav_page" not in st.session_state:
     st.session_state.nav_page = "Activity Detail"
 
-pages = ["Activity Detail", "Trends", "Map", "Profile", "Settings"]
+pages = ["Activity Detail", "Trends", "Map", "Profile", "Settings", "Coach"]
 nav_page = st.sidebar.selectbox(
     "Navigate",
     pages,
@@ -1154,6 +1155,94 @@ def _render_garmin_setup():
             st.write(f"**Activities:** {result['activities']}")
 
 # ---------------------------------------------------------------------------
+# Coach Page — AI-powered chat with cycling context
+# ---------------------------------------------------------------------------
+def _render_coach():
+    """Render the AI Coach chat page."""
+    st.header("AI Coach")
+    st.caption("Chat with your AI coach about training, recovery, and performance.")
+
+    if "coach_messages" not in st.session_state:
+        st.session_state.coach_messages = []
+
+    analysis = None
+    from src import config as cfg
+    result_path = cfg.vault_path() / "data" / "latest_analysis.json"
+    if result_path.exists():
+        try:
+            import json
+            with open(result_path) as f:
+                analysis = json.load(f)
+        except Exception:
+            pass
+
+    if analysis:
+        readiness = analysis.get("readiness", {})
+        training_load = analysis.get("training_load", {})
+        col1, col2, col3 = st.columns(3)
+        state = readiness.get("state", "unknown")
+        score = readiness.get("composite_score", 0)
+        col1.metric("Readiness", f"{state} ({score:.0f}/100)")
+        col2.metric("CTL", f"{training_load.get('ctl', 0):.0f}")
+        col3.metric("ATL", f"{training_load.get('atl', 0):.0f}")
+    else:
+        st.info("No analysis data yet. Run 'Reanalyze All Data' in Settings first.")
+
+    chat_container = st.container()
+    with chat_container:
+        for msg in st.session_state.coach_messages:
+            role = msg["role"]
+            content = msg["content"]
+            if role == "user":
+                st.markdown(f"**You:** {content}")
+            elif role == "assistant":
+                st.markdown(f"**Coach:** {content}")
+            st.divider()
+
+    user_input = st.text_input(
+        "Ask your coach...",
+        key="coach_input",
+        placeholder="e.g., Should I train today? How's my recovery?",
+        label_visibility="collapsed",
+    )
+
+    col_btn, col_clear = st.columns([1, 1])
+    with col_btn:
+        send_clicked = st.button("Send", type="primary", use_container_width=True, key="coach_send")
+    with col_clear:
+        clear_clicked = st.button("Clear Chat", use_container_width=True, key="coach_clear")
+
+    if clear_clicked:
+        st.session_state.coach_messages = []
+        st.rerun()
+
+    if send_clicked and user_input.strip():
+        st.session_state.coach_messages.append({"role": "user", "content": user_input.strip()})
+        from src.agent import prompt_builder, llm_client
+        system_prompt = prompt_builder.build_system_prompt(
+            readiness=analysis.get("readiness") if analysis else None,
+            recent_activities=analysis.get("recent_activities") if analysis else None,
+            thresholds=analysis.get("thresholds") if analysis else None,
+            w_prime=analysis.get("w_prime") if analysis else None,
+            durability=analysis.get("durability") if analysis else None,
+            decoupling=analysis.get("decoupling") if analysis else None,
+        )
+        with st.spinner("Coach is thinking..."):
+            try:
+                conv_text = "\n".join(
+                    f"{m['role'].upper()}: {m['content']}"
+                    for m in st.session_state.coach_messages
+                )
+                full_prompt = f"{system_prompt}\n\nConversation:\n{conv_text}\n\nASSISTANT:"
+                response = llm_client.generate(full_prompt, stream=False)
+                st.session_state.coach_messages.append({"role": "assistant", "content": response})
+            except Exception as e:
+                st.error(f"Coach error: {e}")
+                st.info("Check that your LLM server is running (LLM_BASE_URL env var).")
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
 if nav_page == "Activity Detail":
@@ -1166,6 +1255,8 @@ elif nav_page == "Profile":
     _render_profile()
 elif nav_page == "Settings":
     _render_garmin_setup()
+elif nav_page == "Coach":
+    _render_coach()
 
 # Auto-refresh when sync is running in background (Settings page only)
 if nav_page == "Settings":

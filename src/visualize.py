@@ -18,6 +18,7 @@ NOTE on units from Garmin Connect:
 import os
 import re
 import sys
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -73,7 +74,7 @@ st.sidebar.header("Dashboard")
 if "nav_page" not in st.session_state:
     st.session_state.nav_page = "Check-in"
 
-pages = ["Check-in", "Activity Detail", "Trends", "Map", "Profile", "Settings"]
+pages = ["Check-in", "Activity Detail", "Trends", "Map", "Profile", "Settings", "Coach"]
 nav_page = st.sidebar.selectbox(
     "Navigate",
     pages,
@@ -1180,73 +1181,100 @@ def _render_garmin_setup():
             key="reanalyze_all",
         )
 
-    # ── Handle sync (synchronous to avoid Python 3.14 Streamlit segfault) ──
+    # ── Handle sync via background thread ─────────────────────────────
     if sync_clicked or sync_all_clicked or reanalyze_clicked:
-        if st.session_state.get("syncing"):
-            st.info("Sync already running...")
+        if st.session_state.get("sync_thread") and st.session_state.get("sync_thread").is_alive():
+            st.info("Sync already running in background...")
         else:
             mode = "update" if sync_clicked else ("all" if sync_all_clicked else "reanalyze")
             days = 7 if mode == "update" else (3650 if mode == "all" else 0)
             st.session_state.sync_mode = mode
             st.session_state.sync_days = days
-            st.session_state.syncing = True
+            st.session_state.sync_status = "starting"
             st.session_state.sync_result = None
+            st.session_state.sync_error = None
+
+            def _run_sync():
+                try:
+                    from src.ingestion.garmin_connect import sync_garmin, sync_activities
+                    st.session_state.sync_status = "fetching_wellness"
+                    if mode != "reanalyze":
+                        unbounded = mode == "all"
+                        wellness = sync_garmin(days=days, db_path=str(config.db_path("cycling_agent.sqlite")), unbounded=unbounded)
+                        st.session_state.sync_status = "fetching_activities"
+                        activities = sync_activities(days=days, db_path=str(config.db_path("cycling_agent.sqlite")), unbounded=unbounded)
+                    else:
+                        wellness = {"wellness_records": 0}
+                        activities = {"activities_processed": 0}
+
+                    st.session_state.sync_status = "analyzing"
+                    from src.main import run_analyze
+                    analyze_result = run_analyze()
+
+                    st.session_state.sync_result = {
+                        "wellness": wellness,
+                        "activities": activities,
+                        "analysis": {
+                            "cp": analyze_result.get("cp"),
+                            "readiness": analyze_result.get("readiness"),
+                            "training_load": analyze_result.get("training_load"),
+                        },
+                    }
+                    st.session_state.sync_status = "done"
+                except Exception as exc:
+                    exc_str = str(exc)
+                    if "MFA" in exc_str or "mfa" in exc_str or "two-factor" in exc_str:
+                        st.session_state.sync_error = exc_str
+                        st.session_state.sync_status = "mfa_error"
+                        st.session_state.garmin_auth_state = "idle"
+                        st.session_state.garmin_auth_instance = None
+                    else:
+                        st.session_state.sync_error = exc_str
+                        st.session_state.sync_status = "error"
+
+            thread = threading.Thread(target=_run_sync, daemon=True)
+            st.session_state.sync_thread = thread
+            thread.start()
             st.rerun()
 
-    if st.session_state.get("syncing"):
-        mode = st.session_state.get("sync_mode", "update")
-        days = st.session_state.get("sync_days", 7)
+    # ── Show sync progress (polling) ─────────────────────────────────
+    sync_status = st.session_state.get("sync_status")
+    if sync_status and sync_status not in ("done",):
         progress = st.progress(0)
         status = st.empty()
-        try:
-            from src.ingestion.garmin_connect import sync_garmin, sync_activities
-            if mode != "reanalyze":
-                status.info("⏳ Fetching wellness data...")
-                progress.progress(10)
-                unbounded = mode == "all"
-                wellness = sync_garmin(days=days, db_path=str(config.db_path("cycling_agent.sqlite")), unbounded=unbounded)
-                progress.progress(40)
-                status.info("⏳ Fetching activities...")
-                progress.progress(70)
-                activities = sync_activities(days=days, db_path=str(config.db_path("cycling_agent.sqlite")), unbounded=unbounded)
-            else:
-                wellness = {"wellness_records": 0}
-                activities = {"activities_processed": 0}
+        status_map = {
+            "starting": ("⏳ Starting sync...", 5),
+            "fetching_wellness": ("⏳ Fetching wellness data...", 15),
+            "fetching_activities": ("⏳ Fetching activities...", 45),
+            "analyzing": ("⏳ Running analytics...", 80),
+            "done": ("✅ Sync and analytics complete!", 100),
+            "error": ("❌ Sync failed", 100),
+            "mfa_error": ("❌ MFA required", 100),
+        }
+        msg, pct = status_map.get(sync_status, ("⏳ Syncing...", 50))
+        status.markdown(msg)
+        progress.progress(pct)
 
-            status.info("⏳ Running analytics...")
-            progress.progress(85)
-            from src.main import run_analyze
-            analyze_result = run_analyze()
-            progress.progress(100)
-            status.success("Sync and analytics complete!")
-
-            st.session_state.sync_result = {
-                "wellness": wellness,
-                "activities": activities,
-                "analysis": {
-                    "cp": analyze_result.get("cp"),
-                    "readiness": analyze_result.get("readiness"),
-                    "training_load": analyze_result.get("training_load"),
-                },
-            }
-        except Exception as exc:
-            progress.progress(100)
-            exc_str = str(exc)
-            # If sync failed due to MFA, prompt user to re-authenticate
-            if "MFA" in exc_str or "mfa" in exc_str or "two-factor" in exc_str:
-                st.error(exc_str)
+        if sync_status in ("error", "mfa_error"):
+            err = st.session_state.get("sync_error", "")
+            st.error(f"Sync failed: {err}")
+            if sync_status == "mfa_error":
                 st.info("Your session has expired. Please sign in again.")
-                st.session_state.garmin_auth_state = "idle"
-                st.session_state.garmin_auth_instance = None
-                st.rerun()
-            else:
-                st.error(f"Sync failed: {exc}")
-                st.session_state.sync_result = {"error": exc_str}
-        finally:
-            st.session_state.syncing = False
-            st.session_state.sync_mode = None
-            st.session_state.sync_days = None
+
+        # Keep polling while running
+        import time
+        thread = st.session_state.get("sync_thread")
+        if thread and thread.is_alive():
+            time.sleep(1)
             st.rerun()
+        elif sync_status == "done":
+            # Clear syncing state after showing success
+            st.session_state.sync_status = None
+            st.session_state.sync_thread = None
+            st.rerun()
+        elif sync_status in ("error", "mfa_error"):
+            st.session_state.sync_status = None
+            st.session_state.sync_thread = None
 
     # ── Show sync results ────────────────────────────────────────────
     if st.session_state.get("sync_result"):
@@ -1289,6 +1317,118 @@ def _render_garmin_setup():
             st.session_state.sync_result = None
             st.rerun()
 
+
+# ---------------------------------------------------------------------------
+# Coach Page — AI-powered chat with cycling context
+# ---------------------------------------------------------------------------
+def _render_coach():
+    """Render the AI Coach chat page.
+
+    Loads the latest analysis and lets the user chat with an LLM
+    that has full context about their cycling data.
+    """
+    st.header("AI Coach")
+    st.caption("Chat with your AI coach about training, recovery, and performance.")
+
+    # Initialize chat history
+    if "coach_messages" not in st.session_state:
+        st.session_state.coach_messages = []
+
+    # Load latest analysis for context
+    analysis = None
+    from src import config as cfg
+    result_path = cfg.vault_path() / "data" / "latest_analysis.json"
+    if result_path.exists():
+        try:
+            import json
+            with open(result_path) as f:
+                analysis = json.load(f)
+        except Exception:
+            pass
+
+    # Show current status summary
+    if analysis:
+        readiness = analysis.get("readiness", {})
+        training_load = analysis.get("training_load", {})
+        col1, col2, col3 = st.columns(3)
+        state = readiness.get("state", "unknown")
+        score = readiness.get("composite_score", 0)
+        col1.metric("Readiness", f"{state} ({score:.0f}/100)")
+        col2.metric("CTL", f"{training_load.get('ctl', 0):.0f}")
+        col3.metric("ATL", f"{training_load.get('atl', 0):.0f}")
+    else:
+        st.info("No analysis data yet. Run 'Reanalyze All Data' in Settings first.")
+
+    # Display chat history
+    chat_container = st.container()
+    with chat_container:
+        for msg in st.session_state.coach_messages:
+            role = msg["role"]
+            content = msg["content"]
+            if role == "user":
+                st.markdown(f"**You:** {content}")
+            elif role == "assistant":
+                st.markdown(f"**Coach:** {content}")
+            st.divider()
+
+    # Chat input
+    user_input = st.text_input(
+        "Ask your coach...",
+        key="coach_input",
+        placeholder="e.g., Should I train today? How's my recovery?",
+        label_visibility="collapsed",
+    )
+
+    col_btn, col_clear = st.columns([1, 1])
+    with col_btn:
+        send_clicked = st.button("Send", type="primary", use_container_width=True, key="coach_send")
+    with col_clear:
+        clear_clicked = st.button("Clear Chat", use_container_width=True, key="coach_clear")
+
+    if clear_clicked:
+        st.session_state.coach_messages = []
+        st.rerun()
+
+    if send_clicked and user_input.strip():
+        # Add user message
+        st.session_state.coach_messages.append({"role": "user", "content": user_input.strip()})
+
+        # Build system prompt with context
+        from src.agent import prompt_builder, llm_client
+
+        system_prompt = prompt_builder.build_system_prompt(
+            readiness=analysis.get("readiness") if analysis else None,
+            recent_activities=analysis.get("recent_activities") if analysis else None,
+            thresholds=analysis.get("thresholds") if analysis else None,
+            w_prime=analysis.get("w_prime") if analysis else None,
+            durability=analysis.get("durability") if analysis else None,
+            decoupling=analysis.get("decoupling") if analysis else None,
+        )
+
+        # Build conversation context
+        messages = [{"role": "system", "content": system_prompt}]
+        for msg in st.session_state.coach_messages:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+
+        # Show loading
+        with st.spinner("Coach is thinking..."):
+            try:
+                # Build a single prompt with conversation history
+                conv_text = "\n".join(
+                    f"{m['role'].upper()}: {m['content']}"
+                    for m in st.session_state.coach_messages
+                )
+                full_prompt = f"{system_prompt}\n\nConversation:\n{conv_text}\n\nASSISTANT:"
+
+                response = llm_client.generate(full_prompt, stream=False)
+                st.session_state.coach_messages.append({"role": "assistant", "content": response})
+            except Exception as e:
+                st.error(f"Coach error: {e}")
+                st.info("Check that your LLM server is running (LLM_BASE_URL env var).")
+
+        # Clear input and rerun to show response
+        st.session_state.coach_input_value = ""
+        st.rerun()
 # ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
@@ -1304,3 +1444,5 @@ elif nav_page == "Profile":
     _render_profile()
 elif nav_page == "Settings":
     _render_garmin_setup()
+elif nav_page == "Coach":
+    _render_coach()
