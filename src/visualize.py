@@ -146,12 +146,13 @@ def _render_checkin():
             "caffeine": bool(existing.get("caffeine")),
             "alcohol": bool(existing.get("alcohol")),
             "late_meals": bool(existing.get("late_meals")),
+            "notes": existing.get("notes") or "",
         }
     else:
         defaults = {
-            "soreness": 3, "stress": 3, "sleep_quality": 3,
             "mood": 3, "energy": 3, "motivation": 3,
             "caffeine": False, "alcohol": False, "late_meals": False,
+            "notes": "",
         }
 
     with st.form("checkin_form", clear_on_submit=False):
@@ -181,6 +182,12 @@ def _render_checkin():
         with c3:
             late_meals = st.checkbox("Late Meals", value=defaults["late_meals"])
 
+        notes = st.text_area(
+            "Notes (optional)", value=defaults["notes"],
+            placeholder="Travel day, feeling under the weather, big meeting tomorrow...",
+            key="checkin_notes",
+        )
+
         submitted = st.form_submit_button("Save Check-in")
         if submitted:
             db.store_morning_checkin({
@@ -194,6 +201,7 @@ def _render_checkin():
                 "caffeine": caffeine,
                 "alcohol": alcohol,
                 "late_meals": late_meals,
+                "notes": notes,
             })
             st.success(f"Check-in saved for {checkin_date}!")
 
