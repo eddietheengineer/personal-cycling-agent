@@ -191,19 +191,37 @@ def _render_week_strip():
     weather_icons = {"clear": "☀️", "cloudy": "⛅", "rain": "🌧", "snow": "❄️", "storm": "⛈"}
     day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
+    # Fetch fresh weather so every card always has data
+    from src.services.weather import get_location, get_weekly_forecast
+    forecast_map: dict[str, dict] = {}
+    location = get_location()
+    if location:
+        for f in get_weekly_forecast(location[0], location[1]):
+            forecast_map[f.get("date", "")] = f
+
     cols = st.columns(7)
     for i, day in enumerate(plan.days):
         col = cols[i]
         color = zone_colors.get(day.session_type, "#555")
         is_today = day.date == date.today().isoformat()
-        w_icon = weather_icons.get(day.weather_condition, "")
-        w_temp = f"{day.weather_temp_max:.0f}°" if day.weather_temp_max else ""
-        w_precip = f"{day.weather_precip}%" if day.weather_precip else ""
+
+        # Weather: fresh forecast first, fall back to plan data
+        fc = forecast_map.get(day.date, {})
+        if not fc and day.weather_condition:
+            fc = {"condition": day.weather_condition, "temp_max": day.weather_temp_max,
+                  "temp_min": day.weather_temp_min, "precipitation_prob": day.weather_precip}
+        w_icon = weather_icons.get(fc.get("condition", ""), "🌤")
+        tmax_f = fc.get("temp_max", 0) * 9/5 + 32
+        tmin_f = fc.get("temp_min", 0) * 9/5 + 32
+        w_precip = fc.get("precipitation_prob", 0)
 
         if is_today:
             col.markdown(f"**{day_labels[day.weekday]}**", help=f"{day.date}")
         else:
             col.markdown(day_labels[day.weekday], help=f"{day.date}")
+
+        # Weather row — always at top
+        col.markdown(f"{w_icon} {tmax_f:.0f}°F / {tmin_f:.0f}°F  {w_precip}%", help=fc.get("condition", ""))
 
         if day.rest_day:
             col.markdown("<div style='color:#666; font-size:0.85em;'>Rest</div>", unsafe_allow_html=True)
@@ -211,9 +229,6 @@ def _render_week_strip():
             indoor = "🏠" if day.indoor else "🚴"
             col.markdown(f"<div style='color:{color}; font-weight:600;'>{indoor} {day.session_type.title()}</div>", unsafe_allow_html=True)
             col.caption(f"{day.duration_min}min · TSS {day.target_tss:.0f}")
-
-        if w_icon:
-            col.caption(f"{w_icon} {w_temp} {w_precip}".strip())
 
 
 def _render_readiness_card():
@@ -2131,9 +2146,9 @@ def _render_weekly_calendar():
         # Weather icon
         weather_icons = {"clear": "☀️", "cloudy": "⛅", "rain": "🌧", "snow": "❄️", "storm": "⛈"}
         w_icon = weather_icons.get(day.weather_condition, "")
-        w_temp = f"{day.weather_temp_max:.0f}°/{day.weather_temp_min:.0f}°" if day.weather_temp_max else ""
-        w_precip = f"{day.weather_precip}%" if day.weather_precip else ""
-        w_line = f"{w_icon} {w_temp} {w_precip}".strip() if (w_temp or w_precip) else ""
+        tmax_f = day.weather_temp_max * 9/5 + 32 if day.weather_temp_max else 0
+        tmin_f = day.weather_temp_min * 9/5 + 32 if day.weather_temp_min else 0
+        w_temp = f"{tmax_f:.0f}°F/{tmin_f:.0f}°F" if tmax_f else ""
 
         if day.rest_day:
             content = f"""

@@ -138,9 +138,9 @@ def _weather_adjustment(forecast: dict | None) -> tuple[bool, str]:
     if wind > 30:
         return True, f"Wind {wind:.0f} km/h — indoor recommended"
     if temp_max > 35:
-        return False, f"Hot ({temp_max:.0f}°C) — train early, hydrate well"
+        return False, f"Hot ({temp_max*9/5+32:.0f}°F) — train early, hydrate well"
     if temp_min < -5:
-        return False, f"Cold ({temp_min:.0f}°C) — warm up extra"
+        return False, f"Cold ({temp_min*9/5+32:.0f}°F) — warm up extra"
 
     if precip > 30:
         return False, f"{precip}% chance of rain — have indoor backup"
@@ -483,10 +483,10 @@ def generate_ai_plan() -> WeeklyPlan:
     for d in week_dates:
         ds = d.isoformat()
         fc = forecast_map.get(ds, {})
+        tmax_f = fc.get("temp_max", 0) * 9/5 + 32
+        tmin_f = fc.get("temp_min", 0) * 9/5 + 32
         weather_lines.append(
-            f"{ds}: {fc.get('condition','unknown')} "
-            f"{fc.get('temp_max',0):.0f}C/{fc.get('temp_min',0):.0f}C "
-            f"precip {fc.get('precipitation_prob',0)}%"
+            f"{ds}: {fc.get('condition','unknown')} {tmax_f:.0f}F/{tmin_f:.0f}F precip {fc.get('precipitation_prob',0)}%"
         )
 
     day_names = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
