@@ -102,6 +102,10 @@ def test_no_undefined_names_in_fstrings(module_path: str):
         "center_lat", "center_lon",
         # Weather
         "start_hour", "slot_note", "ride_duration", "ride_duration_hours",
+        # Projection chart
+        "last_ctl", "last_atl", "last_tsb", "ctl_s", "atl_s", "tsb_s",
+        "ctl_change", "tsb_change", "ctl_status", "atl_status", "tsb_status",
+        "tl", "analysis", "daily_tss", "c_cols",
     }
     undefined = used - defined - allowed
     assert not undefined, f"Undefined names in f-strings ({module_path}): {undefined}"

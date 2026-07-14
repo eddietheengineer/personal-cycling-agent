@@ -233,17 +233,36 @@ def _render_week_strip():
                 col.caption(day.description)
 
     # Projected fitness/fatigue/load chart
-    if plan and plan.ctl_series:
+    if plan:
         import plotly.graph_objects as go
+
+        # Use plan series if available, otherwise compute from current analysis
+        if plan.ctl_series:
+            ctl_s, atl_s, tsb_s = plan.ctl_series, plan.atl_series, plan.tsb_series
+        else:
+            from src.analytics.weekly_planner import _project_ctl_atl
+            from src import config as cfg
+            result_path = cfg.vault_path() / "data" / "latest_analysis.json"
+            ctl_val, atl_val = 80.0, 60.0
+            if result_path.exists():
+                import json
+                with open(result_path) as f:
+                    analysis = json.load(f)
+                tl = analysis.get("training_load", {})
+                ctl_val = tl.get("ctl", 80.0)
+                atl_val = tl.get("atl", 60.0)
+            daily_tss = [d.target_tss for d in plan.days]
+            ctl_s, atl_s = _project_ctl_atl(ctl_val, atl_val, daily_tss)
+            tsb_s = [c - a for c, a in zip(ctl_s, atl_s)]
 
         labels = [f"{d.date.split('-')[1]}/{d.date.split('-')[2]}" for d in plan.days]
 
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=labels, y=plan.ctl_series, name="CTL (Fitness)",
+        fig.add_trace(go.Scatter(x=labels, y=ctl_s, name="CTL (Fitness)",
                                   line=dict(color="#2196f3", width=2), mode="lines+markers"))
-        fig.add_trace(go.Scatter(x=labels, y=plan.atl_series, name="ATL (Fatigue)",
+        fig.add_trace(go.Scatter(x=labels, y=atl_s, name="ATL (Fatigue)",
                                   line=dict(color="#f44336", width=2), mode="lines+markers"))
-        fig.add_trace(go.Scatter(x=labels, y=plan.tsb_series, name="TSB (Form)",
+        fig.add_trace(go.Scatter(x=labels, y=tsb_s, name="TSB (Form)",
                                   line=dict(color="#4caf50", width=2), mode="lines+markers"))
 
         fig.update_layout(
@@ -258,14 +277,11 @@ def _render_week_strip():
         st.plotly_chart(fig, use_container_width=True)
 
         # Context indicators
-        last_ctl = plan.ctl_series[-1]
-        last_atl = plan.atl_series[-1]
-        last_tsb = plan.tsb_series[-1]
-        ctl_change = plan.ctl_series[-1] - plan.ctl_series[0]
-        tsb_change = plan.tsb_series[-1] - plan.tsb_series[0]
+        last_ctl, last_atl, last_tsb = ctl_s[-1], atl_s[-1], tsb_s[-1]
+        ctl_change = ctl_s[-1] - ctl_s[0]
+        tsb_change = tsb_s[-1] - tsb_s[0]
 
         c_cols = st.columns(3)
-        # CTL interpretation
         if last_ctl > 100:
             ctl_status = "🟢 High fitness base"
         elif last_ctl > 50:
@@ -274,7 +290,6 @@ def _render_week_strip():
             ctl_status = "🔴 Low fitness base"
         c_cols[0].markdown(f"**CTL {last_ctl:.0f}** {ctl_status} {'↑' if ctl_change > 0 else '↓'}{abs(ctl_change):.0f} this week")
 
-        # ATL interpretation
         if last_atl > last_ctl:
             atl_status = "🔴 Overreaching"
         elif last_atl > last_ctl * 0.9:
@@ -283,7 +298,6 @@ def _render_week_strip():
             atl_status = "🟢 Manageable fatigue"
         c_cols[1].markdown(f"**ATL {last_atl:.0f}** {atl_status}")
 
-        # TSB interpretation
         if last_tsb > 10:
             tsb_status = "🟢 Fresh / peaking"
         elif last_tsb > 0:
@@ -333,7 +347,7 @@ def _render_readiness_card():
     </div>
     """, unsafe_allow_html=True)
 
-    m_cols = st.columns(5)
+    m_cols = st.columns(6)
     m_cols[0].metric("CP", f"{cp:.0f}W" if cp else "—")
     m_cols[1].metric("CTL", f"{training_load.get('ctl', 0):.0f}")
     m_cols[2].metric("ATL", f"{training_load.get('atl', 0):.0f}")
@@ -2038,12 +2052,13 @@ def _render_coach():
         """, unsafe_allow_html=True)
 
         # Key metrics row
-        m_cols = st.columns(5)
+        m_cols = st.columns(6)
         m_cols[0].metric("CP", f"{cp:.0f}W" if cp else "—")
         m_cols[1].metric("CTL", f"{training_load.get('ctl', 0):.0f}")
         m_cols[2].metric("ATL", f"{training_load.get('atl', 0):.0f}")
-        m_cols[3].metric("HRV", f"{readiness.get('rmssd', '—')}")
-        m_cols[4].metric("RHR", f"{readiness.get('resting_hr', '—')}")
+        m_cols[3].metric("TSB", f"{training_load.get('tsb', 0):.0f}")
+        m_cols[4].metric("HRV", f"{readiness.get('rmssd', '—')}")
+        m_cols[5].metric("RHR", f"{readiness.get('resting_hr', '—')}")
 
         # Detailed explanation
         explanation = analysis.get("readiness_explanation")
