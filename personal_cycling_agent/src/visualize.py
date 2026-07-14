@@ -1161,33 +1161,35 @@ def _render_profile():
 
         st.subheader("Training Safety")
         st.caption("TSB floor: minimum TSB the planner will allow. Going below this risks injury.")
+
+        # Color-coded slider track: Red <-10 | Grey -10 to +10 | Green >+10
+        st.markdown("""
+        <style>
+        .tsb-slider-track {
+            height: 8px; border-radius: 4px;
+            background: linear-gradient(to right, #dc3545 0%, #dc3545 30%, #868e96 30%, #868e96 60%, #28a745 60%, #28a745 100%);
+            margin: 8px 0 4px 0;
+        }
+        .tsb-slider-labels { display: flex; justify-content: space-between; font-size: 11px; color: #666; margin-bottom: 4px; }
+        </style>
+        """, unsafe_allow_html=True)
+        st.markdown('<div class="tsb-slider-labels"><span>Red (Tired)</span><span>Grey</span><span>Green (Fresh)</span></div>', unsafe_allow_html=True)
+
         tsb_floor = st.slider(
             "TSB Floor", min_value=-30, max_value=10, value=profile["tsb_floor"],
             step=1, key="prof_tsb_floor",
-            help="intervals.icu: Green >+10, Grey -10 to +10, Red <-10. Set to your injury threshold."
         )
         profile["tsb_floor"] = tsb_floor
 
-        # Visual zone indicator
-        tz_col1, tz_col2, tz_col3 = st.columns([1, 1, 1])
-        with tz_col1:
-            st.markdown('<div style="padding:4px 8px;border-radius:4px;background:#f8d7da;color:#721c24;text-align:center">Red (Tired)</div>', unsafe_allow_html=True)
-            st.caption("TSB < -10")
-        with tz_col2:
-            st.markdown('<div style="padding:4px 8px;border-radius:4px;background:#e2e3e5;color:#383d41;text-align:center">Grey (Zero Form)</div>', unsafe_allow_html=True)
-            st.caption("TSB -10 to +10")
-        with tz_col3:
-            st.markdown('<div style="padding:4px 8px;border-radius:4px;background:#d4edda;color:#155724;text-align:center">Green (Fresh)</div>', unsafe_allow_html=True)
-            st.caption("TSB > +10")
-
-        # Show where your floor falls
-        if tsb_floor > 10:
-            zone, color = "Green (Fresh)", "#d4edda"
-        elif tsb_floor >= -10:
-            zone, color = "Grey (Zero Form)", "#e2e3e5"
+        # Color bar under slider
+        if tsb_floor < -10:
+            bar_color, zone = "#dc3545", "Red (Tired)"
+        elif tsb_floor <= 10:
+            bar_color, zone = "#868e96", "Grey (Zero Form)"
         else:
-            zone, color = "Red (Tired)", "#f8d7da"
-        st.markdown(f'<div style="padding:6px 12px;border-radius:4px;background:{color};text-align:center;font-weight:bold">Your floor: {tsb_floor:+d} → {zone}</div>', unsafe_allow_html=True)
+            bar_color, zone = "#28a745", "Green (Fresh)"
+        st.markdown(f'<div style="height:6px;border-radius:3px;background:{bar_color}"></div>', unsafe_allow_html=True)
+        st.caption(f"Floor: {tsb_floor:+d} → {zone}")
 
         st.subheader("Location & Schedule")
         loc_col1, loc_col2 = st.columns(2)
