@@ -774,35 +774,36 @@ def _render_activity_detail():
 # Trends tab
 # ---------------------------------------------------------------------------
 def _render_trends():
-    # Date range selector — default to full range of wellness data
+    # Date range presets
     wellness_rows = db.get_trend_data("wellness", ["date"])
-
     if not wellness_rows:
-        st.info("No wellness data found. Run `--ingest` first.")
+        st.info("No wellness data found. Run sync first.")
         return
 
     all_dates = [r["date"] for r in wellness_rows]
     min_date = min(all_dates)
-    max_date = max(all_dates)
+    max_date = max(default(max(all_dates), date.today().isoformat()), date.today().isoformat())
 
-    default_start = date.fromisoformat(min_date)
-    default_end = date.fromisoformat(max_date)
+    today = date.today()
+    this_year_start = date(today.year, 1, 1).isoformat()
+    this_year_end = today.isoformat()
 
-    date_range = st.date_input(
-        "Date range",
-        value=(default_start, default_end),
-        min_value=default_start,
-        max_value=default_end,
-    )
+    preset_map = {
+        "This Year": (date(today.year, 1, 1), today),
+        "Last 90 Days": (today - timedelta(days=90), today),
+        "Last 30 Days": (today - timedelta(days=30), today),
+        "All Time": (date.fromisoformat(min_date), today),
+    }
 
-    if len(date_range) != 2:
-        return
+    selected_preset = st.selectbox("Time range", list(preset_map.keys()), index=0)
+    preset_start, preset_end = preset_map[selected_preset]
 
-    oldest, newest = date_range[0].isoformat(), date_range[1].isoformat()
+    oldest = preset_start.isoformat()
+    newest = preset_end.isoformat()
 
-    # ---- FTP over time ----
+    # ---- Gather activity data ----
     metrics_rows = db.get_activity_metrics_by_date(oldest, newest)
-    ftp_chart_data = []
+    cp_chart_data = []
     tss_by_date: dict[str, float] = {}
 
     for row in metrics_rows:
@@ -811,54 +812,54 @@ def _render_trends():
             continue
 
         if row.get("cp_used") is not None:
-            ftp_chart_data.append({"date": sd, "cp_used": row["cp_used"]})
+            cp_chart_data.append({"date": sd, "cp_used": row["cp_used"]})
 
         if row.get("tss") is not None:
             d = sd[:10]
             tss_by_date[d] = tss_by_date.get(d, 0.0) + row["tss"]
 
-    if ftp_chart_data:
-        df_ftp = pd.DataFrame(ftp_chart_data)
-        fig = px.line(
-            df_ftp, x="date", y="cp_used",
-            labels={"cp_used": "FTP Used (W)"},
-            title="FTP Over Time",
-            template="plotly_white",
-        )
-        fig.update_traces(line=dict(width=2))
-        fig.update_layout(height=300)
-        st.plotly_chart(fig, width="stretch")
-
-    # ---- TSS / CTL / ATL ----
+    # ---- Combined CTL / ATL / TSB plot ----
     if tss_by_date:
         sorted_dates = sorted(tss_by_date.keys())
         tss_records = [{"date": d, "tss": tss_by_date[d]} for d in sorted_dates]
-
         history = compute_training_load_history(tss_records)
 
         if history:
             df_load = pd.DataFrame(history)
+
             fig = px.line(
-                df_load, x="date", y=["ctl", "atl"],
-                labels={"value": "Training Load", "variable": ""},
-                title="CTL / ATL Over Time",
+                df_load, x="date", y=["ctl", "atl", "tsb"],
+                labels={"value": "", "variable": ""},
+                title="CTL · ATL · TSB",
                 template="plotly_white",
-                color_discrete_map={"ctl": "#1f77b4", "atl": "#ff7f0e"},
+                color_discrete_map={
+                    "ctl": "#1f77b4",
+                    "atl": "#ff7f0e",
+                    "tsb": "#2ca02c",
+                },
             )
             fig.update_traces(line=dict(width=2))
-            fig.update_layout(height=300, legend=dict(title=""))
+            fig.update_layout(height=350, legend=dict(title=""))
+
+            # Add zone bands for TSB
+            fig.add_hline(y=10, line_dash="dot", line_color="#2ca02c", opacity=0.4, annotation_text="Fresh")
+            fig.add_hline(y=-10, line_dash="dot", line_color="#dc3545", opacity=0.4, annotation_text="Tired")
+            fig.add_hrect(y0=-10, y1=10, filling=True, color="grey", opacity=0.06, layer_below=True)
+
             st.plotly_chart(fig, width="stretch")
 
-            # TSB
-            fig_tsb = px.line(
-                df_load, x="date", y="tsb",
-                labels={"tsb": "TSB", "date": ""},
-                title="Training Stress Balance (CTL − ATL)",
-                template="plotly_white",
-            )
-            fig_tsb.update_traces(line=dict(width=2, color="#2ca02c"))
-            fig_tsb.update_layout(height=250)
-            st.plotly_chart(fig_tsb, width="stretch")
+    # ---- Critical Power ----
+    if cp_chart_data:
+        df_cp = pd.DataFrame(cp_chart_data)
+        fig = px.line(
+            df_cp, x="date", y="cp_used",
+            labels={"cp_used": "CP (W)"},
+            title="Critical Power",
+            template="plotly_white",
+        )
+        fig.update_traces(line=dict(width=2, color="#9467bd"))
+        fig.update_layout(height=280)
+        st.plotly_chart(fig, width="stretch")
 
     # ---- Wellness trends ----
     wellness_data = db.get_trend_data(
