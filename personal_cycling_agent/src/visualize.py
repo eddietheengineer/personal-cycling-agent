@@ -802,18 +802,26 @@ def _render_trends():
     newest = preset_end.isoformat()
 
     # ---- Gather activity data ----
+    # CP chart: only show data within selected range
     metrics_rows = db.get_activity_metrics_by_date(oldest, newest)
     cp_chart_data = []
-    tss_by_date: dict[str, float] = {}
 
     for row in metrics_rows:
         sd = row.get("start_date")
         if not sd:
             continue
-
         if row.get("cp_used") is not None:
             cp_chart_data.append({"date": sd, "cp_used": row["cp_used"]})
 
+    # CTL/ATL/TSB: always compute from full history, then filter to range.
+    # This ensures CTL/ATL reflect the true accumulated training load
+    # even when viewing a zoomed-in window (e.g. last 90 days).
+    all_metrics = db.get_activity_metrics_by_date()
+    tss_by_date: dict[str, float] = {}
+    for row in all_metrics:
+        sd = row.get("start_date")
+        if not sd:
+            continue
         if row.get("tss") is not None:
             d = sd[:10]
             tss_by_date[d] = tss_by_date.get(d, 0.0) + row["tss"]
@@ -823,6 +831,9 @@ def _render_trends():
         sorted_dates = sorted(tss_by_date.keys())
         tss_records = [{"date": d, "tss": tss_by_date[d]} for d in sorted_dates]
         history = compute_training_load_history(tss_records)
+
+        # Filter to selected date range for display
+        history = [h for h in history if oldest <= h["date"] <= newest]
 
         if history:
             df_load = pd.DataFrame(history)
