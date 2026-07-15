@@ -92,21 +92,27 @@ def _compute_normalized_power(power: np.ndarray) -> float:
     """
     Compute Normalized Power via the 4th-power method with 30-second moving average.
 
-    NP = ( sum( np_ma^4 * dt ) / sum(dt) ) ^ 0.25
-    where np_ma is the 30-second moving average of the 4th power of raw power,
-    and dt=1 second.
+    The correct formula (matching Intervals.icu and TrainingPeaks) is:
+      1. Compute a 30-second moving average of raw power
+      2. Raise each averaged value to the 4th power
+      3. Take the mean of those 4th powers
+      4. Take the 4th root
+
+    NP = ( mean( MA_30s(power)^4 ) ) ^ 0.25
+
+    This is NOT the same as mean(MA(power^4))^0.25 — taking the MA of
+    the 4th powers before averaging massively overweights brief spikes
+    (e.g. a single 874W spike in a 30s window of 100W would contribute
+    ~374W to NP instead of the correct ~126W).
     """
     if len(power) == 0:
         return 0.0
 
-    # 4th power of each sample
-    p4 = np.power(power, 4)
+    # 30-second moving average of raw power
+    p_ma = _moving_average(power, 30)
 
-    # 30-second moving average of the 4th powers
-    p4_ma = _moving_average(p4, 30)
-
-    # NP = (mean of 30s-MA of p^4) ^ 0.25
-    np_val = float(np.mean(p4_ma)) ** 0.25
+    # Raise to 4th power, take mean, then 4th root
+    np_val = float(np.mean(np.power(p_ma, 4))) ** 0.25
     return np_val
 
 

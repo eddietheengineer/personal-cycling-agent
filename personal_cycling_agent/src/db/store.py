@@ -71,6 +71,8 @@ class CyclingDB:
 
         columns = {
             "cp_used": "REAL",
+            "hr_tss": "REAL",
+            "hr_trimp": "REAL",
         }
 
         for col, typ in columns.items():
@@ -214,6 +216,14 @@ class CyclingDB:
             )
         """)
         c.execute("CREATE INDEX IF NOT EXISTS idx_routes_activity ON activity_routes(activity_id)")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS hr_calibration (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                calibration_factor REAL,
+                num_calibration_rides INTEGER,
+                last_updated TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
 
         # --- New tables for ML model and prescription engine ---
 
@@ -566,12 +576,43 @@ class CyclingDB:
     # -- Activity Metrics (computed, separate from raw data) --
 
     def store_activity_metrics(self, activity_id: str, metrics: dict[str, Any]):
-        """Store computed metrics for an activity (separate from raw data)."""
+        """Store computed metrics for an activity (separate from raw data).
+
+        Merges with existing row: columns not provided in `metrics` retain
+        their previous values, preventing data loss on partial updates.
+        """
+        # Read existing row to preserve columns not in this update
+        existing = self.conn.execute(
+            "SELECT ftp_used, normalized_power, intensity_factor, tss, "
+            "variability_index, w_prime_capacity, w_prime_min_balance, "
+            "decoupling_drift, duration_sec, hr_tss, hr_trimp "
+            "FROM activity_metrics WHERE activity_id = ?",
+            (activity_id,),
+        ).fetchone()
+
+        if existing is not None:
+            existing_dict = {
+                "cp_used": existing[0],
+                "normalized_power": existing[1],
+                "intensity_factor": existing[2],
+                "tss": existing[3],
+                "variability_index": existing[4],
+                "w_prime_capacity": existing[5],
+                "w_prime_min_balance": existing[6],
+                "decoupling_drift": existing[7],
+                "duration_sec": existing[8],
+                "hr_tss": existing[9],
+                "hr_trimp": existing[10],
+            }
+            existing_dict.update(metrics)
+            metrics = existing_dict
+
         self.conn.execute(
             "INSERT OR REPLACE INTO activity_metrics "
-            "(activity_id, ftp_used, normalized_power, intensity_factor, tss, variability_index, "
-            " w_prime_capacity, w_prime_min_balance, decoupling_drift, duration_sec) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(activity_id, ftp_used, normalized_power, intensity_factor, tss, "
+            "variability_index, w_prime_capacity, w_prime_min_balance, "
+            "decoupling_drift, duration_sec, hr_tss, hr_trimp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 activity_id,
                 metrics.get("cp_used"),
@@ -583,6 +624,8 @@ class CyclingDB:
                 metrics.get("w_prime_min_balance"),
                 metrics.get("decoupling_drift"),
                 metrics.get("duration_sec"),
+                metrics.get("hr_tss"),
+                metrics.get("hr_trimp"),
             ),
         )
         self.conn.commit()
@@ -596,6 +639,25 @@ class CyclingDB:
         if row is None:
             return None
         return dict(row)
+    def get_hr_calibration(self) -> dict[str, Any] | None:
+        """Get stored HR calibration factor."""
+        row = self.conn.execute(
+            "SELECT calibration_factor, num_calibration_rides, last_updated "
+            "FROM hr_calibration WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def store_hr_calibration(self, factor: float, num_rides: int) -> None:
+        """Store or update HR calibration factor."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO hr_calibration "
+            "(id, calibration_factor, num_calibration_rides, last_updated) "
+            "VALUES (1, ?, ?, datetime('now'))",
+            (factor, num_rides),
+        )
+        self.conn.commit()
 
     # -- Trend Queries --
 

@@ -44,6 +44,10 @@ from src.analytics.power_metrics import (
 from src.analytics.training_load import (
     compute_training_load, compute_training_load_history, training_load_to_dict
 )
+from src.analytics.hr_training_load import (
+    compute_hr_training_load,
+    compute_hr_tss_with_calibration,
+)
 from src.analytics.strain_score import estimate_pmax, compute_strain_score, pmax_to_dict, strain_score_to_dict
 from src.analytics.three_dim_ir import ThreeDIMModel, three_dim_to_dict
 from src.analytics.feedback_loop import analyze_post_ride_feedback, feedback_to_dict
@@ -64,6 +68,54 @@ LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 
 logger = logging.getLogger("cycling_agent")
 
+def _get_resting_hr_for_date(
+    wellness_by_date: dict[str, dict],
+    target_date: str,
+) -> float | None:
+    """
+    Get resting HR from wellness data for the target date.
+    Falls back to the nearest preceding wellness record within 7 days.
+    """
+    if target_date in wellness_by_date:
+        rhr = wellness_by_date[target_date].get("resting_hr")
+        if rhr is not None and rhr > 0:
+            return float(rhr)
+
+    # Search backward up to 7 days
+    try:
+        d = datetime.strptime(target_date, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+    for days_back in range(1, 8):
+        check_date = (d - timedelta(days=days_back)).isoformat()
+        if check_date in wellness_by_date:
+            rhr = wellness_by_date[check_date].get("resting_hr")
+            if rhr is not None and rhr > 0:
+                return float(rhr)
+
+    return None
+
+
+def _deduplicate_samples(rows: list[Any]) -> list[float]:
+    """
+    Extract values from stream rows, deduplicating by elapsed time.
+
+    Garmin FIT files can have multiple records per second (e.g., 3 Hz HR
+    from chest strap + optical HR from watch).  When the FIT parser stores
+    these in the DB they appear as separate rows with identical elapsed
+    times.  Keep only the first sample per second.
+    """
+    if not rows:
+        return []
+    result: list[float] = []
+    seen_elapsed: set[float] = set()
+    for row in rows:
+        elapsed = float(row["elapsed"])
+        if elapsed not in seen_elapsed:
+            seen_elapsed.add(elapsed)
+            result.append(float(row["value"]))
+    return result
 
 
 def run_ingest() -> dict:
@@ -91,6 +143,12 @@ def run_analyze() -> dict:
             return {}
 
         wellness_dicts = [dict(r) for r in wellness_records]
+        # Build wellness index by date for HR resting HR lookup
+        wellness_by_date: dict[str, dict] = {}
+        for w in wellness_dicts:
+            date_key = w.get("date", "")
+            if date_key:
+                wellness_by_date[date_key] = w
         latest_date = wellness_dicts[0].get("date", "")
         # Fetch activity metrics for load-aware readiness
         metrics_rows = db.conn.execute('SELECT * FROM activity_metrics').fetchall()
@@ -139,6 +197,20 @@ def run_analyze() -> dict:
             current_cp = 250.0  # bootstrap default; will be refined by CP estimation
             logger.info("No CP set, bootstrapping with 250W default")
 
+        # Build profile dict for HR-based training load
+        _profile = {
+            "resting_hr": int(os.environ.get("RESTING_HR", 70)),
+            "max_hr": int(os.environ.get("MAX_HR", 190)),
+            "gender": os.environ.get("GENDER", "male"),
+        }
+        try:
+            profile_path = config.user_profile_path()
+            if profile_path.exists():
+                from src.ui_helpers import _parse_profile_text
+                _parse_profile_text(profile_path.read_text(), _profile)
+        except Exception:
+            pass
+
         last_activity_date: datetime | None = None
         cp_data_points: list[dict] = []
 
@@ -152,6 +224,7 @@ def run_analyze() -> dict:
         pmax_results = []
         three_dim_model = ThreeDIMModel()
         last_three_dim_date: date | None = None
+        hr_calibration_pairs: list[dict] = []  # (tss_power, hr_tss, date, distance)
 
         for act in activity_dicts:
             activity_id = act.get("id", "")
@@ -163,10 +236,10 @@ def run_analyze() -> dict:
                 stream_id = stream_id[len("garmin_"):]
 
             power_rows = db.get_activity_streams(stream_id, "power")
-            power_samples = [float(r["value"]) for r in power_rows] if power_rows else []
+            power_samples = _deduplicate_samples(power_rows) if power_rows else []
 
             hr_rows = db.get_activity_streams(stream_id, "heart_rate")
-            hr_samples = [float(r["value"]) for r in hr_rows] if hr_rows else []
+            hr_samples = _deduplicate_samples(hr_rows) if hr_rows else []
 
             dfa_rows = db.get_activity_streams(stream_id, "dfa_a1")
             dfa_samples = [float(r["value"]) for r in dfa_rows] if dfa_rows else []
@@ -201,6 +274,49 @@ def run_analyze() -> dict:
                     })
                 except Exception as e:
                     logger.warning(f"Power metrics failed for {activity_id}: {e}")
+            # HR-based training load — computed for all activities with HR data
+            # Used for: (a) TSS on HR-only activities, (b) calibration on dual-sensor rides
+            if hr_samples:
+                try:
+                    # Resolve resting HR: wellness record for activity date -> profile -> default
+                    resting_hr = _get_resting_hr_for_date(wellness_by_date, act_date_str)
+                    if resting_hr is None or resting_hr <= 0:
+                        resting_hr = _profile.get("resting_hr", 70)
+
+                    # Resolve max HR: activity max -> profile -> default
+                    max_hr = act.get("max_hr") or _profile.get("max_hr") or 190
+
+                    gender = _profile.get("gender", "male")
+
+                    hr_result = compute_hr_training_load(
+                        activity_id, hr_samples, float(max_hr), float(resting_hr), gender,
+                    )
+
+                    if pm_result is not None and pm_result.tss > 0 and hr_result.hr_tss > 0:
+                        # Dual-sensor ride: accumulate for calibration
+                        hr_calibration_pairs.append({
+                            "tss_power": pm_result.tss,
+                            "hr_tss": hr_result.hr_tss,
+                            "date": act_date_str,
+                            "distance": act.get("distance", 0),
+                        })
+                    elif pm_result is None or pm_result.tss == 0:
+                        # HR-only activity: use HR TSS (calibrated if available)
+                        calibration = db.get_hr_calibration()
+                        cal_factor = calibration.get("calibration_factor") if calibration else None
+                        final_hr_tss = compute_hr_tss_with_calibration(hr_result.hr_tss, cal_factor)
+
+                        tss_records.append({
+                            "date": act.get("start_date", "")[:10],
+                            "tss": final_hr_tss,
+                        })
+                        # Store HR metrics in DB
+                        db.store_activity_metrics(activity_id, {
+                            "hr_tss": final_hr_tss,
+                            "hr_trimp": hr_result.trimp,
+                        })
+                except Exception as e:
+                    logger.warning(f"HR training load failed for {activity_id}: {e}")
 
             # Add this activity's PDC efforts to CP data pool
             # PDC gives best-effort power at standard durations (3m, 5m, 8m, 20m)
@@ -313,6 +429,30 @@ def run_analyze() -> dict:
                     "decoupling_drift": dc_result.drift_pct if dc_result else None,
                     "duration_sec": float(duration),
                 })
+        # Compute HR calibration factor from dual-sensor rides.
+        # For each dual-sensor ride, ratio = power_tss / hr_tss.
+        # The median ratio scales HR TSS to match power TSS.
+        # Banister TRIMP (derived from running) overestimates cycling load,
+        # so the calibration factor is typically < 1.0.
+        if hr_calibration_pairs:
+            ratios = [
+                p["tss_power"] / p["hr_tss"]
+                for p in hr_calibration_pairs
+                if p["hr_tss"] > 0 and p["tss_power"] > 0
+            ]
+            if ratios:
+                ratios.sort()
+                n = len(ratios)
+                cal_factor = ratios[n // 2] if n % 2 else (ratios[n // 2 - 1] + ratios[n // 2]) / 2
+                # Clamp to reasonable bounds
+                cal_factor = max(0.1, min(cal_factor, 3.0))
+            else:
+                cal_factor = 1.0
+            db.store_hr_calibration(cal_factor, len(hr_calibration_pairs))
+            logger.info(
+                f"HR calibration factor: {cal_factor:.3f} "
+                f"(median of {len(hr_calibration_pairs)} dual-sensor rides)"
+            )
 
         # --- Training Load ---
         training_load_result = None

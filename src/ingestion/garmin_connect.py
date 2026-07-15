@@ -542,6 +542,18 @@ def _fetch_activity_streams(
             ("altitude", altitude_values),
         ]:
             if values:
+                # Deduplicate samples with identical elapsed times.
+                # Some power meters report at low frequency (e.g. 3s) and
+                # the FIT file may contain multiple frames with the same
+                # timestamp, inflating averages and NP.
+                if len(values) > 1:
+                    seen: set[float] = set()
+                    deduped: list[tuple[float, float]] = []
+                    for t, v in values:
+                        if t not in seen:
+                            seen.add(t)
+                            deduped.append((t, v))
+                    values = deduped
                 total_stored += db.store_activity_streams(str(activity_id), metric, values)
         logger.info(
             f"Parsed FIT for activity {activity_id}: "

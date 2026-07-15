@@ -190,6 +190,7 @@ _PROFILE_KEY_MAP = {
     "max_session_duration": "max_session_duration",
     "terrain_notes": "terrain",
     "bike(s)": "bikes",
+    "gender": "gender",
     "power_meter": "power_meter",
     "hr_monitor": "hr_monitor",
 }

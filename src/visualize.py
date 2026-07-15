@@ -1123,6 +1123,7 @@ def _render_profile():
         "bikes": os.getenv("BIKES", ""),
         "power_meter": os.getenv("POWER_METER", ""),
         "hr_monitor": os.getenv("HR_MONITOR", ""),
+        "gender": os.getenv("GENDER", "male"),
         "tsb_floor": -10,
     }
 
@@ -1152,6 +1153,11 @@ def _render_profile():
             ftp = st.number_input("FTP (watts)", min_value=0, value=profile["ftp_watts"], key="prof_ftp")
             max_hr = st.number_input("Max HR", min_value=0, value=profile["max_hr"], key="prof_max_hr")
             resting_hr = st.number_input("Resting HR (avg)", min_value=0, value=profile["resting_hr"], key="prof_resting_hr")
+            gender = st.selectbox(
+                "Gender", ["male", "female"],
+                index=["male", "female"].index(profile["gender"]) if profile["gender"] in ["male", "female"] else 0,
+                key="prof_gender",
+            )
             lt1 = st.number_input("LT1 Power (watts)", min_value=0, value=profile["lt1_power"], key="prof_lt1")
             lt2 = st.number_input("LT2 Power (watts)", min_value=0, value=profile["lt2_power"], key="prof_lt2")
 
@@ -1238,6 +1244,7 @@ def _render_profile():
 - FTP (watts): {int(ftp)}
 - Max HR: {int(max_hr)}
 - Resting HR (avg): {int(resting_hr)}
+- Gender: {gender}
 - LT1 power (if known): {int(lt1)}
 - LT2 power (if known): {int(lt2)}
 
