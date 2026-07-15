@@ -60,6 +60,63 @@ class WeeklyPlan:
     tsb_series: list[float] = field(default_factory=list)
 
 
+@dataclass
+class DaySlot:
+    """Precomputed availability and weather for a single day."""
+    date: str  # ISO date
+    weekday: int  # 0=Mon..6=Sun
+    available_hours: list[int]  # hours 0-23 the athlete is free
+    is_available: bool  # True if athlete has any free time
+    rideable: bool  # True if weather allows an outdoor ride
+    ride_note: str  # e.g. "Ride 06:00-07:30 ✓" or "Rain blocks ride"
+    forecast: dict | None  # raw weather forecast for this date
+
+
+@dataclass
+class PlanningContext:
+    """Shared precomputed data for both AI and rules planners."""
+    week_start: date
+    week_dates: list[date]
+    day_slots: list[DaySlot]  # one per day, indexed 0-6
+
+    # Training load state
+    current_ctl: float
+    current_atl: float
+    current_tsb: float
+    cp: float  # critical power / FTP
+
+    # Readiness
+    readiness_score: float
+    readiness_state: str
+    readiness_recommendation: str
+
+    # Profile
+    max_duration_min: float
+    tsb_floor: int
+    available_weekdays: list[int]
+    primary_goal: str
+
+
+@dataclass
+class PlanValidationError:
+    """A single validation failure with a machine-readable code."""
+    code: str  # e.g. "invalid_day", "tsb_floor", "outside_window"
+    message: str  # human-readable explanation
+    day_index: int | None = None  # which day (0-6) is affected
+
+
+@dataclass
+class PlanValidationResult:
+    """Result of validating a proposed plan."""
+    valid: bool
+    errors: list[PlanValidationError] = field(default_factory=list)
+
+    # Projected training load if plan is applied
+    projected_ctl: list[float] = field(default_factory=list)
+    projected_atl: list[float] = field(default_factory=list)
+    projected_tsb: list[float] = field(default_factory=list)
+
+
 def _load_analysis() -> dict[str, Any]:
     """Load latest analysis from vault."""
     path = vault_path() / "data" / "latest_analysis.json"
@@ -239,38 +296,33 @@ def _build_description(
     return f"{location} ({time_label}): {duration_min}min — {desc} (Target TSS: {target_tss:.0f})"
 
 
-def generate_weekly_plan() -> WeeklyPlan:
-    """Generate a complete 7-day training plan."""
+def build_planning_context() -> PlanningContext:
+    """Build shared precomputed context for both planners."""
     today = date.today()
-
-    # Show today + next 6 days (not calendar week)
     week_start = today
     week_dates = [today + timedelta(days=i) for i in range(7)]
 
-    # Load data
     analysis = _load_analysis()
     profile = _load_profile()
     schedule = load_schedule()
     available_days = get_available_days()
 
-    # Current training load
     training_load = analysis.get("training_load", {})
     current_ctl = _parse_float(training_load.get("ctl"), 100.0)
     current_atl = _parse_float(training_load.get("atl"), 80.0)
     current_tsb = current_ctl - current_atl
 
-    # Readiness
     readiness = analysis.get("readiness", {})
     readiness_score = _parse_float(readiness.get("composite_score"), 70.0)
+    readiness_state = readiness.get("state", "")
+    readiness_rec = readiness.get("recommendation", "")
     cp = _parse_float(analysis.get("cp"), 224.0)
 
-    # Profile
-    ftp = _parse_float(profile.get("ftp_(watts)"), cp)
-    max_hr = _parse_float(profile.get("max_hr"), 190)
-    weight = _parse_float(profile.get("weight_(kg)"), 81.0)
     max_duration = _parse_float(profile.get("max_session_duration"), 90.0)
+    tsb_floor = int(profile.get("tsb_floor", -10))
+    primary_goal = profile.get("primary_goal", "VO2 max")
 
-    # Weather forecast
+    # Weather
     forecast_map: dict[str, dict] = {}
     location = get_location()
     if location:
@@ -278,193 +330,327 @@ def generate_weekly_plan() -> WeeklyPlan:
         for f in forecasts:
             forecast_map[f.get("date", "")] = f
 
-    # Score each available day using find_ride_slot
-    ride_duration_hours = _parse_float(profile.get("max_session_duration"), 90.0) / 60.0
-    day_scores: list[tuple[int, date, float, dict | None, list[int], str]] = []
+    # Build day slots
+    ride_duration_hours = max_duration / 60.0
+    day_slots: list[DaySlot] = []
     for i, day_date in enumerate(week_dates):
         weekday = day_date.weekday()
         date_str = day_date.isoformat()
-        if weekday not in available_days:
-            continue
         avail_hours = get_available_hours(weekday)
         day_forecast = forecast_map.get(date_str)
 
-        score = 0.0
+        rideable = False
         ride_note = ""
         if day_forecast and avail_hours:
             slot_start, ride_note = find_ride_slot(day_forecast, avail_hours, ride_duration_hours)
-            if slot_start is not None:
-                score = 100.0
-            else:
-                score = -1.0  # Not rideable
+            rideable = slot_start is not None
 
-        day_scores.append((i, day_date, score, day_forecast, avail_hours, ride_note))
+        day_slots.append(DaySlot(
+            date=date_str,
+            weekday=weekday,
+            available_hours=avail_hours,
+            is_available=weekday in available_days,
+            rideable=rideable,
+            ride_note=ride_note,
+            forecast=day_forecast,
+        ))
 
-    MAX_TRAINING_DAYS = 3
-    MIN_TSB_FLOOR = int(profile.get("tsb_floor", -10))  # From user profile
-    # Sort by score descending, pick top MAX_TRAINING_DAYS
-    day_scores.sort(key=lambda x: -x[2])
-    training_days = set()
-    for entry in day_scores:
-        if len(training_days) >= MAX_TRAINING_DAYS:
-            break
-        # Skip days with no rideable slot (score < 0) unless we have no other choice
-        if entry[2] < 0 and len(training_days) < len(day_scores):
+    return PlanningContext(
+        week_start=week_start,
+        week_dates=week_dates,
+        day_slots=day_slots,
+        current_ctl=current_ctl,
+        current_atl=current_atl,
+        current_tsb=current_tsb,
+        cp=cp,
+        readiness_score=readiness_score,
+        readiness_state=readiness_state,
+        readiness_recommendation=readiness_rec,
+        max_duration_min=max_duration,
+        tsb_floor=tsb_floor,
+        available_weekdays=available_days,
+        primary_goal=primary_goal,
+    )
+
+
+def project_tsb(
+    ctx: PlanningContext,
+    daily_tss: list[float],
+) -> tuple[list[float], list[float], list[float]]:
+    """Project CTL, ATL, and TSB forward for each day given daily TSS values.
+
+    Returns (ctl_series, atl_series, tsb_series) of length len(daily_tss).
+    """
+    import math
+    alpha_ctl = 1 - math.exp(-math.log(2) / 18.0)
+    alpha_atl = 1 - math.exp(-math.log(2) / 7.0)
+
+    ctl = ctx.current_ctl
+    atl = ctx.current_atl
+    ctl_series, atl_series, tsb_series = [], [], []
+
+    for tss in daily_tss:
+        ctl = (1 - alpha_ctl) * ctl + alpha_ctl * tss
+        atl = (1 - alpha_atl) * atl + alpha_atl * tss
+        ctl_series.append(ctl)
+        atl_series.append(atl)
+        tsb_series.append(ctl - atl)
+
+    return ctl_series, atl_series, tsb_series
+
+
+def validate_plan(
+    ctx: PlanningContext,
+    days: list[DailyPlan],
+) -> PlanValidationResult:
+    """Validate a proposed plan against all hard constraints.
+
+    Checks:
+    - Plan covers exactly 7 days within the planning window
+    - Training days are on available weekdays
+    - Training days have rideable weather (or are marked indoor)
+    - Projected TSB never drops below the floor
+    - 1-3 training days total
+    - Duration within max session limit
+    - Session type appropriate for readiness
+    """
+    errors: list[PlanValidationError] = []
+
+    if len(days) != 7:
+        errors.append(PlanValidationError(
+            code="plan_length",
+            message=f"Plan must have exactly 7 days, got {len(days)}",
+        ))
+        return PlanValidationResult(valid=False, errors=errors)
+
+    # Check planning window
+    for i, day in enumerate(days):
+        expected_date = ctx.week_dates[i].isoformat()
+        if day.date != expected_date:
+            errors.append(PlanValidationError(
+                code="outside_window",
+                message=f"Day {i} has date {day.date}, expected {expected_date} (within 7-day window)",
+                day_index=i,
+            ))
+
+    # Check available weekdays
+    for i, day in enumerate(days):
+        if day.rest_day:
             continue
-        training_days.add(entry[0])
+        if day.weekday not in ctx.available_weekdays:
+            day_name = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][day.weekday]
+            errors.append(PlanValidationError(
+                code="invalid_day",
+                message=f"Day {i} ({day_name}) is not in available schedule",
+                day_index=i,
+            ))
 
-    # If we skipped too many due to weather, fill remaining slots
-    if len(training_days) < MAX_TRAINING_DAYS:
-        for entry in day_scores:
-            if len(training_days) >= MAX_TRAINING_DAYS:
+    # Check rideable weather
+    for i, day in enumerate(days):
+        if day.rest_day:
+            continue
+        slot = ctx.day_slots[i]
+        if not slot.rideable and not day.indoor:
+            errors.append(PlanValidationError(
+                code="weather",
+                message=f"Day {i} ({slot.date}) is not rideable ({slot.ride_note}) and not marked indoor",
+                day_index=i,
+            ))
+
+    # Check training day count
+    train_count = sum(1 for d in days if not d.rest_day)
+    if train_count < 1:
+        errors.append(PlanValidationError(
+            code="no_training",
+            message="Plan must have at least 1 training day",
+        ))
+    if train_count > 3:
+        errors.append(PlanValidationError(
+            code="too_many_days",
+            message=f"Plan has {train_count} training days, max is 3",
+        ))
+
+    # Check duration limits
+    for i, day in enumerate(days):
+        if day.rest_day:
+            continue
+        if day.duration_min > ctx.max_duration_min:
+            errors.append(PlanValidationError(
+                code="duration",
+                message=f"Day {i} duration {day.duration_min}min exceeds max {ctx.max_duration_min:.0f}min",
+                day_index=i,
+            ))
+
+    # Check readiness-appropriate session types
+    if ctx.readiness_score < 60:
+        for i, day in enumerate(days):
+            if day.rest_day:
+                continue
+            if day.session_type in ("threshold", "vo2", "anaerobic"):
+                errors.append(PlanValidationError(
+                    code="readiness",
+                    message=f"Day {i}: {day.session_type} not allowed at readiness {ctx.readiness_score:.0f} (use recovery/endurance only)",
+                    day_index=i,
+                ))
+
+    # Project TSB and check floor
+    daily_tss = [d.target_tss if not d.rest_day else 0.0 for d in days]
+    ctl_s, atl_s, tsb_s = project_tsb(ctx, daily_tss)
+
+    for i, tsb in enumerate(tsb_s):
+        if tsb < ctx.tsb_floor:
+            errors.append(PlanValidationError(
+                code="tsb_floor",
+                message=f"Day {i} projected TSB {tsb:.1f} below floor {ctx.tsb_floor}",
+                day_index=i,
+            ))
+
+    return PlanValidationResult(
+        valid=len(errors) == 0,
+        errors=errors,
+        projected_ctl=ctl_s,
+        projected_atl=atl_s,
+        projected_tsb=tsb_s,
+    )
+
+
+def generate_weekly_plan() -> WeeklyPlan:
+    """Generate a complete 7-day training plan using rules."""
+    ctx = build_planning_context()
+    today = date.today()
+
+    profile = _load_profile()
+    ftp = _parse_float(profile.get("ftp_(watts)"), ctx.cp)
+    max_hr = _parse_float(profile.get("max_hr"), 190)
+    weight = _parse_float(profile.get("weight_(kg)"), 81.0)
+
+    # Score each available day by rideability
+    scored: list[tuple[int, float, str]] = []
+    for i, slot in enumerate(ctx.day_slots):
+        if not slot.is_available:
+            continue
+        score = 100.0 if slot.rideable else -1.0
+        scored.append((i, score, slot.ride_note))
+
+    # Pick top 3 rideable days, fill with non-rideable if needed
+    scored.sort(key=lambda x: -x[1])
+    training_days: set[int] = set()
+    for idx, score, _ in scored:
+        if len(training_days) >= 3:
+            break
+        if score >= 0:
+            training_days.add(idx)
+    if len(training_days) < 3:
+        for idx, score, _ in scored:
+            if len(training_days) >= 3:
                 break
-            if entry[0] not in training_days:
-                training_days.add(entry[0])
-
-    # Build a map of day_idx -> ride_note for later use
-    ride_notes = {x[0]: x[5] for x in day_scores}
+            if idx not in training_days:
+                training_days.add(idx)
 
     # Build daily plans
     days: list[DailyPlan] = []
-    training_day_counter = 0
-    weekly_tss = 0.0
-
-    # Session pattern for 3-day week
     session_pattern = ["endurance", "threshold", "vo2"]
+    session_map = {
+        "recovery": ("Z1", 30, 15.0),
+        "endurance": ("Z2", 60, 50.0),
+        "threshold": ("Z3-Z4", 45, 80.0),
+        "vo2": ("Z4-Z5", 45, 90.0),
+        "anaerobic": ("Z5", 30, 60.0),
+        "mixed": ("Z2-Z4", 60, 70.0),
+    }
+    training_day_counter = 0
 
-    for i, day_date in enumerate(week_dates):
+    for i, day_date in enumerate(ctx.week_dates):
+        slot = ctx.day_slots[i]
         weekday = day_date.weekday()
         date_str = day_date.isoformat()
-        avail_hours = get_available_hours(weekday)
-        day_forecast = forecast_map.get(date_str)
-        indoor, weather_note = _weather_adjustment(day_forecast)
+        indoor, weather_note = _weather_adjustment(slot.forecast)
 
         if i not in training_days:
-            w_temp_max = day_forecast.get("temp_max", 0) if day_forecast else 0
-            w_temp_min = day_forecast.get("temp_min", 0) if day_forecast else 0
-            w_precip = day_forecast.get("precipitation_prob", 0) if day_forecast else 0
-            w_condition = day_forecast.get("condition", "") if day_forecast else ""
-            ride_note = ride_notes.get(i, "")
             days.append(DailyPlan(
-                date=date_str,
-                weekday=weekday,
-                rest_day=True,
-                session_type="rest",
-                target_zone="—",
-                duration_min=0,
-                target_tss=0.0,
-                indoor=False,
-                description="Rest day",
+                date=date_str, weekday=weekday, rest_day=True,
+                session_type="rest", target_zone="—", duration_min=0,
+                target_tss=0.0, indoor=False, description="Rest day",
                 weather_note=weather_note,
                 rationale="Not selected for this week's plan",
-                weather_temp_max=w_temp_max,
-                weather_temp_min=w_temp_min,
-                weather_precip=w_precip,
-                weather_condition=w_condition,
-                ride_note=ride_note,
+                weather_temp_max=slot.forecast.get("temp_max", 0) if slot.forecast else 0,
+                weather_temp_min=slot.forecast.get("temp_min", 0) if slot.forecast else 0,
+                weather_precip=slot.forecast.get("precipitation_prob", 0) if slot.forecast else 0,
+                weather_condition=slot.forecast.get("condition", "") if slot.forecast else "",
+                ride_note=slot.ride_note,
             ))
             continue
 
-        # Use today's readiness for today, project forward for future days
-        day_readiness = readiness_score if day_date == today else max(50, readiness_score + (i - 1) * 3)
-        day_readiness = min(90, day_readiness)
-
-        # Weather vars needed for TSB floor rest day below
-        w_temp_max = day_forecast.get("temp_max", 0) if day_forecast else 0
-        w_temp_min = day_forecast.get("temp_min", 0) if day_forecast else 0
-        w_precip = day_forecast.get("precipitation_prob", 0) if day_forecast else 0
-        w_condition = day_forecast.get("condition", "") if day_forecast else ""
-
-        # Project CTL/ATL forward to this day to get real TSB
+        # Project TSB to this point
         past_tss = [d.target_tss for d in days if not d.rest_day]
-        run_ctl, run_atl = _project_ctl_atl(current_ctl, current_atl, past_tss + [0.0])
-        proj_ctl = run_ctl[-1]
-        proj_atl = run_atl[-1]
-        proj_tsb = proj_ctl - proj_atl
+        _, _, proj_tsb = project_tsb(ctx, past_tss + [0.0])
+        proj_tsb_val = proj_tsb[-1] if proj_tsb else ctx.current_tsb
 
-        # Pick session type from pattern
+        # Pick session type
         session_type = session_pattern[training_day_counter % len(session_pattern)]
-
-        session_map = {
-            "recovery": ("Z1", 30, 15.0),
-            "endurance": ("Z2", 60, 50.0),
-            "threshold": ("Z3-Z4", 45, 80.0),
-            "vo2": ("Z4-Z5", 45, 90.0),
-            "anaerobic": ("Z5", 30, 60.0),
-            "mixed": ("Z2-Z4", 60, 70.0),
-        }
         zone, duration, tss = session_map.get(session_type, ("Z2", 60, 50.0))
 
-        # Adjust TSS based on readiness
+        # Adjust TSS for readiness
+        day_readiness = ctx.readiness_score if day_date == today else max(50, min(90, ctx.readiness_score + (i - 1) * 3))
         tss *= max(0.5, day_readiness / 100.0)
 
-        # TSB floor: if adding this workout would drop projected TSB below floor,
-        # downgrade to recovery or skip
-        test_ctl, test_atl = _project_ctl_atl(proj_ctl, proj_atl, [tss])
-        post_tsb = test_ctl[0] - test_atl[0]
-        if post_tsb < MIN_TSB_FLOOR:
-            # Try recovery instead
+        # Check TSB floor — downgrade if needed
+        _, _, post_tsb = project_tsb(ctx, past_tss + [tss])
+        if post_tsb[-1] < ctx.tsb_floor:
             zone, duration, tss = "Z1", 30, 15.0
             session_type = "recovery"
-            test_ctl2, test_atl2 = _project_ctl_atl(proj_ctl, proj_atl, [tss])
-            post_tsb2 = test_ctl2[0] - test_atl2[0]
-            if post_tsb2 < MIN_TSB_FLOOR:
-                # Even recovery is too much — make it a rest day
+            _, _, post_tsb2 = project_tsb(ctx, past_tss + [tss])
+            if post_tsb2[-1] < ctx.tsb_floor:
                 days.append(DailyPlan(
                     date=date_str, weekday=weekday, rest_day=True,
                     session_type="rest", target_zone="—", duration_min=0,
                     target_tss=0.0, indoor=False, description="Rest day — TSB protection",
                     weather_note=weather_note,
-                    rationale=f"Skipped: projected TSB {post_tsb:.0f} would drop below {MIN_TSB_FLOOR}",
-                    weather_temp_max=w_temp_max, weather_temp_min=w_temp_min,
-                    weather_precip=w_precip, weather_condition=w_condition,
-                    ride_note=ride_note,
+                    rationale=f"Skipped: projected TSB {post_tsb[-1]:.0f} below floor {ctx.tsb_floor}",
+                    weather_temp_max=slot.forecast.get("temp_max", 0) if slot.forecast else 0,
+                    weather_temp_min=slot.forecast.get("temp_min", 0) if slot.forecast else 0,
+                    weather_precip=slot.forecast.get("precipitation_prob", 0) if slot.forecast else 0,
+                    weather_condition=slot.forecast.get("condition", "") if slot.forecast else "",
+                    ride_note=slot.ride_note,
                 ))
-                weekly_tss += 0
                 training_day_counter += 1
                 continue
 
-        # Cap duration
-        duration = min(duration, int(max_duration))
-
-        window_label = f"{avail_hours[0]:02d}:00-{avail_hours[-1]+1:02d}:00" if avail_hours else "morning"
+        duration = min(duration, int(ctx.max_duration_min))
+        avail = slot.available_hours
+        window_label = f"{avail[0]:02d}:00-{avail[-1]+1:02d}:00" if avail else "morning"
         description = _build_description(session_type, zone, duration, tss, indoor, window_label)
 
         rationale_parts = []
         if day_date == today:
-            rationale_parts.append(f"Today's readiness: {readiness_score:.0f}/100")
-        rationale_parts.append(f"Projected TSB: {proj_tsb:.0f} (post-workout: {post_tsb:.0f})")
+            rationale_parts.append(f"Today's readiness: {ctx.readiness_score:.0f}/100")
+        rationale_parts.append(f"Projected TSB: {proj_tsb_val:.0f} (post: {post_tsb[-1]:.0f})")
         if weather_note:
             rationale_parts.append(weather_note)
-        rationale_parts.append("Selected as one of 3 best weather days")
 
-        ride_note = ride_notes.get(i, "")
         days.append(DailyPlan(
-            date=date_str,
-            weekday=weekday,
-            rest_day=False,
-            session_type=session_type,
-            target_zone=zone,
-            duration_min=duration,
-            target_tss=round(tss, 1),
-            indoor=indoor,
-            description=description,
+            date=date_str, weekday=weekday, rest_day=False,
+            session_type=session_type, target_zone=zone,
+            duration_min=duration, target_tss=round(tss, 1),
+            indoor=indoor, description=description,
             weather_note=weather_note,
             rationale="; ".join(rationale_parts),
-            weather_temp_max=w_temp_max,
-            weather_temp_min=w_temp_min,
-            weather_precip=w_precip,
-            weather_condition=w_condition,
-            ride_note=ride_note,
+            weather_temp_max=slot.forecast.get("temp_max", 0) if slot.forecast else 0,
+            weather_temp_min=slot.forecast.get("temp_min", 0) if slot.forecast else 0,
+            weather_precip=slot.forecast.get("precipitation_prob", 0) if slot.forecast else 0,
+            weather_condition=slot.forecast.get("condition", "") if slot.forecast else "",
+            ride_note=slot.ride_note,
         ))
-
-        weekly_tss += tss
         training_day_counter += 1
 
-    # Compute weekly TSS target from CTL
-    weekly_tss_target = current_ctl * 7 / 30
+    # Validate
+    validation = validate_plan(ctx, days)
+    if not validation.valid:
+        logger.warning(f"Rules plan validation failed: {[e.message for e in validation.errors]}")
 
-    # Scale sessions to hit weekly TSS target
+    # Scale to weekly TSS target
+    weekly_tss_target = ctx.current_ctl * 7 / 30
+    weekly_tss = sum(d.target_tss for d in days if not d.rest_day)
     if weekly_tss > 0 and weekly_tss > weekly_tss_target:
         scale = weekly_tss_target / weekly_tss
         for day in days:
@@ -473,91 +659,46 @@ def generate_weekly_plan() -> WeeklyPlan:
                 day.duration_min = max(20, int(day.duration_min * scale))
         weekly_tss = weekly_tss_target
 
-    # Project CTL/ATL/TSB across the week
+    # Project CTL/ATL/TSB
     daily_tss = [d.target_tss for d in days]
-    ctl_proj, atl_proj = _project_ctl_atl(current_ctl, current_atl, daily_tss)
-    tsb_proj = [ctl - atl for ctl, atl in zip(ctl_proj, atl_proj)]
+    ctl_s, atl_s, tsb_s = project_tsb(ctx, daily_tss)
 
-    plan = WeeklyPlan(
-        week_start=week_start.isoformat(),
+    return WeeklyPlan(
+        week_start=ctx.week_start.isoformat(),
         days=days,
         weekly_tss_target=round(weekly_tss_target, 1),
         weekly_tss_planned=round(weekly_tss, 1),
-        generated_at=today.isoformat() + "T" + "__TIME__",
-        readiness_summary=f"Readiness {readiness_score:.0f}/100, CTL {current_ctl:.0f}, ATL {current_atl:.0f}, TSB {current_tsb:.0f}",
-        ctl_series=[round(c, 1) for c in ctl_proj],
-        atl_series=[round(a, 1) for a in atl_proj],
-        tsb_series=[round(t, 1) for t in tsb_proj],
+        generated_at=today.isoformat(),
+        readiness_summary=f"Readiness {ctx.readiness_score:.0f}/100, CTL {ctx.current_ctl:.0f}, TSB {ctx.current_tsb:.0f}",
+        ctl_series=[round(c, 1) for c in ctl_s],
+        atl_series=[round(a, 1) for a in atl_s],
+        tsb_series=[round(t, 1) for t in tsb_s],
     )
-
-    return plan
 def generate_ai_plan() -> WeeklyPlan:
-    """Generate a weekly plan using LLM analysis of recent history and readiness."""
+    """Generate a weekly plan using LLM with validation retry loop."""
     from src.agent.llm_client import generate
 
+    ctx = build_planning_context()
     today = date.today()
-    week_start = today
-    week_dates = [today + timedelta(days=i) for i in range(7)]
-
-    analysis = _load_analysis()
     profile = _load_profile()
-    available_days = get_available_days()
-
-    training_load = analysis.get("training_load", {})
-    current_ctl = _parse_float(training_load.get("ctl"), 100.0)
-    current_atl = _parse_float(training_load.get("atl"), 80.0)
-    current_tsb = current_ctl - current_atl
-
-    readiness = analysis.get("readiness", {})
-    readiness_score = _parse_float(readiness.get("composite_score"), 70.0)
-    readiness_rec = readiness.get("recommendation", "")
-    readiness_state = readiness.get("state", "")
-    cp = _parse_float(analysis.get("cp"), 224.0)
-
-    forecast_map: dict[str, dict] = {}
-    location = get_location()
-    if location:
-        forecasts = get_weekly_forecast(location[0], location[1])
-        for f in forecasts:
-            forecast_map[f.get("date", "")] = f
-
-    weather_lines = []
-    ride_duration = _parse_float(profile.get("max_session_duration"), 90.0) / 60.0
-    for d in week_dates:
-        ds = d.isoformat()
-        fc = forecast_map.get(ds, {})
-        weekday = d.weekday()
-        tmax_f = fc.get("temp_max", 0)
-        tmin_f = fc.get("temp_min", 0)
-        slots_info = []
-        for slot_name in ["morning", "afternoon", "evening"]:
-            sd = fc.get(slot_name, {})
-            if sd and sd.get("condition"):
-                st_f = sd.get("temp", 0)
-                slots_info.append(f"{slot_name}: {sd['condition']} {st_f:.0f}F precip {sd.get('precip', 0)}%")
-        slot_str = " | ".join(slots_info) if slots_info else ""
-
-        # Ride slot analysis
-        avail_hours = get_available_hours(weekday)
-        ride_slot_note = ""
-        if avail_hours and fc:
-            from src.services.weather import find_ride_slot
-            slot_start, slot_note = find_ride_slot(fc, avail_hours, ride_duration)
-            if slot_start is not None:
-                ride_slot_note = f" [RIDEABLE: {slot_note}]"
-            else:
-                ride_slot_note = f" [NOT RIDEABLE: {slot_note}]"
-        else:
-            slot_note = ""
-
-        weather_lines.append(
-            f"{ds}: {fc.get('condition','unknown')} {tmax_f:.0f}F/{tmin_f:.0f}F precip {fc.get('precipitation_prob',0)}% {slot_str}{ride_slot_note}"
-        )
 
     day_names = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]
-    available_days_str = ", ".join(day_names[i] for i in available_days)
+    available_days_str = ", ".join(day_names[i] for i in ctx.available_weekdays)
 
-    # Load recent memory journal entries for context
+    # Build weather lines from context
+    weather_lines = []
+    for slot in ctx.day_slots:
+        fc = slot.forecast or {}
+        tmax_f = fc.get("temp_max", 0)
+        tmin_f = fc.get("temp_min", 0)
+        ride_tag = "RIDEABLE" if slot.rideable else "NOT_RIDEABLE"
+        ride_note = slot.ride_note if slot.rideable else "weather blocks ride window"
+        weather_lines.append(
+            f"{slot.date}: {fc.get('condition','unknown')} {tmax_f:.0f}F/{tmin_f:.0f}F "
+            f"precip {fc.get('precipitation_prob',0)}% [{ride_tag}: {ride_note}]"
+        )
+
+    # Journal context
     journal_context = ""
     try:
         from src.memory.journal import load_recent
@@ -565,75 +706,65 @@ def generate_ai_plan() -> WeeklyPlan:
     except Exception:
         pass
 
-    weather_block = "WEATHER:\n" + "\n".join(weather_lines) + "\n\n"
+    def _build_prompt(feedback: str = "") -> str:
+        fb_block = ""
+        if feedback:
+            fb_block = f"\n## PREVIOUS ATTEMPT FAILED:\n{feedback}\nFix ALL errors above and return a corrected plan.\n\n"
+        return (
+            f"You are a cycling coach. Generate a 7-day training plan.\n\n"
+            f"ATHLETE: Readiness {ctx.readiness_score:.0f}/100 ({ctx.readiness_state}), "
+            f"CTL {ctx.current_ctl:.0f}, ATL {ctx.current_atl:.0f}, TSB {ctx.current_tsb:.0f}, "
+            f"CP {ctx.cp:.0f}W\n"
+            f"Recommendation: {ctx.readiness_recommendation}\n"
+            f"Goals: {ctx.primary_goal}\n"
+            f"Max session: {ctx.max_duration_min:.0f}min\n\n"
+            f"## WEEK SCHEDULE (today + 6 days):\n"
+        ) + "\n".join(
+            f"  Day {i} ({day_names[slot.weekday]} {slot.date}): "
+            f"{'AVAILABLE' if slot.is_available else 'UNAVAILABLE'}, "
+            f"{'RIDEABLE' if slot.rideable else 'INDOOR_ONLY'}"
+            for i, slot in enumerate(ctx.day_slots)
+        ) + (
+            f"\n\n## HARD CONSTRAINTS:\n"
+            f"1. Return exactly 7 days, one per date above (day 0 = today).\n"
+            f"2. Pick 1-3 training days. All others: rest_day=true, tss=0.\n"
+            f"3. Training days MUST be on AVAILABLE weekdays: {available_days_str}.\n"
+            f"4. Prefer RIDEABLE days for outdoor. If day is INDOOR_ONLY, set indoor=true.\n"
+            f"5. Max duration: {ctx.max_duration_min:.0f}min per session.\n"
+            f"6. TSB FLOOR: {ctx.tsb_floor}. Projected TSB must never drop below this.\n"
+            f"   Current TSB: {ctx.current_tsb:.0f}. Each training day adds fatigue.\n"
+            f"   Recovery (TSS~15) adds minimal fatigue; endurance (TSS~50) moderate; "
+            f"threshold/VO2 (TSS~80-90) high.\n"
+            f"7. If readiness < 60, use only recovery/endurance.\n"
+            f"8. Total weekly TSS target: ~{ctx.current_ctl*7/30:.0f}.\n\n"
+            f"WEATHER:\n" + "\n".join(weather_lines) + "\n\n"
+            + journal_context
+            + fb_block
+            + 'Return ONLY a JSON array of 7 day objects:\n'
+            + '[{"date":"YYYY-MM-DD","weekday":0-6,"rest_day":bool,"session_type":"rest|recovery|endurance|threshold|vo2|anaerobic|mixed",'
+            + '"target_zone":"Z1-Z5","duration_min":int,"target_tss":float,"indoor":bool,'
+            + '"description":"str","weather_note":"str","rationale":"str"}]\n'
+        )
 
-    prompt = (
-        f"You are a cycling coach. Generate a 7-day training plan.\n\n"
-        f"ATHLETE: Readiness {readiness_score:.0f}/100 ({readiness_state}), "
-        f"CTL {current_ctl:.0f}, ATL {current_atl:.0f}, TSB {current_tsb:.0f}, "
-        f"CP {cp:.0f}W\n"
-        f"Recommendation: {readiness_rec}\n"
-        f"Goals: {profile.get('primary_goal', 'VO2 max')}\n"
-        f"Max session: {_parse_float(profile.get('max_session_duration'), 90.0):.0f}min\n"
-        f"Constraints: {profile.get('available_training_days', 'None')}\n\n"
-        f"## HARD CONSTRAINTS:\n"
-        f"1. Pick 2-3 training days (no more than 3). All other days must be rest.\n"
-        f"2. Available days: {available_days_str}. Only pick from these.\n"
-        f"3. PICK THE BEST WEATHER DAYS. Each day has a [RIDEABLE] or [NOT RIDEABLE] tag.\n"
-        f"   [RIDEABLE] means there's a contiguous clear window for a {_parse_float(profile.get('max_session_duration'), 90.0):.0f}-min ride\n"
-        f"   with 1h buffer before/after. Prefer [RIDEABLE] days.\n"
-        f"   [NOT RIDEABLE] means weather blocks a clean ride window — set indoor=true if you pick it.\n"
-        f"4. If readiness < 60, use only recovery or endurance. No threshold/VO2.\n"
-        f"5. You may do 2 longer rides or 3 shorter ones — use your judgment.\n"
-        f"6. CRITICAL: Current TSB is {current_tsb:.0f}. NEVER schedule a plan that drops\n"
-        f"   projected TSB below {int(profile.get('tsb_floor', -10))}. If TSB is already low (<0), use only recovery/endurance.\n"
-        f"   The athlete gets injured when TSB goes below this floor.\n\n"
-        + weather_block
-        + journal_context
-        + f"Return ONLY a JSON array of 7 day objects:\n"
-        + f'[{{"date":"YYYY-MM-DD","weekday":0-6,"rest_day":bool,"session_type":"rest|recovery|endurance|threshold|vo2|anaerobic|mixed",'
-        + f'"target_zone":"Z1-Z5","duration_min":int,"target_tss":float,"indoor":bool,'
-        + f'"description":"str","weather_note":"str","rationale":"str"}}]\n'
-        + f"Rest days: rest_day=true, duration=0, tss=0. Total TSS ~{current_ctl*7/30:.0f}."
-    )
-
-    try:
-        response = generate(prompt, stream=False)
+    def _parse_llm_response(response: str) -> list[dict] | None:
         import re
         json_match = re.search(r'\[[\s\S]*\]', response)
         if not json_match:
-            logger.warning("AI plan: no JSON in response, falling back to rules")
-            return generate_weekly_plan()
+            return None
+        try:
+            return json.loads(json_match.group())
+        except json.JSONDecodeError:
+            return None
 
-        raw_days = json.loads(json_match.group())
+    def _raw_to_days(raw_days: list[dict]) -> list[DailyPlan]:
+        """Convert LLM JSON to DailyPlan objects, forcing dates to this week."""
+        weekday_to_date = {d.weekday(): d.isoformat() for d in ctx.week_dates}
         days = []
-        # Map weekday -> correct date for this week
-        weekday_to_date = {d.weekday(): d.isoformat() for d in week_dates}
-
-        # Enforce TSB floor from user profile
-        MIN_TSB_FLOOR = int(profile.get("tsb_floor", -10))
-        run_ctl, run_atl = current_ctl, current_atl
         for rd in raw_days[:7]:
-            if rd.get("rest_day", True):
-                continue
-            tss = rd.get("target_tss", 0)
-            test_ctl, test_atl = _project_ctl_atl(run_ctl, run_atl, [tss])
-            post_tsb = test_ctl[0] - test_atl[0]
-            if post_tsb < MIN_TSB_FLOOR:
-                # Downgrade to recovery
-                rd["session_type"] = "recovery"
-                rd["target_tss"] = 15.0
-                rd["duration_min"] = 30
-                rd["target_zone"] = "Z1"
-                tss = 15.0
-            run_ctl, run_atl = _project_ctl_atl(run_ctl, run_atl, [tss])[0][0], _project_ctl_atl(run_ctl, run_atl, [tss])[1][0]
-
-        for rd in raw_days[:7]:
-            ds = rd.get("date", "")
             weekday = rd.get("weekday", 0)
-            # Force date to match this week's schedule
-            ds = weekday_to_date.get(weekday, ds)
-            fc = forecast_map.get(ds, {})
+            ds = weekday_to_date.get(weekday, ctx.day_slots[weekday].date if weekday < 7 else "")
+            slot = ctx.day_slots[weekday] if weekday < 7 else ctx.day_slots[0]
+            fc = slot.forecast or {}
             indoor, weather_note = _weather_adjustment(fc)
             if rd.get("indoor"):
                 indoor = True
@@ -653,24 +784,55 @@ def generate_ai_plan() -> WeeklyPlan:
                 weather_precip=fc.get("precipitation_prob", 0),
                 weather_condition=fc.get("condition", ""),
             ))
-        # Validate: must have 1-3 training days
-        train_count = sum(1 for d in days if not d.rest_day)
-        if train_count < 1 or train_count > 3:
-            logger.warning(f"AI plan has {train_count} training days (expected 1-3), falling back to rules")
+        return days
+
+    # Retry loop: up to 3 attempts with validation feedback
+    MAX_RETRIES = 3
+    for attempt in range(MAX_RETRIES):
+        prompt = _build_prompt() if attempt == 0 else _build_prompt(
+            "VALIDATION ERRORS:\n" + "\n".join(f"- {e.message}" for e in last_errors)
+        )
+
+        try:
+            response = generate(prompt, stream=False)
+        except Exception as e:
+            logger.exception(f"AI plan LLM call failed (attempt {attempt+1})")
+            if attempt < MAX_RETRIES - 1:
+                continue
             return generate_weekly_plan()
 
-        weekly_tss = sum(d.target_tss for d in days if not d.rest_day)
-        return WeeklyPlan(
-            week_start=week_start.isoformat(),
-            days=days,
-            weekly_tss_target=round(current_ctl * 7 / 30, 1),
-            weekly_tss_planned=round(weekly_tss, 1),
-            generated_at=today.isoformat(),
-            readiness_summary=f"AI Plan - Readiness {readiness_score:.0f}/100, CTL {current_ctl:.0f}, TSB {current_tsb:.0f}",
-        )
-    except Exception as e:
-        logger.exception("AI plan generation failed")
-        raise RuntimeError(f"AI plan failed: {e}") from e
+        raw_days = _parse_llm_response(response)
+        if raw_days is None:
+            logger.warning("AI plan: no valid JSON in response, falling back to rules")
+            return generate_weekly_plan()
+
+        days = _raw_to_days(raw_days)
+        validation = validate_plan(ctx, days)
+        last_errors = validation.errors
+
+        if validation.valid:
+            # Build weekly plan with projected series
+            weekly_tss = sum(d.target_tss for d in days if not d.rest_day)
+            daily_tss = [d.target_tss for d in days]
+            ctl_s, atl_s, tsb_s = project_tsb(ctx, daily_tss)
+
+            return WeeklyPlan(
+                week_start=ctx.week_start.isoformat(),
+                days=days,
+                weekly_tss_target=round(ctx.current_ctl * 7 / 30, 1),
+                weekly_tss_planned=round(weekly_tss, 1),
+                generated_at=today.isoformat(),
+                readiness_summary=f"AI Plan - Readiness {ctx.readiness_score:.0f}/100, CTL {ctx.current_ctl:.0f}, TSB {ctx.current_tsb:.0f}",
+                ctl_series=[round(c, 1) for c in ctl_s],
+                atl_series=[round(a, 1) for a in atl_s],
+                tsb_series=[round(t, 1) for t in tsb_s],
+            )
+
+        logger.info(f"AI plan attempt {attempt+1} failed: {[e.message for e in validation.errors]}")
+
+    # All retries exhausted — fall back to rules
+    logger.warning(f"AI plan failed after {MAX_RETRIES} attempts, falling back to rules")
+    return generate_weekly_plan()
 
 
 def save_weekly_plan(plan: WeeklyPlan) -> None:
