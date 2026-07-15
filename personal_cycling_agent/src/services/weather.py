@@ -37,6 +37,38 @@ def _is_clear(hw: dict) -> bool:
     return condition not in ("storm", "snow") and precip < 40
 
 
+def find_rideable_slots(forecast_day: dict, available_hours: list[int],
+                        min_contiguous: int = 1) -> list[list[int]]:
+    """Find all contiguous blocks of clear hours within available hours.
+
+    Returns a list of contiguous hour lists, each of length >= min_contiguous.
+    E.g. [[6,7,8,9], [14,15]] means 06:00-09:59 and 14:00-15:59 are rideable.
+    """
+    if not available_hours or not forecast_day:
+        return []
+
+    avail_set = set(available_hours)
+    clear_hours = sorted(h for h in available_hours if _is_clear(_hour_weather(forecast_day, h)))
+
+    if not clear_hours:
+        return []
+
+    # Group into contiguous blocks
+    blocks: list[list[int]] = []
+    current: list[int] = [clear_hours[0]]
+    for h in clear_hours[1:]:
+        if h == current[-1] + 1:
+            current.append(h)
+        else:
+            if len(current) >= min_contiguous:
+                blocks.append(current)
+            current = [h]
+    if len(current) >= min_contiguous:
+        blocks.append(current)
+
+    return blocks
+
+
 def get_location() -> tuple[float, float] | None:
     """Get user location from config or Garmin GPS data."""
     lat = os.environ.get("WEATHER_LAT")

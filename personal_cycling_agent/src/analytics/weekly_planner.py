@@ -69,6 +69,7 @@ class DaySlot:
     is_available: bool  # True if athlete has any free time
     rideable: bool  # True if weather allows an outdoor ride
     ride_note: str  # e.g. "Ride 06:00-07:30 ✓" or "Rain blocks ride"
+    rideable_hours: list[list[int]]  # contiguous clear hour blocks, e.g. [[6,7,8],[14,15]]
     forecast: dict | None  # raw weather forecast for this date
 
 
@@ -341,9 +342,12 @@ def build_planning_context() -> PlanningContext:
 
         rideable = False
         ride_note = ""
+        rideable_hours: list[list[int]] = []
         if day_forecast and avail_hours:
             slot_start, ride_note = find_ride_slot(day_forecast, avail_hours, ride_duration_hours)
             rideable = slot_start is not None
+            from src.services.weather import find_rideable_slots
+            rideable_hours = find_rideable_slots(day_forecast, avail_hours)
 
         day_slots.append(DaySlot(
             date=date_str,
@@ -352,6 +356,7 @@ def build_planning_context() -> PlanningContext:
             is_available=weekday in available_days,
             rideable=rideable,
             ride_note=ride_note,
+            rideable_hours=rideable_hours,
             forecast=day_forecast,
         ))
 
@@ -706,10 +711,26 @@ def generate_ai_plan() -> WeeklyPlan:
     except Exception:
         pass
 
+    def _fmt_hours(block: list[int]) -> str:
+        if not block:
+            return ""
+        return f"{block[0]:02d}:00-{block[-1]+1:02d}:00"
+
     def _build_prompt(feedback: str = "") -> str:
         fb_block = ""
         if feedback:
             fb_block = f"\n## PREVIOUS ATTEMPT FAILED:\n{feedback}\nFix ALL errors above and return a corrected plan.\n\n"
+
+        schedule_lines = []
+        for i, slot in enumerate(ctx.day_slots):
+            status = "AVAILABLE" if slot.is_available else "UNAVAILABLE"
+            weather = "RIDEABLE" if slot.rideable else "INDOOR_ONLY"
+            line = f"  Day {i} ({day_names[slot.weekday]} {slot.date}): {status}, {weather}"
+            if slot.rideable_hours:
+                windows = ", ".join(_fmt_hours(b) for b in slot.rideable_hours)
+                line += f", rideable_windows=[{windows}]"
+            schedule_lines.append(line)
+
         return (
             f"You are a cycling coach. Generate a 7-day training plan.\n\n"
             f"ATHLETE: Readiness {ctx.readiness_score:.0f}/100 ({ctx.readiness_state}), "
@@ -719,17 +740,14 @@ def generate_ai_plan() -> WeeklyPlan:
             f"Goals: {ctx.primary_goal}\n"
             f"Max session: {ctx.max_duration_min:.0f}min\n\n"
             f"## WEEK SCHEDULE (today + 6 days):\n"
-        ) + "\n".join(
-            f"  Day {i} ({day_names[slot.weekday]} {slot.date}): "
-            f"{'AVAILABLE' if slot.is_available else 'UNAVAILABLE'}, "
-            f"{'RIDEABLE' if slot.rideable else 'INDOOR_ONLY'}"
-            for i, slot in enumerate(ctx.day_slots)
-        ) + (
-            f"\n\n## HARD CONSTRAINTS:\n"
+            + "\n".join(schedule_lines)
+            + f"\n\n## HARD CONSTRAINTS:\n"
             f"1. Return exactly 7 days, one per date above (day 0 = today).\n"
             f"2. Pick 1-3 training days. All others: rest_day=true, tss=0.\n"
             f"3. Training days MUST be on AVAILABLE weekdays: {available_days_str}.\n"
-            f"4. Prefer RIDEABLE days for outdoor. If day is INDOOR_ONLY, set indoor=true.\n"
+            f"4. Each day lists rideable_windows — contiguous clear time blocks for outdoor riding.\n"
+            f"   If rideable_windows is empty, set indoor=true.\n"
+            f"   Prefer days with more rideable windows for outdoor sessions.\n"
             f"5. Max duration: {ctx.max_duration_min:.0f}min per session.\n"
             f"6. TSB FLOOR: {ctx.tsb_floor}. Projected TSB must never drop below this.\n"
             f"   Current TSB: {ctx.current_tsb:.0f}. Each training day adds fatigue.\n"
