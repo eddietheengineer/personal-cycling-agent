@@ -168,3 +168,17 @@ This ensures both UI login and background sync use the same token directory.
 When modifying Garmin authentication code, update BOTH versions:
 - `personal_cycling_agent/src/ingestion/garmin_connect.py` (Home Assistant add-on)
 - `src/ingestion/garmin_connect.py` (standalone/development)
+
+## Sync Progress UI — Critical Invariants
+
+The sync progress dialog (`_render_sync_progress` in `src/visualize.py`) has requirements that MUST be preserved:
+
+1. **Re-detection is mandatory.** The function MUST check `bg.is_running` on both `get_default_sync()` and `get_default_task()` before returning early. Session flags (`syncing`/`rearsing`) can be stale or cleared after page navigation — the background task snapshot is the source of truth. Without this check, navigating away and back loses the progress window.
+
+2. **No auto-rerun polling.** NEVER add `time.sleep()` + `st.rerun()` to poll for progress updates. This refreshes the entire page and breaks the UX. The blocking `_wait_for_task` approach is correct — it updates in-place via `st.empty()` placeholders.
+
+3. **Progress must resume from current snapshot.** On re-entry (page refresh or navigation back), `_wait_for_task` MUST read `bg.snapshot()` before rendering so the progress bar, status label, and log show actual state — not "Waiting..."/0%.
+
+4. **Keep `_render_sync_progress` inside Settings page only.** Do NOT move it to run before page routing. It belongs where the sync buttons are. The re-detection (point 1) handles the "navigate away and back" case.
+
+5. **Sync both copies.** Changes to `src/visualize.py` MUST be copied to `personal_cycling_agent/src/visualize.py` before Docker rebuild.
