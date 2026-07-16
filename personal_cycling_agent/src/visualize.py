@@ -97,7 +97,7 @@ def _wait_for_task(bg, syncing_key="syncing", rearsing_key=None, sync_mode_key="
             log_placeholder = st.empty()
 
         # Seed initial state
-        log_placeholder.text_area("", value="Waiting...", height=200, label_visibility="collapsed", disabled=True)
+        log_placeholder.text_area("", value="Waiting...", height=200, label_visibility="collapsed", disabled=True, key=f"sync_log_{syncing_key}")
 
         while True:
             snapshot = bg.snapshot()
@@ -116,7 +116,7 @@ def _wait_for_task(bg, syncing_key="syncing", rearsing_key=None, sync_mode_key="
             # Show only last 50 lines to keep websocket frames small
             display_lines = list(reversed(log[-50:])) if log else ["Waiting..."]
             log_text = "\n".join(display_lines)
-            log_placeholder.text_area("", value=log_text, height=200, label_visibility="collapsed", disabled=True)
+            log_placeholder.text_area("", value=log_text, height=200, label_visibility="collapsed", disabled=True, key=f"sync_log_{syncing_key}")
 
             if snapshot["status"] == "completed":
                 result = snapshot.get("result", {})
