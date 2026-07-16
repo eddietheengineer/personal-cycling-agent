@@ -18,6 +18,7 @@ import os
 import sys
 import time
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Callable
 
 from src import config
@@ -1181,6 +1182,185 @@ def sync_garmin(
         "wellness_records": total_stored,
         "with_hrv": total_with_hrv,
     }
+
+
+def reparse_all_fit_files(
+    db_path: str | None = None,
+    progress_callback: "Callable[[int, str], None] | None" = None,
+) -> dict[str, int]:
+    """
+    Delete all activity streams and re-parse every local FIT file.
+
+    This is useful when the stream parsing logic has changed (e.g. dedup
+    fixes, NP formula changes) and you want to re-derive all metrics from
+    the already-downloaded FIT files without re-downloading from Garmin.
+
+    Returns dict with counts of activities processed and stream records stored.
+    """
+    if fitdecode is None:
+        raise RuntimeError("fitdecode not installed — cannot parse FIT files")
+
+    if db_path is None:
+        db_path = str(config.db_path("cycling_agent.sqlite"))
+
+    db = CyclingDB(db_path)
+
+    # Step 1: Delete all existing activity streams
+    logger.info("Deleting all existing activity streams...")
+    db.conn.execute("DELETE FROM activity_streams")
+    db.conn.commit()
+
+    # Step 2: Find all local FIT files
+    vault = config.vault_path()
+    fit_dir = vault / "raw" / "fit"
+    if not fit_dir.exists():
+        logger.warning(f"FIT directory does not exist: {fit_dir}")
+        db.close()
+        return {"activities_processed": 0, "stream_records": 0}
+
+    fit_files = sorted(fit_dir.glob("*.fit"))
+    logger.info(f"Found {len(fit_files)} local FIT files to re-parse")
+
+    if progress_callback is not None:
+        progress_callback(0, f"Found {len(fit_files)} FIT files to re-parse")
+
+    # Step 3: Parse each FIT file
+    total_processed = 0
+    total_stored = 0
+
+    for i, fit_path in enumerate(fit_files):
+        activity_id = int(fit_path.stem)
+
+        try:
+            stored = _parse_fit_file(activity_id, fit_path, db)
+            total_processed += 1
+            total_stored += stored
+        except Exception as e:
+            logger.warning(f"Failed to re-parse {fit_path.name}: {type(e).__name__}: {e}")
+            total_processed += 1
+
+        if progress_callback is not None:
+            pct = int(i / max(len(fit_files), 1) * 95)
+            progress_callback(
+                pct,
+                f"Re-parsing FIT: {fit_path.name} ({i + 1}/{len(fit_files)})",
+            )
+
+    db.close()
+
+    if progress_callback is not None:
+        progress_callback(100, f"Re-parsed {total_processed} activities, {total_stored} records")
+
+    logger.info(
+        f"Re-parse complete: {total_processed} activities processed, "
+        f"{total_stored} stream records stored"
+    )
+
+    return {
+        "activities_processed": total_processed,
+        "stream_records": total_stored,
+    }
+
+
+def _parse_fit_file(
+    activity_id: int,
+    fit_path: "Path",
+    db: CyclingDB,
+) -> int:
+    """Parse a single FIT file and store streams into the DB.
+
+    This is the local-file variant of _fetch_activity_streams — no network call.
+    """
+    power_values: list[tuple[float, float]] = []
+    hr_values: list[tuple[float, float]] = []
+    cadence_values: list[tuple[float, float]] = []
+    speed_values: list[tuple[float, float]] = []
+    altitude_values: list[tuple[float, float]] = []
+
+    first_ts: float | None = None
+
+    def _get_field(frame, name):
+        try:
+            return frame.get_field(name)
+        except KeyError:
+            return None
+
+    with fitdecode.FitReader(str(fit_path)) as fit:
+        for frame in fit:
+            if not isinstance(frame, fitdecode.FitDataMessage):
+                continue
+            if frame.name != "record":
+                continue
+
+            ts_field = _get_field(frame, "timestamp")
+            if ts_field is None or ts_field.value is None:
+                continue
+            ts = ts_field.value
+
+            if hasattr(ts, "timestamp"):
+                ts = ts.timestamp()
+
+            if first_ts is None:
+                first_ts = float(ts)
+
+            elapsed = float(ts) - first_ts
+
+            pwr_field = _get_field(frame, "power")
+            if pwr_field is not None and pwr_field.value is not None:
+                power_values.append((elapsed, float(pwr_field.value)))
+
+            hr_field = _get_field(frame, "heart_rate")
+            if hr_field is not None and hr_field.value is not None:
+                hr_values.append((elapsed, float(hr_field.value)))
+
+            cad_field = _get_field(frame, "cadence")
+            if cad_field is not None and cad_field.value is not None:
+                cadence_values.append((elapsed, float(cad_field.value)))
+
+            speed_field = _get_field(frame, "enhanced_speed")
+            if speed_field is None:
+                speed_field = _get_field(frame, "speed")
+            if speed_field is not None and speed_field.value is not None:
+                speed_values.append((elapsed, float(speed_field.value)))
+
+            alt_field = _get_field(frame, "enhanced_altitude")
+            if alt_field is None:
+                alt_field = _get_field(frame, "altitude")
+            if alt_field is not None and alt_field.value is not None:
+                altitude_values.append((elapsed, float(alt_field.value)))
+
+    if not any([power_values, hr_values, cadence_values, speed_values, altitude_values]):
+        logger.debug(f"No stream data in FIT file for activity {activity_id}")
+        return 0
+
+    total_stored = 0
+
+    for metric, values in [
+        ("power", power_values),
+        ("heart_rate", hr_values),
+        ("cadence", cadence_values),
+        ("speed", speed_values),
+        ("altitude", altitude_values),
+    ]:
+        if values:
+            # Deduplicate samples with identical elapsed times
+            if len(values) > 1:
+                seen: set[float] = set()
+                deduped: list[tuple[float, float]] = []
+                for t, v in values:
+                    if t not in seen:
+                        seen.add(t)
+                        deduped.append((t, v))
+                values = deduped
+            total_stored += db.store_activity_streams(str(activity_id), metric, values)
+
+    logger.info(
+        f"Parsed FIT for activity {activity_id}: "
+        f"{len(power_values)} power, {len(hr_values)} HR, "
+        f"{len(cadence_values)} cadence, {len(speed_values)} speed, "
+        f"{len(altitude_values)} altitude samples"
+    )
+    return total_stored
 
 if __name__ == "__main__":
     import sys as _sys

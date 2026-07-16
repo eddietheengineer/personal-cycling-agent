@@ -151,7 +151,7 @@ def _render_week_strip():
     plan = load_weekly_plan()
 
     # Header row with sync + generate buttons
-    h_cols = st.columns([4, 1, 1, 1])
+    h_cols = st.columns([4, 1, 1, 1, 1])
     with h_cols[0]:
         st.markdown("**7-Day Plan**", help="Shows today + next 6 days")
         if plan:
@@ -189,6 +189,19 @@ def _render_week_strip():
                 st.rerun()
             except Exception as e:
                 st.error(f"AI failed: {e}")
+    with h_cols[4]:
+        if st.button("🔁 Reparse", use_container_width=True, key="reparse_dash"):
+            try:
+                from src.ingestion.garmin_connect import reparse_all_fit_files
+                from src.main import run_analyze, run_prescribe
+                with st.spinner("Re-parsing all FIT files..."):
+                    reparse_all_fit_files()
+                    run_analyze()
+                    run_prescribe()
+                st.session_state.sync_done = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Reparse failed: {e}")
 
     if st.session_state.get("week_generated"):
         st.success("Plan generated!")
