@@ -151,7 +151,7 @@ def _render_week_strip():
     plan = load_weekly_plan()
 
     # Header row with sync + generate buttons
-    h_cols = st.columns([4, 1, 1, 1, 1])
+    h_cols = st.columns([4, 1, 1, 1])
     with h_cols[0]:
         st.markdown("**7-Day Plan**", help="Shows today + next 6 days")
         if plan:
@@ -189,19 +189,6 @@ def _render_week_strip():
                 st.rerun()
             except Exception as e:
                 st.error(f"AI failed: {e}")
-    with h_cols[4]:
-        if st.button("🔁 Reparse", use_container_width=True, key="reparse_dash"):
-            try:
-                from src.ingestion.garmin_connect import reparse_all_fit_files
-                from src.main import run_analyze, run_prescribe
-                with st.spinner("Re-parsing all FIT files..."):
-                    reparse_all_fit_files()
-                    run_analyze()
-                    run_prescribe()
-                st.session_state.sync_done = True
-                st.rerun()
-            except Exception as e:
-                st.error(f"Reparse failed: {e}")
 
     if st.session_state.get("week_generated"):
         st.success("Plan generated!")
@@ -1519,7 +1506,7 @@ def _render_garmin_setup():
     )
 
     # ── Historical sync ──────────────────────────────────────────────
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
         st.caption("Re-sync all historical data from Garmin (may take a while).")
     with col2:
@@ -1527,6 +1514,13 @@ def _render_garmin_setup():
             "Sync All Historical Data",
             disabled=not is_connected,
             key="sync_all_historical",
+        )
+    with col3:
+        reparse_clicked = st.button(
+            "🔁 Reparse FIT",
+            use_container_width=True,
+            help="Re-parse all local FIT files and recalculate metrics. No network calls.",
+            key="reparse_fit",
         )
     if sync_all_clicked:
         if not st.session_state.get("syncing"):
@@ -1597,6 +1591,53 @@ def _render_garmin_setup():
             st.session_state.sync_error = exc_str
         finally:
             st.session_state.syncing = False
+            st.rerun()
+
+    # ── Reparse FIT files ────────────────────────────────────────────
+    if reparse_clicked:
+        if not st.session_state.get("rearsing"):
+            st.session_state.rearsing = True
+            st.session_state.sync_log = []
+            st.session_state.sync_progress = 0
+            st.rerun()
+
+    if st.session_state.get("rearsing"):
+        if "sync_log" not in st.session_state:
+            st.session_state.sync_log = []
+        if "sync_progress" not in st.session_state:
+            st.session_state.sync_progress = 0
+
+        def progress_callback(pct: int, message: str) -> None:
+            st.session_state.sync_log.append(f"[{pct}%] {message}")
+            st.session_state.sync_progress = pct
+
+        with st.container():
+            st.subheader("Re-parsing FIT Files")
+            st.progress(st.session_state.sync_progress / 100.0)
+            if st.session_state.sync_log:
+                st.info(st.session_state.sync_log[-1])
+            else:
+                st.info("Starting re-parse...")
+
+        try:
+            from src.ingestion.garmin_connect import reparse_all_fit_files
+            from src.main import run_analyze
+            progress_callback(0, "Deleting existing stream data...")
+            result = reparse_all_fit_files(
+                db_path=str(config.db_path("cycling_agent.sqlite")),
+                progress_callback=progress_callback,
+            )
+            progress_callback(90, "Running analytics...")
+            run_analyze()
+            progress_callback(100, f"Done. {result['activities_processed']} activities, {result['stream_records']} records.")
+            st.session_state.sync_result = {
+                "reparse": result,
+            }
+        except Exception as exc:
+            st.session_state.sync_log.append(f"Error: {exc}")
+            st.session_state.sync_error = str(exc)
+        finally:
+            st.session_state.rearsing = False
             st.rerun()
 
     # ── Show sync errors ──────────────────────────────────────────────
