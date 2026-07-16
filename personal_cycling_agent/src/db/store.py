@@ -103,6 +103,73 @@ class CyclingDB:
         self.conn.commit()
 
 
+    def _migrate_raw_tables(self):
+        """Backfill raw_activities from existing activities table data."""
+        c = self.conn.cursor()
+
+        # Check if activities table exists
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='activities'")
+        if c.fetchone() is None:
+            return  # no activities table to backfill from
+
+        # Check if raw_activities table exists
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='raw_activities'")
+        if c.fetchone() is None:
+            return  # raw_activities not yet created
+
+        # Check if we already backfilled (check for any garmin_ prefixed IDs)
+        c.execute("SELECT COUNT(*) FROM raw_activities")
+        existing_count = c.fetchone()[0]
+        if existing_count > 0:
+            return  # already has data, skip backfill
+
+        # Backfill raw_activities from existing activities table
+        rows = c.execute("""
+            SELECT id, start_date, activity_type, duration, distance,
+                   average_power, max_power, average_hr, max_hr,
+                   calories, tss, normalized_power
+            FROM activities
+        """).fetchall()
+
+        backfilled = 0
+        for row in rows:
+            garmin_id_str = row[0]  # "garmin_12345"
+            if not garmin_id_str.startswith("garmin_"):
+                continue
+            try:
+                garmin_id = int(garmin_id_str[len("garmin_"):])
+            except (ValueError, TypeError):
+                continue
+
+            c.execute(
+                """INSERT OR IGNORE INTO raw_activities
+                    (garmin_id, start_time_local, activity_type_key,
+                     duration_ms, distance_cm, avg_power, max_power,
+                     avg_heart_rate, max_heart_rate, calories,
+                     training_stress_score, norm_power, synced_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                (
+                    garmin_id,
+                    row[1],  # start_date
+                    row[2],  # activity_type
+                    (row[3] * 1000) if row[3] else None,  # duration -> ms
+                    (row[4] * 100) if row[4] else None,   # distance -> cm
+                    row[5],  # avg_power
+                    row[6],  # max_power
+                    row[7],  # avg_hr
+                    row[8],  # max_hr
+                    row[9],  # calories
+                    row[10], # tss
+                    row[11], # normalized_power
+                ),
+            )
+            backfilled += 1
+
+        if backfilled:
+            logger.info(f"Backfilled {backfilled} rows into raw_activities from existing activities")
+
+        self.conn.commit()
+
     def _create_tables(self):
         self._migrate_wellness()
         self._migrate_activity_metrics()
@@ -225,6 +292,48 @@ class CyclingDB:
             )
         """)
 
+        # Raw data tables (immutable, append-only)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS raw_activities (
+                garmin_id              INTEGER PRIMARY KEY,
+                start_time_local       TEXT    NOT NULL,
+                activity_type_key      TEXT,
+                duration_ms            REAL,
+                distance_cm            REAL,
+                avg_power              REAL,
+                max_power              REAL,
+                avg_heart_rate         REAL,
+                max_heart_rate         REAL,
+                calories               REAL,
+                training_stress_score  REAL,
+                norm_power             REAL,
+                moving_duration_ms     REAL,
+                elapsed_duration_ms    REAL,
+                elevation_gain         REAL,
+                steps                  REAL,
+                intensity              REAL,
+                raw_json               TEXT,
+                synced_at              TEXT   NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS raw_fit_sessions (
+                garmin_id              INTEGER PRIMARY KEY,
+                total_elapsed_time_ms  REAL,
+                total_distance_m       REAL,
+                sport                  TEXT,
+                avg_heart_rate         REAL,
+                max_heart_rate         REAL,
+                total_calories         REAL,
+                avg_cadence            REAL,
+                max_cadence            REAL,
+                avg_power              REAL,
+                max_power              REAL,
+                parsed_at              TEXT   NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
         # --- New tables for ML model and prescription engine ---
 
         c.execute("""
@@ -341,6 +450,8 @@ class CyclingDB:
         c.execute("CREATE INDEX IF NOT EXISTS idx_validation_log_date ON validation_log(target_date)")
 
         self.conn.commit()
+        # Run raw tables migration after all tables exist
+        self._migrate_raw_tables()
 
     # -- Wellness --
 
@@ -525,6 +636,171 @@ class CyclingDB:
 
         query += " ORDER BY start_date DESC"
         return self.conn.execute(query, params).fetchall()
+
+    # -- Raw Data Store (immutable, append-only) --
+
+    def store_raw_activity(self, garmin_id: int, data: dict[str, Any]) -> None:
+        """Store a raw Garmin API activity summary. UPSERT on garmin_id."""
+        import json
+        self.conn.execute(
+            """INSERT OR REPLACE INTO raw_activities
+                (garmin_id, start_time_local, activity_type_key,
+                 duration_ms, distance_cm, avg_power, max_power,
+                 avg_heart_rate, max_heart_rate, calories,
+                 training_stress_score, norm_power,
+                 moving_duration_ms, elapsed_duration_ms,
+                 elevation_gain, steps, intensity,
+                 raw_json, synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (
+                garmin_id,
+                data.get("startTimeLocal", ""),
+                data.get("activityTypeKey"),
+                data.get("duration"),
+                data.get("distance"),
+                data.get("avgPower"),
+                data.get("maxPower"),
+                data.get("avgHeartRate"),
+                data.get("maxHeartRate"),
+                data.get("calories"),
+                data.get("trainingStressScore"),
+                data.get("normPower"),
+                data.get("movingDuration"),
+                data.get("elapsedDuration"),
+                data.get("elevationGain"),
+                data.get("steps"),
+                data.get("intensity"),
+                json.dumps(data),
+            ),
+        )
+        self.conn.commit()
+
+    def store_raw_fit_session(self, garmin_id: int, data: dict[str, Any]) -> None:
+        """Store raw FIT session metrics. UPSERT on garmin_id."""
+        self.conn.execute(
+            """INSERT OR REPLACE INTO raw_fit_sessions
+                (garmin_id, total_elapsed_time_ms, total_distance_m,
+                 sport, avg_heart_rate, max_heart_rate, total_calories,
+                 avg_cadence, max_cadence, avg_power, max_power, parsed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+            (
+                garmin_id,
+                data.get("total_elapsed_time_ms"),
+                data.get("total_distance_m"),
+                data.get("sport"),
+                data.get("avg_heart_rate"),
+                data.get("max_heart_rate"),
+                data.get("total_calories"),
+                data.get("avg_cadence"),
+                data.get("max_cadence"),
+                data.get("avg_power"),
+                data.get("max_power"),
+            ),
+        )
+        self.conn.commit()
+
+    def refresh_activities(self) -> int:
+        """Rebuild the activities table from raw data.
+
+        For each garmin_id in raw_activities:
+        - Start with API values (duration_ms/1000, distance_cm/100)
+        - Override with FIT session values if available and reasonable
+        - Override duration with stream-derived duration_sec from activity_metrics
+        - Store result in activities table as garmin_{garmin_id}
+
+        Returns the number of activities refreshed.
+        """
+        rows = self.conn.execute(
+            "SELECT * FROM raw_activities ORDER BY garmin_id"
+        ).fetchall()
+
+        # Pre-fetch all FIT session data
+        fit_rows = self.conn.execute(
+            "SELECT * FROM raw_fit_sessions"
+        ).fetchall()
+        fit_by_id: dict[int, dict] = {}
+        for fr in fit_rows:
+            fit_by_id[fr["garmin_id"]] = dict(fr)
+
+        # Pre-fetch all activity metrics for duration_sec
+        metrics_rows = self.conn.execute(
+            "SELECT activity_id, duration_sec FROM activity_metrics"
+        ).fetchall()
+        metrics_by_id: dict[str, dict] = {}
+        for mr in metrics_rows:
+            metrics_by_id[mr["activity_id"]] = dict(mr)
+
+        refreshed = 0
+        for row in rows:
+            garmin_id = row["garmin_id"]
+            db_id = f"garmin_{garmin_id}"
+
+            # Start with API values
+            duration = (row["duration_ms"] or 0) / 1000.0
+            distance = (row["distance_cm"] or 0) / 100.0
+            avg_power = row["avg_power"]
+            max_power = row["max_power"]
+            avg_hr = row["avg_heart_rate"]
+            max_hr = row["max_heart_rate"]
+            calories = row["calories"]
+            tss = row["training_stress_score"]
+            norm_power = row["norm_power"]
+            activity_type = row["activity_type_key"]
+            start_date = row["start_time_local"]
+
+            # Override with FIT session values if available
+            fit = fit_by_id.get(garmin_id)
+            if fit:
+                # FIT HR/power are more accurate than API
+                if fit["avg_heart_rate"] is not None:
+                    avg_hr = fit["avg_heart_rate"]
+                if fit["max_heart_rate"] is not None:
+                    max_hr = fit["max_heart_rate"]
+                if fit["avg_power"] is not None:
+                    avg_power = fit["avg_power"]
+                if fit["max_power"] is not None:
+                    max_power = fit["max_power"]
+                if fit["total_calories"] is not None:
+                    calories = fit["total_calories"]
+                if fit["total_elapsed_time_ms"] is not None:
+                    fit_dur = fit["total_elapsed_time_ms"] / 1000.0
+                    if fit_dur > 0:
+                        duration = fit_dur
+                if fit["total_distance_m"] is not None:
+                    if fit["total_distance_m"] > 0:
+                        distance = fit["total_distance_m"]
+
+            # Override duration with stream-derived duration_sec (most accurate)
+            am = metrics_by_id.get(db_id)
+            if am and am.get("duration_sec") is not None and am["duration_sec"] > 0:
+                duration = am["duration_sec"]
+
+            self.conn.execute(
+                """INSERT OR REPLACE INTO activities
+                    (id, start_date, activity_type, duration, distance,
+                     average_power, max_power, average_hr, max_hr,
+                     calories, tss, normalized_power, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                (
+                    db_id,
+                    start_date,
+                    activity_type,
+                    duration,
+                    distance,
+                    avg_power,
+                    max_power,
+                    avg_hr,
+                    max_hr,
+                    calories,
+                    tss,
+                    norm_power,
+                ),
+            )
+            refreshed += 1
+
+        self.conn.commit()
+        logger.info(f"Refreshed {refreshed} activities from raw data")
+        return refreshed
 
     # -- Activity Streams --
 

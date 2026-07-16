@@ -137,6 +137,12 @@ def run_analyze() -> dict:
     logger.info("Starting analytics...")
 
     with CyclingDB(DB_PATH) as db:
+        # Rebuild activities table from raw data before computing metrics
+        try:
+            db.refresh_activities()
+        except Exception as e:
+            logger.warning(f"Failed to refresh activities: {e}")
+
         # --- Readiness ---
         wellness_records = db.get_wellness()
         if not wellness_records:

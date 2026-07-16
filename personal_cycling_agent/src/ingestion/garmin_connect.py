@@ -478,6 +478,18 @@ def _fetch_activity_streams(
 
         first_ts: float | None = None
 
+        # Session-level metrics from FIT (ground truth)
+        fit_duration_ms: float | None = None
+        fit_distance_m: float | None = None
+        fit_sport: str | None = None
+        fit_avg_hr: float | None = None
+        fit_max_hr: float | None = None
+        fit_calories: float | None = None
+        fit_avg_cadence: float | None = None
+        fit_max_cadence: float | None = None
+        fit_avg_power: float | None = None
+        fit_max_power: float | None = None
+
         def _get_field(frame, name):
             try:
                 return frame.get_field(name)
@@ -488,6 +500,49 @@ def _fetch_activity_streams(
             for frame in fit:
                 if not isinstance(frame, fitdecode.FitDataMessage):
                     continue
+
+                # Extract session-level metrics
+                if frame.name == "session":
+                    ef = _get_field(frame, "total_elapsed_time")
+                    if ef is not None and ef.value is not None:
+                        fit_duration_ms = float(ef.value)  # raw FIT value in 1/1000s
+
+                    ed = _get_field(frame, "total_distance")
+                    if ed is not None and ed.value is not None:
+                        fit_distance_m = float(ed.value)
+
+                    es = _get_field(frame, "sport")
+                    if es is not None and es.value is not None:
+                        fit_sport = str(es.value)
+
+                    eahr = _get_field(frame, "avg_heart_rate")
+                    if eahr is not None and eahr.value is not None:
+                        fit_avg_hr = float(eahr.value)
+
+                    emhr = _get_field(frame, "max_heart_rate")
+                    if emhr is not None and emhr.value is not None:
+                        fit_max_hr = float(emhr.value)
+
+                    ecal = _get_field(frame, "total_calories")
+                    if ecal is not None and ecal.value is not None:
+                        fit_calories = float(ecal.value)
+
+                    eac = _get_field(frame, "avg_cadence")
+                    if eac is not None and eac.value is not None:
+                        fit_avg_cadence = float(eac.value)
+
+                    emc = _get_field(frame, "max_cadence")
+                    if emc is not None and emc.value is not None:
+                        fit_max_cadence = float(emc.value)
+
+                    epwr_avg = _get_field(frame, "avg_power")
+                    if epwr_avg is not None and epwr_avg.value is not None:
+                        fit_avg_power = float(epwr_avg.value)
+
+                    epwr_max = _get_field(frame, "max_power")
+                    if epwr_max is not None and epwr_max.value is not None:
+                        fit_max_power = float(epwr_max.value)
+
                 if frame.name != "record":
                     continue
 
@@ -528,6 +583,23 @@ def _fetch_activity_streams(
                     alt_field = _get_field(frame, "altitude")
                 if alt_field is not None and alt_field.value is not None:
                     altitude_values.append((elapsed, float(alt_field.value)))
+
+        # Store raw FIT session metrics (immutable)
+        try:
+            db.store_raw_fit_session(activity_id, {
+                "total_elapsed_time_ms": fit_duration_ms,
+                "total_distance_m": fit_distance_m,
+                "sport": fit_sport,
+                "avg_heart_rate": fit_avg_hr,
+                "max_heart_rate": fit_max_hr,
+                "total_calories": fit_calories,
+                "avg_cadence": fit_avg_cadence,
+                "max_cadence": fit_max_cadence,
+                "avg_power": fit_avg_power,
+                "max_power": fit_max_power,
+            })
+        except Exception as e:
+            logger.warning(f"Failed to store raw FIT session {activity_id}: {e}")
 
         if not any([power_values, hr_values, cadence_values, speed_values, altitude_values]):
             logger.debug(f"No stream data in FIT file for activity {activity_id}")
@@ -742,10 +814,18 @@ def _sync_activities_batch(
 
     logger.info(f"Phase 1 complete: {len(new_activities)} new activities to process")
 
-    # --- Phase 1.5: Store Activity Summaries ---
+    # --- Phase 1.5: Store Raw API Data and Activity Summaries ---
     if new_activities:
         store_records = []
         for activity in new_activities:
+            # Store raw Garmin API data (immutable)
+            activity_id = activity.get("activityId")
+            if activity_id is not None:
+                try:
+                    db.store_raw_activity(activity_id, activity)
+                except Exception as e:
+                    logger.warning(f"Failed to store raw activity {activity_id}: {e}")
+
             rec = _garmin_activity_to_store_format(activity)
             if rec is not None:
                 store_records.append(rec)
@@ -813,6 +893,13 @@ def _sync_activities_batch(
             last_activity_date or datetime.now().date().isoformat(),
             resume_offset=0,
         )
+
+    # --- Phase 3: Rebuild activities table from raw data ---
+    try:
+        refreshed = db.refresh_activities()
+        logger.info(f"Phase 3: Refreshed {refreshed} activities from raw data")
+    except Exception as e:
+        logger.warning(f"Failed to refresh activities: {e}")
 
     logger.info(
         f"Phase 2 complete: {total_processed} activities processed, "
@@ -1273,6 +1360,13 @@ def reparse_all_fit_files(
                 f"Re-parsing FIT: {fit_path.name} ({i + 1}/{len(fit_files)})",
             )
 
+    # Rebuild activities table from raw data
+    try:
+        refreshed = db.refresh_activities()
+        logger.info(f"Refreshed {refreshed} activities after re-parse")
+    except Exception as e:
+        logger.warning(f"Failed to refresh activities after re-parse: {e}")
+
     db.close()
 
     if progress_callback is not None:
@@ -1296,10 +1390,9 @@ def _parse_fit_file(
 ) -> int:
     """Parse a single FIT file and store streams into the DB.
 
-    Also extracts session-level metrics (duration, distance, sport, HR, calories)
-    from the FIT file and uses them to correct the activities table. The FIT file
-    is the ground truth — Garmin API summaries can be wrong (e.g., daily step
-    aggregates mislabeled as rides).
+    Extracts session-level metrics from the FIT file and stores them in
+    raw_fit_sessions (immutable). The activities table is rebuilt by
+    refresh_activities() from raw_activities + raw_fit_sessions + activity_metrics.
     """
     power_values: list[tuple[float, float]] = []
     hr_values: list[tuple[float, float]] = []
@@ -1337,7 +1430,7 @@ def _parse_fit_file(
             if frame.name == "session":
                 ef = _get_field(frame, "total_elapsed_time")
                 if ef is not None and ef.value is not None:
-                    fit_duration = float(ef.value)
+                    fit_duration = float(ef.value) / 1000.0  # FIT total_elapsed_time is in 1/1000s
 
                 ed = _get_field(frame, "total_distance")
                 if ed is not None and ed.value is not None:
@@ -1416,43 +1509,27 @@ def _parse_fit_file(
             if alt_field is not None and alt_field.value is not None:
                 altitude_values.append((elapsed, float(alt_field.value)))
 
-    # Map FIT sport to activity type
-    sport_type_map = {
-        "cycling": "Ride",
-        "running": "Run",
-        "walking": "Walk",
-        "swimming": "Swim",
-        "indoor_cycling": "Indoor Cycle",
-        "strength": "Strength Training",
-        "fitness_equipment": "Fitness Equipment",
+    # Store raw FIT session metrics (immutable, append-only)
+    fit_session_data = {
+        "total_elapsed_time_ms": (fit_duration * 1000) if fit_duration is not None else None,
+        "total_distance_m": fit_distance,
+        "sport": fit_sport,
+        "avg_heart_rate": fit_avg_hr,
+        "max_heart_rate": fit_max_hr,
+        "total_calories": fit_calories,
+        "avg_cadence": fit_avg_cadence,
+        "max_cadence": fit_max_cadence,
+        "avg_power": fit_avg_power,
+        "max_power": fit_max_power,
     }
+    try:
+        db.store_raw_fit_session(activity_id, fit_session_data)
+    except Exception as e:
+        logger.warning(f"Failed to store raw FIT session {activity_id}: {e}")
 
-    # Correct activities table from FIT ground truth
-    db_id = f"garmin_{activity_id}"
-    updates = {}
-    if fit_duration is not None:
-        updates["duration"] = fit_duration
-    if fit_distance is not None:
-        updates["distance"] = fit_distance
-    if fit_sport is not None:
-        updates["activity_type"] = sport_type_map.get(fit_sport, fit_sport.title())
-    if fit_avg_hr is not None:
-        updates["average_hr"] = fit_avg_hr
-    if fit_max_hr is not None:
-        updates["max_hr"] = fit_max_hr
-    if fit_calories is not None:
-        updates["calories"] = fit_calories
-    if fit_avg_power is not None:
-        updates["average_power"] = fit_avg_power
-    if fit_max_power is not None:
-        updates["max_power"] = fit_max_power
-
-    if updates:
-        set_clause = ", ".join(f"{k} = ?" for k in updates)
-        values = list(updates.values()) + [db_id]
-        db.conn.execute(f"UPDATE activities SET {set_clause} WHERE id = ?", values)
-        db.conn.commit()
-        logger.info(f"Corrected {db_id} from FIT: {list(updates.keys())}")
+    # The activities table is now rebuilt by refresh_activities() from
+    # raw_activities + raw_fit_sessions + activity_metrics.
+    # We no longer directly UPDATE the activities table here.
 
     if not any([power_values, hr_values, cadence_values, speed_values, altitude_values]):
         logger.debug(f"No stream data in FIT file for activity {activity_id}")
