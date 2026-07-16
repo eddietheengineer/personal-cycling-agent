@@ -1086,17 +1086,26 @@ def sync_garmin(
     )
     missing_dates = [d for d in sync_dates if d.strftime("%Y-%m-%d") not in existing_dates]
 
+    # Further narrow: only days that have weight or steps data from bulk fetch.
+    # Days without any bulk data have no watch worn — skip HRV/sleep/stats calls.
+    bulk_dates = set(weight_by_date.keys()) | set(steps_by_date.keys())
+    fetch_dates = [d for d in missing_dates if d.strftime("%Y-%m-%d") in bulk_dates]
+
+    skipped_existing = len(missing_dates) - len(fetch_dates)
+    if skipped_existing > 0:
+        logger.info(
+            f"Skipping {skipped_existing} days with no Garmin data (watch not worn), "
+            f"fetching {len(fetch_dates)} days with data"
+        )
     if existing_dates:
         logger.info(
-            f"Skipping {len(existing_dates)} days with existing data, "
-            f"fetching {len(missing_dates)} missing days"
+            f"Also skipping {len(existing_dates)} days already in DB"
         )
 
     total_stored = 0
     total_with_hrv = 0
 
-    for i, d in enumerate(missing_dates):
-        target_str = d.strftime("%Y-%m-%d")
+    for i, d in enumerate(fetch_dates):
 
         # Fetch HRV
         rmssd = None
@@ -1161,8 +1170,8 @@ def sync_garmin(
             logger.info(f"No wellness data for {target_str}")
             db.set_last_synced("garmin_wellness", target_str)
             if progress_callback is not None:
-                pct = 10 + int(i / max(len(missing_dates), 1) * 80)
-                progress_callback(min(pct, 95), f"Wellness: {target_str} ({i+1}/{len(missing_dates)} days)")
+                pct = 10 + int(i / max(len(fetch_dates), 1) * 80)
+                progress_callback(min(pct, 95), f"Wellness: {target_str} ({i+1}/{len(fetch_dates)} days)")
             time.sleep(0.5)
             continue
 
@@ -1190,8 +1199,8 @@ def sync_garmin(
         )
 
         if progress_callback is not None:
-            pct = 10 + int(i / max(len(missing_dates), 1) * 80)
-            progress_callback(min(pct, 95), f"Wellness: {target_str} ({i+1}/{len(missing_dates)} days)")
+            pct = 10 + int(i / max(len(fetch_dates), 1) * 80)
+            progress_callback(min(pct, 95), f"Wellness: {target_str} ({i+1}/{len(fetch_dates)} days)")
 
         time.sleep(0.5)
 
