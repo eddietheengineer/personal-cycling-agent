@@ -1470,9 +1470,11 @@ def _render_garmin_setup():
     auth_instance = st.session_state.get("garmin_auth_instance", None)
     auth_error = st.session_state.get("garmin_auth_error", "")
 
-    # Determine effective connection status: connected only if we have
+    # Determine effective connection status: connected if we have
     # credentials AND either a successful auth state or cached tokens
-    is_connected = auth_state == "connected"
+    # (use _check_garmin_connected so Settings tab matches Dashboard)
+    has_cached_tokens = _check_garmin_connected()
+    is_connected = auth_state == "connected" or (has_credentials and has_cached_tokens)
 
     # ── Auth status display ──────────────────────────────────────────
     if is_connected:
