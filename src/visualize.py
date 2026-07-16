@@ -142,8 +142,12 @@ def _render_sync_progress() -> None:
 
     # Block-wait for Garmin sync
     if syncing and sync_mode != "prescribe":
-        from src.tasks.worker import background_sync as _get_bg_sync
-        bg = _get_bg_sync()
+        from src.tasks.worker import get_default_sync
+        bg = get_default_sync()
+        if bg is None:
+            # Stale session state (e.g., container restart) — clear and exit
+            st.session_state.syncing = False
+            st.rerun()
         result = _wait_for_task(bg, syncing_key="syncing")
 
         if result is not None:

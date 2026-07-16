@@ -319,6 +319,10 @@ def background_task(target: Callable[["Callable[[int, str], None]"], Any], resul
 
     return _default_task
 
+def get_default_sync() -> BackgroundSync | None:
+    """Get the default background sync instance without starting a new one."""
+    return _default_sync
+
 
 def get_default_task() -> BackgroundTask | None:
     """Get the default background task instance without starting a new one."""
@@ -340,10 +344,17 @@ def background_sync(
     """Start or get the default background sync instance.
 
     Convenience function for use in Streamlit pages.
+    Preserves the singleton if it has a completed result so the caller
+    can still collect it after navigating away and back.
     """
     global _default_sync
-    if _default_sync is None or not _default_sync.is_running:
+    if _default_sync is None:
         _default_sync = BackgroundSync()
+    elif not _default_sync.is_running:
+        # Only replace if there's no pending result to collect
+        snap = _default_sync.snapshot()
+        if snap["status"] not in ("completed", "failed"):
+            _default_sync = BackgroundSync()
 
     if not _default_sync.is_running:
         _default_sync.start(
