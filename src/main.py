@@ -97,7 +97,7 @@ def _get_resting_hr_for_date(
     return None
 
 
-def _deduplicate_samples(rows: list[Any]) -> list[float]:
+def _deduplicate_samples(rows: list) -> list[float]:
     """
     Extract values from stream rows, deduplicating by elapsed time.
 
