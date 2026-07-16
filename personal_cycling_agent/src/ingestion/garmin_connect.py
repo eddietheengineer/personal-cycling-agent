@@ -1079,10 +1079,23 @@ def sync_garmin(
         progress_callback(10, "Bulk data fetched, now fetching HRV and sleep...")
 
     # --- Per-day fetch HRV and sleep ---
+    # Only fetch days that don't already have wellness records in the DB
+    existing_dates = db.get_wellness_dates(
+        oldest=sync_dates[-1].strftime("%Y-%m-%d"),
+        newest=sync_dates[0].strftime("%Y-%m-%d"),
+    )
+    missing_dates = [d for d in sync_dates if d.strftime("%Y-%m-%d") not in existing_dates]
+
+    if existing_dates:
+        logger.info(
+            f"Skipping {len(existing_dates)} days with existing data, "
+            f"fetching {len(missing_dates)} missing days"
+        )
+
     total_stored = 0
     total_with_hrv = 0
 
-    for i, d in enumerate(sync_dates):
+    for i, d in enumerate(missing_dates):
         target_str = d.strftime("%Y-%m-%d")
 
         # Fetch HRV
@@ -1148,8 +1161,8 @@ def sync_garmin(
             logger.info(f"No wellness data for {target_str}")
             db.set_last_synced("garmin_wellness", target_str)
             if progress_callback is not None:
-                pct = 10 + int(i / max(len(sync_dates), 1) * 80)
-                progress_callback(min(pct, 95), f"Wellness: {target_str} ({i+1}/{len(sync_dates)} days)")
+                pct = 10 + int(i / max(len(missing_dates), 1) * 80)
+                progress_callback(min(pct, 95), f"Wellness: {target_str} ({i+1}/{len(missing_dates)} days)")
             time.sleep(0.5)
             continue
 
@@ -1177,8 +1190,8 @@ def sync_garmin(
         )
 
         if progress_callback is not None:
-            pct = 10 + int(i / max(len(sync_dates), 1) * 80)
-            progress_callback(min(pct, 95), f"Wellness: {target_str} ({i+1}/{len(sync_dates)} days)")
+            pct = 10 + int(i / max(len(missing_dates), 1) * 80)
+            progress_callback(min(pct, 95), f"Wellness: {target_str} ({i+1}/{len(missing_dates)} days)")
 
         time.sleep(0.5)
 
@@ -1505,26 +1518,41 @@ if __name__ == "__main__":
     else:
         last_date = today - timedelta(days=1)
 
+    # Build list of dates to sync (going backwards from yesterday)
+    sync_dates: list[date] = []
+    current_date = last_date - timedelta(days=1)
+    for _ in range(days):
+        sync_dates.append(current_date)
+        current_date -= timedelta(days=1)
+
+    # Only fetch days that don't already have wellness records
+    existing_dates = db.get_wellness_dates(
+        oldest=sync_dates[-1].strftime("%Y-%m-%d"),
+        newest=sync_dates[0].strftime("%Y-%m-%d"),
+    )
+    missing_dates = [d for d in sync_dates if d.strftime("%Y-%m-%d") not in existing_dates]
+
+    if existing_dates:
+        logger.info(
+            f"Skipping {len(existing_dates)} days with existing data, "
+            f"fetching {len(missing_dates)} missing days"
+        )
+
     total_stored = 0
     total_with_hrv = 0
-    current_date = last_date - timedelta(days=1)
-    days_synced = 0
 
-    while days_synced < days:
-        target_str = current_date.strftime("%Y-%m-%d")
+    for d in missing_dates:
+        target_str = d.strftime("%Y-%m-%d")
         logger.info(f"Syncing wellness for {target_str}")
         record = fetch_wellness_for_date(client, target_str)
         if record is None:
             logger.info(f"No wellness data for {target_str}")
-            db.set_last_synced("garmin_wellness", target_str)
         else:
             stored = db.store_wellness([record])
-            db.set_last_synced("garmin_wellness", target_str)
             with_hrv = 1 if record.get("rmssd") is not None else 0
             total_stored += stored
             total_with_hrv += with_hrv
-        current_date -= timedelta(days=1)
-        days_synced += 1
+        db.set_last_synced("garmin_wellness", target_str)
         time.sleep(0.5)
 
     db.close()

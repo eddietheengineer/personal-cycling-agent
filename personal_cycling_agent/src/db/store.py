@@ -435,6 +435,24 @@ class CyclingDB:
             "SELECT * FROM wellness ORDER BY date DESC LIMIT 1"
         ).fetchone()
 
+    def get_wellness_dates(self, oldest: str | None = None, newest: str | None = None) -> set[str]:
+        """Return the set of dates that have wellness records, optionally filtered."""
+        query = "SELECT date FROM wellness"
+        params: list[Any] = []
+
+        if oldest and newest:
+            query += " WHERE date >= ? AND date <= ?"
+            params = [oldest, newest]
+        elif oldest:
+            query += " WHERE date >= ?"
+            params = [oldest]
+        elif newest:
+            query += " WHERE date <= ?"
+            params = [newest]
+
+        rows = self.conn.execute(query, params).fetchall()
+        return {row["date"] for row in rows}
+
     # -- Activities --
 
     def store_activities(self, records: list[dict[str, Any]]) -> int:
