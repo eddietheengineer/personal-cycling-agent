@@ -60,7 +60,21 @@ from src.ui_helpers import (
 
 def _sync_progress_callback(pct: int, msg: str) -> None:
     """Write progress to session state. Called ONLY from main thread."""
-    st.session_state.sync_log.append(f"[{pct}%] {msg}")
+    entry = f"[{pct}%] {msg}"
+    log = st.session_state.sync_log
+    # Skip if the last log entry has the same message text (different pct only)
+    if log:
+        last_msg = log[-1].split("] ", 1)[-1] if "] " in log[-1] else log[-1]
+        if last_msg == msg:
+            # Update progress without duplicating the log line
+            log[-1] = entry
+            st.session_state.sync_log = log
+            st.session_state.sync_progress = pct
+            return
+    log.append(entry)
+    # Cap log to avoid websocket frame overflow on long historical syncs
+    if len(log) > 500:
+        st.session_state.sync_log = log[-500:]
     st.session_state.sync_progress = pct
 
 
@@ -99,7 +113,9 @@ def _wait_for_task(bg, syncing_key="syncing", rearsing_key=None, sync_mode_key="
 
             # Update log text in-place — newest first so latest is always visible
             log = st.session_state.get("sync_log", [])
-            log_text = "\n".join(reversed(log)) if log else "Waiting..."
+            # Show only last 50 lines to keep websocket frames small
+            display_lines = list(reversed(log[-50:])) if log else ["Waiting..."]
+            log_text = "\n".join(display_lines)
             log_placeholder.text_area("", value=log_text, height=200, label_visibility="collapsed", disabled=True)
 
             if snapshot["status"] == "completed":
