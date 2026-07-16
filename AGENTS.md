@@ -28,6 +28,22 @@ For local development without pushing to GitHub after every change:
 3. Run **Terminal → Run Task → Start Home Assistant**.
 4. Open `http://localhost:7123` — your add-on is available as a local add-on.
 5. Edit files in VS Code and click **Rebuild** in the local HA UI.
+### Option C: Docker container (active deployment)
+
+The app runs in a Docker container named `pca` (image `pca-test`) on port 8501. The source code is baked into the image — it does **not** volume-mount the source directory.
+
+**After any code change to `src/`, you MUST rebuild and restart the container:**
+
+```bash
+cd ~/personal-cycling-agent/personal_cycling_agent
+docker build -t pca-test .
+docker stop pca && docker rm pca
+docker run -d --name pca -p 8501:8501 -v /home/joshua/cycling-agent-data:/data pca-test
+```
+
+The data directory (`/home/joshua/cycling-agent-data`) is mounted as `/data` inside the container, so the database and FIT files persist across rebuilds.
+
+**Do not skip this step.** A `docker restart pca` is insufficient — it restarts the old image. The full rebuild cycle is required.
 
 ## Garmin Authentication (garmin-auth 0.3.0)
 
