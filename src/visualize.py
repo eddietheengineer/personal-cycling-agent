@@ -92,6 +92,14 @@ def _wait_for_task(bg, syncing_key="syncing", rearsing_key=None, sync_mode_key="
         # Create stable placeholders that update in-place each loop iteration
         progress_placeholder = st.empty()
 
+        # Cancel button
+        if st.button("⏹ Stop Sync", key=f"stop_{syncing_key}", type="secondary", use_container_width=True):
+            st.session_state[syncing_key] = False
+            if rearsing_key is not None:
+                st.session_state[rearsing_key] = False
+            bg.cancel()
+            st.rerun()
+
         # Create log expander once, with an empty placeholder inside
         with st.expander("Sync Log", expanded=True):
             log_placeholder = st.empty()
