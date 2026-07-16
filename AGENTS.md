@@ -50,6 +50,19 @@ docker run -d --name pca -p 8501:8501 \
 
 **Do not skip this step.** A `docker restart pca` is insufficient — it restarts the old image. The full rebuild cycle is required.
 
+### After Every Commit
+
+**MUST do a force clean rebuild after every commit and push.** Docker layer caching silently serves stale code — `docker build` without `--no-cache` will report success but ship old files. The sequence is:
+
+1. `git commit` + `git push`
+2. `docker image rm pca-test` (remove old image to prevent cache reuse)
+3. `docker build --no-cache -t pca-test .` (clean rebuild)
+4. `docker stop pca && docker rm pca` (remove running container)
+5. `docker run -d --name pca -p 8501:8501 -v /home/joshua/cycling-agent-data:/data -e CYCLING_AGENT_VAULT=/data pca-test`
+6. Verify the container has the new code: `docker exec pca head -5 /app/src/<changed_file>`
+
+**Never skip steps 2 or 6.** Step 2 prevents Docker from reusing cached layers. Step 6 confirms the running container actually has the new code before declaring the commit done.
+
 ## Garmin Authentication (garmin-auth 0.3.0)
 
 This project uses `garmin-auth` 0.3.0 for Garmin Connect authentication. The API has specific patterns for MFA handling that must be followed to avoid breaking the auth flow.
