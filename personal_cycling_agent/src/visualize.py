@@ -84,16 +84,37 @@ def _wait_for_task(bg, syncing_key="syncing", rearsing_key=None, sync_mode_key="
     Uses st.status() for live progress updates. Blocks the main thread until
     the background task completes or fails.
 
+    On re-entry (e.g. page refresh), resumes from the current snapshot so
+    progress is not lost.
+
     Returns the result dict on success, None on failure (error stored in session state).
     """
     import time
 
-    with st.status("Sync in progress...", expanded=True) as status:
+    # Read current state before rendering so we resume from where we left off
+    initial = bg.snapshot()
+    initial_pct = initial["progress"]
+    initial_stage = initial["stage"]
+    initial_status = initial["status"]
+
+    # If task already finished, handle immediately without showing progress UI
+    if initial_status == "completed":
+        result = initial.get("result", {})
+        return result
+    if initial_status == "failed":
+        st.session_state.sync_error = initial.get("error", "Unknown error")
+        return None
+
+    # Build a unique key for the cancel button so sync/reparse don't collide
+    cancel_key = f"stop_{syncing_key}_{rearsing_key or ''}"
+
+    with st.status(f"Sync: {initial_stage}", expanded=True) as status:
         # Create stable placeholders that update in-place each loop iteration
         progress_placeholder = st.empty()
+        progress_placeholder.progress(initial_pct / 100.0)
 
-        # Cancel button
-        if st.button("⏹ Stop Sync", key=f"stop_{syncing_key}", type="secondary", use_container_width=True):
+        # Cancel button — unique key per task type
+        if st.button("⏹ Stop Sync", key=cancel_key, type="secondary", use_container_width=True):
             st.session_state[syncing_key] = False
             if rearsing_key is not None:
                 st.session_state[rearsing_key] = False
@@ -103,8 +124,11 @@ def _wait_for_task(bg, syncing_key="syncing", rearsing_key=None, sync_mode_key="
         with st.expander("Sync Log", expanded=True):
             log_placeholder = st.empty()
 
-        # Seed initial state
-        log_placeholder.code("Waiting...", language="text")
+        # Seed log from accumulated session state (persists across refreshes)
+        log = st.session_state.get("sync_log", [])
+        display_lines = list(reversed(log[-50:])) if log else [initial_stage]
+        log_text = "\n".join(display_lines)
+        log_placeholder.code(log_text, language="text")
 
         while True:
             snapshot = bg.snapshot()
@@ -121,7 +145,7 @@ def _wait_for_task(bg, syncing_key="syncing", rearsing_key=None, sync_mode_key="
             # Update log text in-place — newest first so latest is always visible
             log = st.session_state.get("sync_log", [])
             # Show only last 50 lines to keep websocket frames small
-            display_lines = list(reversed(log[-50:])) if log else ["Waiting..."]
+            display_lines = list(reversed(log[-50:])) if log else [stage]
             log_text = "\n".join(display_lines)
             log_placeholder.code(log_text, language="text")
 
@@ -141,13 +165,12 @@ def _wait_for_task(bg, syncing_key="syncing", rearsing_key=None, sync_mode_key="
                 return None
 
             time.sleep(0.5)
-
-
 def _render_sync_progress() -> None:
     """Render the sync progress dialog when a sync is running or just completed.
 
     Called from _render_garmin_setup(), _render_sync_controls(), and _render_dashboard().
     Block-waits on the background task, showing live progress via st.status().
+    On page refresh, resumes from the current task snapshot so progress is not lost.
     """
     syncing = st.session_state.get("syncing")
     rearsing = st.session_state.get("rearsing")
@@ -171,23 +194,38 @@ def _render_sync_progress() -> None:
             # Stale session state (e.g., container restart) — clear and exit
             st.session_state.syncing = False
             st.rerun()
-        result = _wait_for_task(bg, syncing_key="syncing")
-
-        if result is not None:
-            # Generate readiness explanation for coach page syncs
-            if sync_mode == "update" and result.get("analysis"):
-                try:
-                    analyze_result = result["analysis"]
-                    readiness_explanation = _generate_readiness_explanation(analyze_result)
-                    _save_readiness_explanation(readiness_explanation, analyze_result)
-                    result["analysis"]["readiness_explanation"] = readiness_explanation
-                except Exception:
-                    pass  # Non-fatal: explanation is cosmetic
-
-            st.session_state.sync_result = result
+        # Check if task already finished before entering blocking wait
+        snap = bg.snapshot()
+        if snap["status"] == "completed":
+            result = snap.get("result", {})
+            if result is not None:
+                if sync_mode == "update" and result.get("analysis"):
+                    try:
+                        analyze_result = result["analysis"]
+                        readiness_explanation = _generate_readiness_explanation(analyze_result)
+                        _save_readiness_explanation(readiness_explanation, analyze_result)
+                        result["analysis"]["readiness_explanation"] = readiness_explanation
+                    except Exception:
+                        pass
+                st.session_state.sync_result = result
+            st.session_state.syncing = False
+            st.rerun()
+        elif snap["status"] == "failed":
+            st.session_state.sync_error = snap.get("error", "Unknown error")
             st.session_state.syncing = False
             st.rerun()
         else:
+            result = _wait_for_task(bg, syncing_key="syncing")
+            if result is not None:
+                if sync_mode == "update" and result.get("analysis"):
+                    try:
+                        analyze_result = result["analysis"]
+                        readiness_explanation = _generate_readiness_explanation(analyze_result)
+                        _save_readiness_explanation(readiness_explanation, analyze_result)
+                        result["analysis"]["readiness_explanation"] = readiness_explanation
+                    except Exception:
+                        pass
+                st.session_state.sync_result = result
             st.session_state.syncing = False
             st.rerun()
 
@@ -195,14 +233,27 @@ def _render_sync_progress() -> None:
     if rearsing or (syncing and sync_mode == "prescribe"):
         from src.tasks.worker import get_default_task
         bg = get_default_task()
-        result = _wait_for_task(bg, syncing_key="syncing", rearsing_key="rearsing")
-
-        if result is not None:
+        if bg is None:
+            st.session_state.syncing = False
+            st.session_state.rearsing = False
+            st.rerun()
+        # Check if task already finished before entering blocking wait
+        snap = bg.snapshot()
+        if snap["status"] == "completed":
+            result = snap.get("result", {})
             st.session_state.sync_result = result
             st.session_state.syncing = False
             st.session_state.rearsing = False
             st.rerun()
+        elif snap["status"] == "failed":
+            st.session_state.sync_error = snap.get("error", "Unknown error")
+            st.session_state.syncing = False
+            st.session_state.rearsing = False
+            st.rerun()
         else:
+            result = _wait_for_task(bg, syncing_key="syncing", rearsing_key="rearsing")
+            if result is not None:
+                st.session_state.sync_result = result
             st.session_state.syncing = False
             st.session_state.rearsing = False
             st.rerun()
