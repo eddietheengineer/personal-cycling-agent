@@ -173,7 +173,7 @@ When modifying Garmin authentication code, update BOTH versions:
 
 The sync progress dialog (`_render_sync_progress` in `src/visualize.py`) has requirements that MUST be preserved:
 
-1. **Re-detection is mandatory.** The function MUST check `bg.is_running` on both `get_default_sync()` and `get_default_task()` before returning early. Session flags (`syncing`/`rearsing`) can be stale or cleared after page navigation — the background task snapshot is the source of truth. Without this check, navigating away and back loses the progress window.
+1. **Re-detection is mandatory, but page-scoped.** The function MUST check `bg.is_running` on both `get_default_sync()` and `get_default_task()` before returning early. Session flags (`syncing`/`rearsing`) can be stale or cleared after page navigation — the background task snapshot is the source of truth. Without this check, navigating away and back loses the progress window. **However, the progress window must ONLY appear on the page where the sync was initiated.** (Settings).** `_render_sync_progress()` must only be called from the Settings page — never from Dashboard, Trends, or any other page. A background task running in the background should NOT cause the progress dialog to appear on unrelated pages.
 
 2. **No auto-rerun polling.** NEVER add `time.sleep()` + `st.rerun()` to poll for progress updates. This refreshes the entire page and breaks the UX. The blocking `_wait_for_task` approach is correct — it updates in-place via `st.empty()` placeholders.
 
