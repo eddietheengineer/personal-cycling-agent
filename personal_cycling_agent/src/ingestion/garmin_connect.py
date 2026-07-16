@@ -598,12 +598,17 @@ def _garmin_activity_to_store_format(activity: dict[str, Any]) -> dict[str, Any]
         activity_type_key.title() if activity_type_key else "Activity",
     )
 
+    # Garmin API: duration is milliseconds, distance is centimeters
+    # Convert to seconds and meters for storage
+    duration_ms = activity.get("duration") or 0
+    distance_cm = activity.get("distance") or 0
+
     return {
         "id": f"garmin_{activity_id}",
         "start_date_local": start_time_local,
         "type": activity_type,
-        "duration": activity.get("duration"),
-        "distance": activity.get("distance"),
+        "duration": duration_ms / 1000.0,
+        "distance": distance_cm / 100.0,
         "average_power": activity.get("avgPower"),
         "max_power": activity.get("maxPower"),
         "average_hr": activity.get("avgHeartRate"),
@@ -1269,7 +1274,10 @@ def _parse_fit_file(
 ) -> int:
     """Parse a single FIT file and store streams into the DB.
 
-    This is the local-file variant of _fetch_activity_streams — no network call.
+    Also extracts session-level metrics (duration, distance, sport, HR, calories)
+    from the FIT file and uses them to correct the activities table. The FIT file
+    is the ground truth — Garmin API summaries can be wrong (e.g., daily step
+    aggregates mislabeled as rides).
     """
     power_values: list[tuple[float, float]] = []
     hr_values: list[tuple[float, float]] = []
@@ -1278,6 +1286,19 @@ def _parse_fit_file(
     altitude_values: list[tuple[float, float]] = []
 
     first_ts: float | None = None
+    last_ts: float | None = None
+
+    # Session-level metrics from FIT (ground truth)
+    fit_duration: float | None = None
+    fit_distance: float | None = None
+    fit_sport: str | None = None
+    fit_avg_hr: float | None = None
+    fit_max_hr: float | None = None
+    fit_calories: float | None = None
+    fit_avg_cadence: float | None = None
+    fit_max_cadence: float | None = None
+    fit_avg_power: float | None = None
+    fit_max_power: float | None = None
 
     def _get_field(frame, name):
         try:
@@ -1289,6 +1310,49 @@ def _parse_fit_file(
         for frame in fit:
             if not isinstance(frame, fitdecode.FitDataMessage):
                 continue
+
+            # Extract session-level metrics
+            if frame.name == "session":
+                ef = _get_field(frame, "total_elapsed_time")
+                if ef is not None and ef.value is not None:
+                    fit_duration = float(ef.value)
+
+                ed = _get_field(frame, "total_distance")
+                if ed is not None and ed.value is not None:
+                    fit_distance = float(ed.value)
+
+                es = _get_field(frame, "sport")
+                if es is not None and es.value is not None:
+                    fit_sport = str(es.value)
+
+                eahr = _get_field(frame, "avg_heart_rate")
+                if eahr is not None and eahr.value is not None:
+                    fit_avg_hr = float(eahr.value)
+
+                emhr = _get_field(frame, "max_heart_rate")
+                if emhr is not None and emhr.value is not None:
+                    fit_max_hr = float(emhr.value)
+
+                ecal = _get_field(frame, "total_calories")
+                if ecal is not None and ecal.value is not None:
+                    fit_calories = float(ecal.value)
+
+                eac = _get_field(frame, "avg_cadence")
+                if eac is not None and eac.value is not None:
+                    fit_avg_cadence = float(eac.value)
+
+                emc = _get_field(frame, "max_cadence")
+                if emc is not None and emc.value is not None:
+                    fit_max_cadence = float(emc.value)
+
+                epwr_avg = _get_field(frame, "avg_power")
+                if epwr_avg is not None and epwr_avg.value is not None:
+                    fit_avg_power = float(epwr_avg.value)
+
+                epwr_max = _get_field(frame, "max_power")
+                if epwr_max is not None and epwr_max.value is not None:
+                    fit_max_power = float(epwr_max.value)
+
             if frame.name != "record":
                 continue
 
@@ -1302,6 +1366,7 @@ def _parse_fit_file(
 
             if first_ts is None:
                 first_ts = float(ts)
+            last_ts = float(ts)
 
             elapsed = float(ts) - first_ts
 
@@ -1328,6 +1393,44 @@ def _parse_fit_file(
                 alt_field = _get_field(frame, "altitude")
             if alt_field is not None and alt_field.value is not None:
                 altitude_values.append((elapsed, float(alt_field.value)))
+
+    # Map FIT sport to activity type
+    sport_type_map = {
+        "cycling": "Ride",
+        "running": "Run",
+        "walking": "Walk",
+        "swimming": "Swim",
+        "indoor_cycling": "Indoor Cycle",
+        "strength": "Strength Training",
+        "fitness_equipment": "Fitness Equipment",
+    }
+
+    # Correct activities table from FIT ground truth
+    db_id = f"garmin_{activity_id}"
+    updates = {}
+    if fit_duration is not None:
+        updates["duration"] = fit_duration
+    if fit_distance is not None:
+        updates["distance"] = fit_distance
+    if fit_sport is not None:
+        updates["activity_type"] = sport_type_map.get(fit_sport, fit_sport.title())
+    if fit_avg_hr is not None:
+        updates["average_hr"] = fit_avg_hr
+    if fit_max_hr is not None:
+        updates["max_hr"] = fit_max_hr
+    if fit_calories is not None:
+        updates["calories"] = fit_calories
+    if fit_avg_power is not None:
+        updates["average_power"] = fit_avg_power
+    if fit_max_power is not None:
+        updates["max_power"] = fit_max_power
+
+    if updates:
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [db_id]
+        db.conn.execute(f"UPDATE activities SET {set_clause} WHERE id = ?", values)
+        db.conn.commit()
+        logger.info(f"Corrected {db_id} from FIT: {list(updates.keys())}")
 
     if not any([power_values, hr_values, cadence_values, speed_values, altitude_values]):
         logger.debug(f"No stream data in FIT file for activity {activity_id}")

@@ -233,11 +233,110 @@ class BackgroundSync:
             return True
 
 
+class BackgroundTask:
+    """Generic background task with progress tracking (non-Garmin work).
+
+    Like BackgroundSync but runs an arbitrary callable instead of Garmin sync.
+    The callable receives a progress_callback(progress_pct, stage_text) to report progress.
+    """
+
+    def __init__(self):
+        self._result: TaskResult = TaskResult()
+        self._thread: threading.Thread | None = None
+        self._lock: threading.Lock = threading.Lock()
+        self._cancelled: bool = False
+
+    @property
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._result.status == TaskStatus.RUNNING
+
+    def start(self, target: Callable[["Callable[[int, str], None]"], Any], result_key: str = "result") -> None:
+        """Start a background task.
+
+        Args:
+            target: Callable that receives progress_callback(pct, msg) and returns a result dict.
+            result_key: Key to store the result under in the result dict.
+        """
+        with self._lock:
+            if self._result.status == TaskStatus.RUNNING:
+                logger.warning("Task already running, ignoring new request")
+                return
+            self._cancelled = False
+            self._result = TaskResult()
+
+            self._thread = threading.Thread(
+                target=self._run_task,
+                args=(target, result_key),
+                daemon=True,
+                name="bg-task",
+            )
+            self._thread.start()
+
+    def _run_task(self, target: Callable, result_key: str) -> None:
+        self._result.mark_running("Starting task...")
+
+        def progress_callback(pct: int, msg: str) -> None:
+            self._result.update(progress=pct, stage=msg)
+
+        try:
+            retval = target(progress_callback)
+            if self._cancelled:
+                return
+            result = {result_key: retval} if retval is not None else {}
+            self._result.mark_completed(result, "Task complete!")
+        except Exception as exc:
+            logger.error(f"Background task failed: {exc}", exc_info=True)
+            self._result.mark_failed(str(exc), f"Task failed: {exc}")
+
+    def snapshot(self) -> dict[str, Any]:
+        return self._result.snapshot()
+
+    def cancel(self) -> bool:
+        with self._lock:
+            if self._result.status != TaskStatus.RUNNING:
+                return False
+            self._cancelled = True
+            self._result.mark_failed("Cancelled by user", "Task cancelled")
+            return True
+
+
+# Module-level singletons — survive Streamlit reruns (live in module memory)
+_default_task: BackgroundTask | None = None
+
+
+def background_task(target: Callable[["Callable[[int, str], None]"], Any], result_key: str = "result") -> BackgroundTask:
+    """Start or get the default background task instance.
+
+    Convenience function for use in Streamlit pages.
+    """
+    global _default_task
+    if _default_task is None or not _default_task.is_running:
+        _default_task = BackgroundTask()
+
+    if not _default_task.is_running:
+        _default_task.start(target, result_key)
+
+    return _default_task
+
+
+def get_default_task() -> BackgroundTask | None:
+    """Get the default background task instance without starting a new one."""
+    return _default_task
+
+
 # Module-level singleton for use in Streamlit session state
 _default_sync: BackgroundSync | None = None
 
 
-def background_sync(days: int = 1, db_path: str | None = None, progress_callback: Callable[[int, str], None] | None = None) -> BackgroundSync:
+def background_sync(
+    days: int = 1,
+    db_path: str | None = None,
+    progress_callback: Callable[[int, str], None] | None = None,
+    unbounded: bool = False,
+    run_analyze_after: bool = False,
+    run_prescribe_after: bool = False,
+) -> BackgroundSync:
     """Start or get the default background sync instance.
 
     Convenience function for use in Streamlit pages.
@@ -251,6 +350,9 @@ def background_sync(days: int = 1, db_path: str | None = None, progress_callback
             days=days,
             db_path=db_path,
             progress_callback=progress_callback,
+            unbounded=unbounded,
+            run_analyze_after=run_analyze_after,
+            run_prescribe_after=run_prescribe_after,
         )
 
     return _default_sync

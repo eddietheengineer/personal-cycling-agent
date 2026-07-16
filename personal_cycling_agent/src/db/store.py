@@ -583,7 +583,7 @@ class CyclingDB:
         """
         # Read existing row to preserve columns not in this update
         existing = self.conn.execute(
-            "SELECT ftp_used, normalized_power, intensity_factor, tss, "
+            "SELECT ftp_used, cp_used, normalized_power, intensity_factor, tss, "
             "variability_index, w_prime_capacity, w_prime_min_balance, "
             "decoupling_drift, duration_sec, hr_tss, hr_trimp "
             "FROM activity_metrics WHERE activity_id = ?",
@@ -592,29 +592,30 @@ class CyclingDB:
 
         if existing is not None:
             existing_dict = {
-                "cp_used": existing[0],
-                "normalized_power": existing[1],
-                "intensity_factor": existing[2],
-                "tss": existing[3],
-                "variability_index": existing[4],
-                "w_prime_capacity": existing[5],
-                "w_prime_min_balance": existing[6],
-                "decoupling_drift": existing[7],
-                "duration_sec": existing[8],
-                "hr_tss": existing[9],
-                "hr_trimp": existing[10],
+                "cp_used": existing[1],
+                "normalized_power": existing[2],
+                "intensity_factor": existing[3],
+                "tss": existing[4],
+                "variability_index": existing[5],
+                "w_prime_capacity": existing[6],
+                "w_prime_min_balance": existing[7],
+                "decoupling_drift": existing[8],
+                "duration_sec": existing[9],
+                "hr_tss": existing[10],
+                "hr_trimp": existing[11],
             }
             existing_dict.update(metrics)
             metrics = existing_dict
 
         self.conn.execute(
             "INSERT OR REPLACE INTO activity_metrics "
-            "(activity_id, ftp_used, normalized_power, intensity_factor, tss, "
+            "(activity_id, ftp_used, cp_used, normalized_power, intensity_factor, tss, "
             "variability_index, w_prime_capacity, w_prime_min_balance, "
             "decoupling_drift, duration_sec, hr_tss, hr_trimp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 activity_id,
+                metrics.get("cp_used"),
                 metrics.get("cp_used"),
                 metrics.get("normalized_power"),
                 metrics.get("intensity_factor"),

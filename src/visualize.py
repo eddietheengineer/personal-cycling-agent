@@ -52,6 +52,134 @@ from src.ui_helpers import (
 )
 
 
+# Sync progress helpers (background thread → session state bridge)
+# ---------------------------------------------------------------------------
+# IMPORTANT: Background threads CANNOT write to st.session_state (no ScriptRunContext).
+# BackgroundSync/BackgroundTask store progress internally in TaskResult (thread-safe).
+# The UI block-waits on the main thread, reading snapshot() and updating st.status().
+
+def _sync_progress_callback(pct: int, msg: str) -> None:
+    """Write progress to session state. Called ONLY from main thread."""
+    st.session_state.sync_log.append(f"[{pct}%] {msg}")
+    st.session_state.sync_progress = pct
+
+
+def _wait_for_task(bg, syncing_key="syncing", rearsing_key=None, sync_mode_key="sync_mode") -> dict | None:
+    """Block-wait for a background task to complete, updating progress in real-time.
+
+    Uses st.status() for live progress updates. Blocks the main thread until
+    the background task completes or fails.
+
+    Returns the result dict on success, None on failure (error stored in session state).
+    """
+    import time
+
+    with st.status("Sync in progress...", expanded=True) as status:
+        # Create stable placeholders that update in-place each loop iteration
+        progress_placeholder = st.empty()
+
+        # Create log expander once, with an empty placeholder inside
+        with st.expander("Sync Log", expanded=True):
+            log_placeholder = st.empty()
+
+        # Seed initial state
+        log_placeholder.text_area("", value="Waiting...", height=200, label_visibility="collapsed", disabled=True)
+
+        while True:
+            snapshot = bg.snapshot()
+            pct = snapshot["progress"]
+            stage = snapshot["stage"]
+
+            # Update session state for log display
+            _sync_progress_callback(pct, stage)
+
+            # Update status display in-place
+            status.update(label=f"Sync: {stage}", state="running", expanded=True)
+            progress_placeholder.progress(pct / 100.0)
+
+            # Update log text in-place — newest first so latest is always visible
+            log = st.session_state.get("sync_log", [])
+            log_text = "\n".join(reversed(log)) if log else "Waiting..."
+            log_placeholder.text_area("", value=log_text, height=200, label_visibility="collapsed", disabled=True)
+
+            if snapshot["status"] == "completed":
+                result = snapshot.get("result", {})
+                status.update(label="Sync complete!", state="complete", expanded=False)
+                return result
+            elif snapshot["status"] == "failed":
+                err = snapshot.get("error", "Unknown error")
+                status.update(label=f"Sync failed: {err}", state="complete", expanded=True)
+                st.session_state.sync_error = err
+                return None
+
+            # Check if user cancelled via session state
+            if not st.session_state.get(syncing_key) and (rearsing_key is None or not st.session_state.get(rearsing_key)):
+                bg.cancel()
+                return None
+
+            time.sleep(0.5)
+
+
+def _render_sync_progress() -> None:
+    """Render the sync progress dialog when a sync is running or just completed.
+
+    Called from _render_garmin_setup(), _render_sync_controls(), and _render_dashboard().
+    Block-waits on the background task, showing live progress via st.status().
+    """
+    syncing = st.session_state.get("syncing")
+    rearsing = st.session_state.get("rearsing")
+    if not syncing and not rearsing:
+        return
+
+    # Ensure session state keys exist
+    if "sync_log" not in st.session_state:
+        st.session_state.sync_log = []
+    if "sync_progress" not in st.session_state:
+        st.session_state.sync_progress = 0
+
+    sync_mode = st.session_state.get("sync_mode", "")
+    result = None
+
+    # Block-wait for Garmin sync
+    if syncing and sync_mode != "prescribe":
+        from src.tasks.worker import background_sync as _get_bg_sync
+        bg = _get_bg_sync()
+        result = _wait_for_task(bg, syncing_key="syncing")
+
+        if result is not None:
+            # Generate readiness explanation for coach page syncs
+            if sync_mode == "update" and result.get("analysis"):
+                try:
+                    analyze_result = result["analysis"]
+                    readiness_explanation = _generate_readiness_explanation(analyze_result)
+                    _save_readiness_explanation(readiness_explanation, analyze_result)
+                    result["analysis"]["readiness_explanation"] = readiness_explanation
+                except Exception:
+                    pass  # Non-fatal: explanation is cosmetic
+
+            st.session_state.sync_result = result
+            st.session_state.syncing = False
+            st.rerun()
+        else:
+            st.session_state.syncing = False
+            st.rerun()
+
+    # Block-wait for BackgroundTask (reparse, prescribe)
+    if rearsing or (syncing and sync_mode == "prescribe"):
+        from src.tasks.worker import get_default_task
+        bg = get_default_task()
+        result = _wait_for_task(bg, syncing_key="syncing", rearsing_key="rearsing")
+
+        if result is not None:
+            st.session_state.sync_result = result
+            st.session_state.syncing = False
+            st.session_state.rearsing = False
+            st.rerun()
+        else:
+            st.session_state.syncing = False
+            st.session_state.rearsing = False
+            st.rerun()
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -125,6 +253,9 @@ def _render_dashboard():
 
     st.title("Cycling Dashboard")
 
+    # ── Sync progress (sidebar sync button) ─────────────────────────────
+    _render_sync_progress()
+
     # ── 7-Day Training Calendar ─────────────────────────────────────────
     _render_week_strip()
 
@@ -158,18 +289,22 @@ def _render_week_strip():
             st.caption(f"Plan from {plan.week_start} · {plan.readiness_summary}")
     with h_cols[1]:
         if st.button("🔄 Sync", use_container_width=True, key="sync_dash"):
-            try:
-                from src.ingestion.garmin_connect import sync_garmin, sync_activities
-                from src.main import run_analyze, run_prescribe
-                with st.spinner("Syncing Garmin data..."):
-                    sync_garmin()
-                    sync_activities()
-                    run_analyze()
-                    run_prescribe()
-                st.session_state.sync_done = True
+            if not st.session_state.get("syncing"):
+                from src.tasks.worker import background_sync
+                background_sync(
+                    days=1,
+                    unbounded=False,
+                    run_analyze_after=True,
+                    run_prescribe_after=True,
+                )
+                st.session_state.syncing = True
+                st.session_state.sync_mode = "dashboard"
+                st.session_state.sync_days = 1
+                st.session_state.sync_result = None
+                st.session_state.sync_error = None
+                st.session_state.sync_log = []
+                st.session_state.sync_progress = 0
                 st.rerun()
-            except Exception as e:
-                st.error(f"Sync failed: {e}")
     with h_cols[2]:
         if st.button("📊 Rules", type="primary", use_container_width=True, key="gen_rules_dash"):
             try:
@@ -686,7 +821,7 @@ def _render_activity_detail():
 
     # Computed metrics (if available)
     computed_fields = {
-        "FTP Used": ("cp_used", "W"),
+        "CP Used": ("cp_used", "W"),
         "Normalized Power": ("normalized_power", "W"),
         "Intensity Factor": ("intensity_factor", ""),
         "TSS": ("tss", ""),
@@ -1524,121 +1659,47 @@ def _render_garmin_setup():
         )
     if sync_all_clicked:
         if not st.session_state.get("syncing"):
+            from src.tasks.worker import background_sync
+            background_sync(
+                days=3650,
+                unbounded=True,
+                run_analyze_after=True,
+            )
+            st.session_state.syncing = True
             st.session_state.sync_mode = "all"
             st.session_state.sync_days = 3650
             st.session_state.sync_result = None
             st.session_state.sync_error = None
-            st.session_state.syncing = True
-            st.rerun()
-
-    # ── Run sync with progress ────────────────────────────────────────
-    if st.session_state.get("syncing"):
-        if "sync_log" not in st.session_state:
             st.session_state.sync_log = []
-        if "sync_progress" not in st.session_state:
             st.session_state.sync_progress = 0
-
-        mode = st.session_state.get("sync_mode", "update")
-        days = st.session_state.get("sync_days", 7)
-
-        def progress_callback(pct: int, message: str) -> None:
-            st.session_state.sync_log.append(f"[{pct}%] {message}")
-            st.session_state.sync_progress = pct
-
-        with st.container():
-            st.subheader("Sync Progress")
-            st.progress(st.session_state.sync_progress / 100.0)
-            if st.session_state.sync_log:
-                st.info(st.session_state.sync_log[-1])
-            else:
-                st.info("Starting sync...")
-
-        try:
-            from src.ingestion.garmin_connect import sync_garmin, sync_activities
-            from src.main import run_analyze
-            unbounded = mode == "all"
-            logging.getLogger("src.ingestion.garmin_connect").setLevel(logging.CRITICAL)
-            progress_callback(5, "Syncing wellness data...")
-            wellness = sync_garmin(
-                days=days,
-                db_path=str(config.db_path("cycling_agent.sqlite")),
-                unbounded=unbounded,
-                progress_callback=progress_callback,
-            )
-            progress_callback(60, "Syncing activities...")
-            activities = sync_activities(
-                days=days,
-                db_path=str(config.db_path("cycling_agent.sqlite")),
-                unbounded=unbounded,
-                progress_callback=progress_callback,
-            )
-            logging.getLogger("src.ingestion.garmin_connect").setLevel(logging.DEBUG)
-            progress_callback(80, "Running analytics...")
-            analyze_result = run_analyze()
-            st.session_state.sync_result = {
-                "wellness": wellness,
-                "activities": activities,
-                "analysis": {
-                    "cp": analyze_result.get("cp"),
-                    "readiness": analyze_result.get("readiness"),
-                    "training_load": analyze_result.get("training_load"),
-                },
-            }
-            progress_callback(100, "All done.")
-        except Exception as exc:
-            exc_str = str(exc)
-            st.session_state.sync_log.append(f"Error: {exc_str}")
-            st.session_state.sync_error = exc_str
-        finally:
-            st.session_state.syncing = False
             st.rerun()
 
     # ── Reparse FIT files ────────────────────────────────────────────
     if reparse_clicked:
         if not st.session_state.get("rearsing"):
+            from src.tasks.worker import background_task
+            from src.ingestion.garmin_connect import reparse_all_fit_files
+            from src.main import run_analyze
+
+            def _reparse_work(cb):
+                cb(0, "Deleting existing stream data...")
+                result = reparse_all_fit_files(
+                    db_path=str(config.db_path("cycling_agent.sqlite")),
+                    progress_callback=cb,
+                )
+                cb(90, "Running analytics...")
+                run_analyze()
+                cb(100, f"Done. {result['activities_processed']} activities, {result['stream_records']} records.")
+                return result
+
+            background_task(_reparse_work, result_key="reparse")
             st.session_state.rearsing = True
             st.session_state.sync_log = []
             st.session_state.sync_progress = 0
             st.rerun()
 
-    if st.session_state.get("rearsing"):
-        if "sync_log" not in st.session_state:
-            st.session_state.sync_log = []
-        if "sync_progress" not in st.session_state:
-            st.session_state.sync_progress = 0
-
-        def progress_callback(pct: int, message: str) -> None:
-            st.session_state.sync_log.append(f"[{pct}%] {message}")
-            st.session_state.sync_progress = pct
-
-        with st.container():
-            st.subheader("Re-parsing FIT Files")
-            st.progress(st.session_state.sync_progress / 100.0)
-            if st.session_state.sync_log:
-                st.info(st.session_state.sync_log[-1])
-            else:
-                st.info("Starting re-parse...")
-
-        try:
-            from src.ingestion.garmin_connect import reparse_all_fit_files
-            from src.main import run_analyze
-            progress_callback(0, "Deleting existing stream data...")
-            result = reparse_all_fit_files(
-                db_path=str(config.db_path("cycling_agent.sqlite")),
-                progress_callback=progress_callback,
-            )
-            progress_callback(90, "Running analytics...")
-            run_analyze()
-            progress_callback(100, f"Done. {result['activities_processed']} activities, {result['stream_records']} records.")
-            st.session_state.sync_result = {
-                "reparse": result,
-            }
-        except Exception as exc:
-            st.session_state.sync_log.append(f"Error: {exc}")
-            st.session_state.sync_error = str(exc)
-        finally:
-            st.session_state.rearsing = False
-            st.rerun()
+    # ── Render progress dialog ───────────────────────────────────────
+    _render_sync_progress()
 
     # ── Show sync errors ──────────────────────────────────────────────
     if st.session_state.get("sync_error"):
@@ -1738,6 +1799,13 @@ def _display_sync_results(result: dict) -> None:
         st.markdown(result["prescription"])
     if "prescription_error" in result:
         st.error(f"Prescription failed: {result['prescription_error']}")
+
+    # Reparse
+    if "reparse" in result:
+        rp = result["reparse"]
+        processed = rp.get("activities_processed", 0)
+        records = rp.get("stream_records", 0)
+        st.write(f"**Re-parsed:** {processed} activities, {records} stream records")
 
 def _generate_readiness_explanation(analyze_result: dict) -> str:
     """Generate a plain-English readiness explanation from data (no LLM)."""
@@ -1999,9 +2067,6 @@ def _render_memory_settings():
 # ---------------------------------------------------------------------------
 def _render_sync_controls():
     """Render sync/prescribe buttons, progress, and results."""
-    from src.ingestion.garmin_connect import sync_garmin, sync_activities
-    from src.main import run_analyze, run_prescribe
-
     is_connected = _check_garmin_connected()
 
     # ── Buttons ───────────────────────────────────────────────────────
@@ -2023,51 +2088,34 @@ def _render_sync_controls():
     # ── Handle button clicks ──────────────────────────────────────────
     if sync_clicked:
         if not st.session_state.get("syncing"):
+            from src.tasks.worker import background_sync
+            background_sync(
+                days=7,
+                unbounded=False,
+                run_analyze_after=True,
+            )
+            st.session_state.syncing = True
             st.session_state.sync_mode = "update"
             st.session_state.sync_days = 7
             st.session_state.sync_result = None
             st.session_state.sync_error = None
-            st.session_state.syncing = True
+            st.session_state.sync_log = []
+            st.session_state.sync_progress = 0
             st.rerun()
 
     if prescribe_clicked:
         if not st.session_state.get("syncing"):
-            st.session_state.sync_mode = "prescribe"
-            st.session_state.sync_result = None
-            st.session_state.sync_error = None
-            st.session_state.syncing = True
-            st.rerun()
+            from src.tasks.worker import background_task
+            from src.main import run_analyze, run_prescribe
 
-    # ── Run sync with progress ────────────────────────────────────────
-    if st.session_state.get("syncing"):
-        if "sync_log" not in st.session_state:
-            st.session_state.sync_log = []
-        if "sync_progress" not in st.session_state:
-            st.session_state.sync_progress = 0
-
-        mode = st.session_state.get("sync_mode", "update")
-        days = st.session_state.get("sync_days", 7)
-
-        def progress_callback(pct: int, message: str) -> None:
-            st.session_state.sync_log.append(f"[{pct}%] {message}")
-            st.session_state.sync_progress = pct
-
-        with st.container():
-            st.subheader("Sync Progress")
-            st.progress(st.session_state.sync_progress / 100.0)
-            if st.session_state.sync_log:
-                st.info(st.session_state.sync_log[-1])
-            else:
-                st.info("Starting sync...")
-
-        try:
-            if mode == "prescribe":
-                progress_callback(10, "Running analysis...")
+            def _prescribe_work(cb):
+                cb(10, "Running analysis...")
                 analyze_result = run_analyze()
-                progress_callback(50, "Generating prescription...")
+                cb(50, "Generating prescription...")
                 prescription = run_prescribe(analyze_result)
-                progress_callback(90, "Prescription generated.")
-                st.session_state.sync_result = {
+                cb(90, "Prescription generated.")
+                cb(100, "Prescription complete.")
+                return {
                     "analysis": {
                         "cp": analyze_result.get("cp"),
                         "readiness": analyze_result.get("readiness"),
@@ -2075,56 +2123,18 @@ def _render_sync_controls():
                     },
                     "prescription": prescription,
                 }
-                progress_callback(100, "Prescription complete.")
-            else:
-                unbounded = mode == "all"
-                logging.getLogger("src.ingestion.garmin_connect").setLevel(logging.CRITICAL)
-                progress_callback(5, "Syncing wellness data...")
-                wellness = sync_garmin(
-                    days=days,
-                    db_path=str(config.db_path("cycling_agent.sqlite")),
-                    unbounded=unbounded,
-                    progress_callback=progress_callback,
-                )
-                progress_callback(60, "Syncing activities...")
-                activities = sync_activities(
-                    days=days,
-                    db_path=str(config.db_path("cycling_agent.sqlite")),
-                    unbounded=unbounded,
-                    progress_callback=progress_callback,
-                )
-                logging.getLogger("src.ingestion.garmin_connect").setLevel(logging.DEBUG)
-                progress_callback(80, "Running analytics...")
-                analyze_result = run_analyze()
 
-                # Generate detailed readiness explanation
-                progress_callback(90, "Generating readiness summary...")
-                readiness_explanation = _generate_readiness_explanation(analyze_result)
-
-                # Save explanation to latest_analysis.json for persistence
-                _save_readiness_explanation(readiness_explanation, analyze_result)
-
-                st.session_state.sync_result = {
-                    "wellness": wellness,
-                    "activities": activities,
-                    "analysis": {
-                        "cp": analyze_result.get("cp"),
-                        "readiness": analyze_result.get("readiness"),
-                        "training_load": analyze_result.get("training_load"),
-                        "readiness_explanation": readiness_explanation,
-                    },
-                }
-                progress_callback(100, "All done.")
-        except Exception as exc:
-            exc_str = str(exc)
-            st.session_state.sync_log.append(f"Error: {exc_str}")
-            st.session_state.sync_error = exc_str
-            if "MFA" in exc_str or "mfa" in exc_str or "two-factor" in exc_str:
-                st.session_state.garmin_auth_state = "idle"
-                st.session_state.garmin_auth_instance = None
-        finally:
-            st.session_state.syncing = False
+            background_task(_prescribe_work, result_key="prescribe")
+            st.session_state.syncing = True
+            st.session_state.sync_mode = "prescribe"
+            st.session_state.sync_result = None
+            st.session_state.sync_error = None
+            st.session_state.sync_log = []
+            st.session_state.sync_progress = 0
             st.rerun()
+
+    # ── Render progress dialog ───────────────────────────────────────
+    _render_sync_progress()
 
     # ── Show sync errors ──────────────────────────────────────────────
     if st.session_state.get("sync_error"):

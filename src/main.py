@@ -39,7 +39,8 @@ from src.analytics.w_prime import estimate_w_prime_from_activity, w_prime_to_dic
 from src.analytics.durability import compute_durability, durability_to_dict
 from src.analytics.decoupling import compute_decoupling, decoupling_to_dict
 from src.analytics.power_metrics import (
-    compute_power_metrics, estimate_critical_power, power_metrics_to_dict
+    _compute_power_duration_curve, compute_power_metrics,
+    power_metrics_to_dict
 )
 from src.analytics.training_load import (
     compute_training_load, compute_training_load_history, training_load_to_dict
@@ -163,20 +164,11 @@ def run_analyze() -> dict:
             [dict(a) for a in activities],
             key=lambda a: a.get("start_date", ""),
         )
-
-        # --- Walk chronologically, with CP decay over time ---
-        # CP decays exponentially between activities (half-life ~28 days,
-        # consistent with VO2max/CP detraining literature: ~10-15% loss
-        # per week of complete detraining). Recent high-intensity data
-        # can raise it again.
-        _CP_HALF_LIFE_DAYS = 28.0
-        _CP_DECAY_FACTOR = 1.0 - (1.0 / (2.0 ** (1.0 / _CP_HALF_LIFE_DAYS)))
-        # Equivalent EWMA: CP_today = CP_yesterday + (new_cp - CP_yesterday) * alpha
-        # where alpha = 1 - 0.5^(1/28) ≈ 0.0247 per day
-
-        # Auto-calculate Critical Power from power data.
-        # Bootstrap with a reasonable default if no prior CP is known,
-        # then let estimate_critical_power() refine it from PDC efforts.
+        # --- Walk chronologically, building CP over time ---
+        # CP starts from the profile FTP and only increases when a ride
+        # has a 3-minute effort exceeding the current CP. No decay.
+        # This matches intervals.icu's eFTP behavior: flat unless you
+        # put in a new maximal effort.
         current_cp = float(os.environ.get("CP_WATTS", 0))
         if current_cp <= 0:
             try:
@@ -189,13 +181,12 @@ def run_analyze() -> dict:
                             m = re.search(r"(\d+)", val)
                             if m:
                                 current_cp = float(m.group(1))
-                            break
+                                break
             except Exception:
                 pass
-        # If still no CP, bootstrap with a reasonable default to enable PDC computation
         if current_cp <= 0:
-            current_cp = 250.0  # bootstrap default; will be refined by CP estimation
-            logger.info("No CP set, bootstrapping with 250W default")
+            current_cp = 200.0
+            logger.info("No CP set, bootstrapping with 200W default")
 
         # Build profile dict for HR-based training load
         _profile = {
@@ -210,9 +201,8 @@ def run_analyze() -> dict:
                 _parse_profile_text(profile_path.read_text(), _profile)
         except Exception:
             pass
-
         last_activity_date: datetime | None = None
-        cp_data_points: list[dict] = []
+        current_w_prime = 0.0
 
         power_metrics_results = []
         w_prime_results = []
@@ -245,24 +235,36 @@ def run_analyze() -> dict:
             dfa_samples = [float(r["value"]) for r in dfa_rows] if dfa_rows else []
             duration = len(power_samples) if power_samples else 0
 
-            # Parse activity date for decay calculation
+            # Parse activity date
             act_date_str = act.get("start_date", "")[:10]
             try:
                 act_date = datetime.strptime(act_date_str, "%Y-%m-%d")
             except ValueError:
                 act_date = None
 
-            # Decay FTP based on days since last activity
-            if last_activity_date is not None and act_date is not None:
-                days_gap = (act_date - last_activity_date).days
-                if days_gap > 0 and current_cp > 0:
-                    # Exponential decay: FTP_new = FTP_old * 0.5^(days/half_life)
-                    decay = 0.5 ** (days_gap / _CP_HALF_LIFE_DAYS)
-                    current_cp = max(current_cp * decay, 50.0)
 
-            # Compute power metrics first — we need PDC for CP estimation
-            pm_result = None
+            # --- Update CP from this ride ---
+            # Derive CP from the best 3-minute effort. A 3min max is
+            # typically ~130% of CP, so scale down. CP only increases.
+            # Skip corrupted rides (3min power > 300W = suspicious).
             if power_samples:
+                try:
+                    pdc = _compute_power_duration_curve(np.array(power_samples, dtype=np.float64))
+                    ride_3min = pdc.get(180, 0)
+                    if ride_3min > 0 and ride_3min < 300:
+                        ride_cp = ride_3min / 1.3
+                        if ride_cp > current_cp:
+                            current_cp = ride_cp
+                            logger.info(
+                                f"CP updated from {activity_id}: "
+                                f"prev={current_cp:.0f}W -> ride_3min={ride_3min:.0f}W "
+                                f"(cp={ride_cp:.0f}W)"
+                            )
+                except Exception as e:
+                    logger.warning(f"PDC computation failed for {activity_id}: {e}")
+            # --- Compute power metrics with current CP ---
+            pm_result = None
+            if power_samples and current_cp > 0:
                 try:
                     pm_result = compute_power_metrics(
                         activity_id, power_samples, duration, current_cp
@@ -274,18 +276,14 @@ def run_analyze() -> dict:
                     })
                 except Exception as e:
                     logger.warning(f"Power metrics failed for {activity_id}: {e}")
-            # HR-based training load — computed for all activities with HR data
-            # Used for: (a) TSS on HR-only activities, (b) calibration on dual-sensor rides
+
+            # --- HR-based training load ---
             if hr_samples:
                 try:
-                    # Resolve resting HR: wellness record for activity date -> profile -> default
                     resting_hr = _get_resting_hr_for_date(wellness_by_date, act_date_str)
                     if resting_hr is None or resting_hr <= 0:
                         resting_hr = _profile.get("resting_hr", 70)
-
-                    # Resolve max HR: activity max -> profile -> default
                     max_hr = act.get("max_hr") or _profile.get("max_hr") or 190
-
                     gender = _profile.get("gender", "male")
 
                     hr_result = compute_hr_training_load(
@@ -293,7 +291,6 @@ def run_analyze() -> dict:
                     )
 
                     if pm_result is not None and pm_result.tss > 0 and hr_result.hr_tss > 0:
-                        # Dual-sensor ride: accumulate for calibration
                         hr_calibration_pairs.append({
                             "tss_power": pm_result.tss,
                             "hr_tss": hr_result.hr_tss,
@@ -301,16 +298,13 @@ def run_analyze() -> dict:
                             "distance": act.get("distance", 0),
                         })
                     elif pm_result is None or pm_result.tss == 0:
-                        # HR-only activity: use HR TSS (calibrated if available)
                         calibration = db.get_hr_calibration()
                         cal_factor = calibration.get("calibration_factor") if calibration else None
                         final_hr_tss = compute_hr_tss_with_calibration(hr_result.hr_tss, cal_factor)
-
                         tss_records.append({
                             "date": act.get("start_date", "")[:10],
                             "tss": final_hr_tss,
                         })
-                        # Store HR metrics in DB
                         db.store_activity_metrics(activity_id, {
                             "hr_tss": final_hr_tss,
                             "hr_trimp": hr_result.trimp,
@@ -318,39 +312,32 @@ def run_analyze() -> dict:
                 except Exception as e:
                     logger.warning(f"HR training load failed for {activity_id}: {e}")
 
-            # Add this activity's PDC efforts to CP data pool
-            # PDC gives best-effort power at standard durations (3m, 5m, 8m, 20m)
-            # which captures threshold capacity even from rides with short hard efforts
-            current_w_prime = 0.0  # W' from CP regression, in joules
-            if pm_result is not None and act_date is not None:
-                if (datetime.now() - act_date).days <= 90:
-                    pdc = pm_result.power_duration_curve
-                    pdc_efforts = []
-                    for dur_s in [180, 300, 480, 1200]:  # 3m, 5m, 8m, 20m
-                        pwr = pdc.get(dur_s, 0)
-                        if pwr > 0:
-                            pdc_efforts.append({"duration": dur_s, "avg_power": pwr})
-                    if pdc_efforts:
-                        cp_data_points.append({"pdc_efforts": pdc_efforts})
+            # --- Durability ---
+            if power_samples:
+                try:
+                    dp = compute_durability(activity_id, power_samples)
+                    durability_results.append(durability_to_dict(dp))
+                except Exception as e:
+                    logger.warning(f"Durability analysis failed for {activity_id}: {e}")
 
-                # Re-estimate CP from all activities seen so far
-                new_cp, new_w_prime = estimate_critical_power(cp_data_points)
+            # --- Decoupling ---
+            dc_result = None
+            if power_samples and hr_samples:
+                try:
+                    dc_result = compute_decoupling(activity_id, power_samples, hr_samples)
+                    decoupling_results.append(decoupling_to_dict(dc_result))
+                except Exception as e:
+                    logger.warning(f"Decoupling analysis failed for {activity_id}: {e}")
 
-                # EWMA blend: allows FTP to adjust gradually in both directions
-                # alpha = 1 - 0.5^(1/28) ≈ 0.0247 per day (same as decay rate)
-                if new_cp > 0:
-                    alpha = _CP_DECAY_FACTOR
-                    current_cp = current_cp * (1 - alpha) + new_cp * alpha
-                    current_w_prime = new_w_prime
-                    logger.info(
-                        f"FTP updated to {current_cp:.0f}W, W'={current_w_prime:.0f}J "
-                        f"(from {len(cp_data_points)} activities)"
-                    )
+            # --- Thresholds ---
+            if power_samples and dfa_samples:
+                try:
+                    tr = analyze_thresholds(activity_id, power_samples, dfa_samples)
+                    thresholds_results.append(threshold_to_dict(tr))
+                except Exception as e:
+                    logger.warning(f"Threshold analysis failed for {activity_id}: {e}")
 
-                    logger.info(
-                        f"CP updated to {current_cp:.0f}W, W'={current_w_prime:.0f}J "
-                        f"(from {len(cp_data_points)} activities)"
-                    )
+            # --- W' estimation ---
             wp_result = None
             if power_samples:
                 try:
@@ -363,31 +350,6 @@ def run_analyze() -> dict:
                     w_prime_results.append(w_prime_to_dict(wp_result))
                 except Exception as e:
                     logger.warning(f"W' estimation failed for {activity_id}: {e}")
-
-            # Durability (needs power)
-            if power_samples:
-                try:
-                    dp = compute_durability(activity_id, power_samples)
-                    durability_results.append(durability_to_dict(dp))
-                except Exception as e:
-                    logger.warning(f"Durability analysis failed for {activity_id}: {e}")
-
-            # Decoupling (needs power + HR)
-            dc_result = None
-            if power_samples and hr_samples:
-                try:
-                    dc_result = compute_decoupling(activity_id, power_samples, hr_samples)
-                    decoupling_results.append(decoupling_to_dict(dc_result))
-                except Exception as e:
-                    logger.warning(f"Decoupling analysis failed for {activity_id}: {e}")
-
-            # Thresholds (needs power + DFA-a1)
-            if power_samples and dfa_samples:
-                try:
-                    tr = analyze_thresholds(activity_id, power_samples, dfa_samples)
-                    thresholds_results.append(threshold_to_dict(tr))
-                except Exception as e:
-                    logger.warning(f"Threshold analysis failed for {activity_id}: {e}")
 
             # --- Strain Score & Pmax ---
             if pm_result is not None and current_cp > 0:
@@ -402,7 +364,6 @@ def run_analyze() -> dict:
                     )
                     strain_score_results.append(strain_score_to_dict(ss_result))
 
-                    # Update 3D IR model
                     if act_date is not None and ss_result is not None:
                         act_date_only = act_date.date() if hasattr(act_date, 'date') else act_date
                         three_dim_result = three_dim_model.update(
@@ -416,7 +377,7 @@ def run_analyze() -> dict:
                 except Exception as e:
                     logger.warning(f"Strain score/3D IR failed for {activity_id}: {e}")
 
-            # Store computed metrics in DB (separate from raw data)
+            # --- Store metrics in DB ---
             if pm_result is not None:
                 db.store_activity_metrics(activity_id, {
                     "cp_used": current_cp,
@@ -429,7 +390,10 @@ def run_analyze() -> dict:
                     "decoupling_drift": dc_result.drift_pct if dc_result else None,
                     "duration_sec": float(duration),
                 })
-        # Compute HR calibration factor from dual-sensor rides.
+
+            # Track last activity date for decay
+            if act_date is not None:
+                last_activity_date = act_date
         # For each dual-sensor ride, ratio = power_tss / hr_tss.
         # The median ratio scales HR TSS to match power TSS.
         # Banister TRIMP (derived from running) overestimates cycling load,

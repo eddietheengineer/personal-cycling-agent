@@ -306,6 +306,9 @@ def estimate_critical_power(
     """
     points: list[tuple[float, float, float]] = []  # (1/duration, avg_power, weight)
 
+    # Collect best effort at each duration across all rides
+    best_by_duration: dict[int, float] = {}
+
     for activity in activity_data:
         # Try PDC efforts first (best-effort at standard durations)
         pdc_efforts = activity.get("pdc_efforts", [])
@@ -337,9 +340,15 @@ def estimate_critical_power(
             if avg_power <= 0:
                 continue
 
-            # Weight by duration: longer efforts have lower variance
-            weight = duration
-            points.append((1.0 / duration, avg_power, weight))
+            # Keep only the best power at each duration
+            dur_key = int(duration)
+            if dur_key not in best_by_duration or avg_power > best_by_duration[dur_key]:
+                best_by_duration[dur_key] = avg_power
+
+    # Build regression points from best efforts
+    for duration, avg_power in best_by_duration.items():
+        weight = duration
+        points.append((1.0 / duration, avg_power, weight))
 
     if len(points) < 2:
         logger.warning(
