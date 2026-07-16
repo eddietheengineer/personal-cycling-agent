@@ -36,13 +36,15 @@ The app runs in a Docker container named `pca` (image `pca-test`) on port 8501. 
 
 ```bash
 cd ~/personal-cycling-agent/personal_cycling_agent
-docker build -t pca-test .
+docker build --no-cache -t pca-test .
 docker stop pca && docker rm pca
 docker run -d --name pca -p 8501:8501 \
   -v /home/joshua/cycling-agent-data:/data \
   -e CYCLING_AGENT_VAULT=/data \
   pca-test
 ```
+
+**CRITICAL: Always use `--no-cache`.** Docker layer caching has caused stale code to ship to the container even after source changes — the build reports success but the running container executes old code. `--no-cache` ensures every rebuild actually copies the current source.
 
 **The `-e CYCLING_AGENT_VAULT=/data` flag is required.** The app resolves the vault path from `CYCLING_AGENT_VAULT` > `DATA_DIR` > `~/cycling-agent-data`. Inside the container the user is `cycling`, so `~` expands to `/home/cycling` — not the mounted `/data`. Without the env var the app creates a fresh empty database, losing all historical data.
 
