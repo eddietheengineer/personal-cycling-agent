@@ -168,12 +168,27 @@ def _wait_for_task(bg, syncing_key="syncing", rearsing_key=None, sync_mode_key="
 def _render_sync_progress() -> None:
     """Render the sync progress dialog when a sync is running or just completed.
 
-    Called from _render_garmin_setup(), _render_sync_controls(), and _render_dashboard().
     Block-waits on the background task, showing live progress via st.status().
     On page refresh, resumes from the current task snapshot so progress is not lost.
+
+    Also re-detects running tasks by checking background task snapshots directly,
+    so navigating away and back still shows the progress window.
     """
     syncing = st.session_state.get("syncing")
     rearsing = st.session_state.get("rearsing")
+
+    # Re-detect: even if flags are cleared, check if a background task is still running
+    from src.tasks.worker import get_default_sync, get_default_task
+    if not syncing and not rearsing:
+        bg_sync = get_default_sync()
+        bg_task = get_default_task()
+        if bg_sync and bg_sync.is_running:
+            syncing = True
+            st.session_state.syncing = True
+        if bg_task and bg_task.is_running:
+            rearsing = True
+            st.session_state.rearsing = True
+
     if not syncing and not rearsing:
         return
 
@@ -188,10 +203,8 @@ def _render_sync_progress() -> None:
 
     # Block-wait for Garmin sync
     if syncing and sync_mode != "prescribe":
-        from src.tasks.worker import get_default_sync
         bg = get_default_sync()
         if bg is None:
-            # Stale session state (e.g., container restart) — clear and exit
             st.session_state.syncing = False
             st.rerun()
         # Check if task already finished before entering blocking wait
@@ -231,7 +244,6 @@ def _render_sync_progress() -> None:
 
     # Block-wait for BackgroundTask (reparse, prescribe)
     if rearsing or (syncing and sync_mode == "prescribe"):
-        from src.tasks.worker import get_default_task
         bg = get_default_task()
         if bg is None:
             st.session_state.syncing = False
@@ -1777,6 +1789,9 @@ def _render_garmin_setup():
             st.rerun()
 
 
+    # ── Render progress dialog ───────────────────────────────────────
+    _render_sync_progress()
+
     # ── Show sync errors ──────────────────────────────────────────────
     if st.session_state.get("sync_error"):
         err = st.session_state.sync_error
@@ -2605,11 +2620,6 @@ def _render_schedule_config():
 # ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
-# Global sync progress — runs before page routing so it's visible on every page
-# ---------------------------------------------------------------------------
-_render_sync_progress()
-
 if nav_page == "Dashboard":
     _render_dashboard()
 elif nav_page == "Activity Detail":
