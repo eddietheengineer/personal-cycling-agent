@@ -331,8 +331,6 @@ def _render_dashboard():
 
     st.title("Cycling Dashboard")
 
-    # ── Sync progress (sidebar sync button) ─────────────────────────────
-    _render_sync_progress()
 
     # ── 7-Day Training Calendar ─────────────────────────────────────────
     _render_week_strip()
@@ -1778,8 +1776,6 @@ def _render_garmin_setup():
             st.session_state.sync_progress = 0
             st.rerun()
 
-    # ── Render progress dialog ───────────────────────────────────────
-    _render_sync_progress()
 
     # ── Show sync errors ──────────────────────────────────────────────
     if st.session_state.get("sync_error"):
@@ -2213,8 +2209,6 @@ def _render_sync_controls():
             st.session_state.sync_progress = 0
             st.rerun()
 
-    # ── Render progress dialog ───────────────────────────────────────
-    _render_sync_progress()
 
     # ── Show sync errors ──────────────────────────────────────────────
     if st.session_state.get("sync_error"):
@@ -2611,6 +2605,11 @@ def _render_schedule_config():
 # ---------------------------------------------------------------------------
 # Main dispatch
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Global sync progress — runs before page routing so it's visible on every page
+# ---------------------------------------------------------------------------
+_render_sync_progress()
+
 if nav_page == "Dashboard":
     _render_dashboard()
 elif nav_page == "Activity Detail":
