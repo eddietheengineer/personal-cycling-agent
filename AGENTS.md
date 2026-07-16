@@ -38,10 +38,13 @@ The app runs in a Docker container named `pca` (image `pca-test`) on port 8501. 
 cd ~/personal-cycling-agent/personal_cycling_agent
 docker build -t pca-test .
 docker stop pca && docker rm pca
-docker run -d --name pca -p 8501:8501 -v /home/joshua/cycling-agent-data:/data pca-test
+docker run -d --name pca -p 8501:8501 \
+  -v /home/joshua/cycling-agent-data:/data \
+  -e CYCLING_AGENT_VAULT=/data \
+  pca-test
 ```
 
-The data directory (`/home/joshua/cycling-agent-data`) is mounted as `/data` inside the container, so the database and FIT files persist across rebuilds.
+**The `-e CYCLING_AGENT_VAULT=/data` flag is required.** The app resolves the vault path from `CYCLING_AGENT_VAULT` > `DATA_DIR` > `~/cycling-agent-data`. Inside the container the user is `cycling`, so `~` expands to `/home/cycling` — not the mounted `/data`. Without the env var the app creates a fresh empty database, losing all historical data.
 
 **Do not skip this step.** A `docker restart pca` is insufficient — it restarts the old image. The full rebuild cycle is required.
 
