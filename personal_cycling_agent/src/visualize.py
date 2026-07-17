@@ -721,11 +721,14 @@ _WIKI_KEYWORDS = {
     "health": [
         "knee", "injury", "injured", "rehab", "rehabilitation", "recovery",
         "exercise", "stretch", "strengthen", "pt", "physical therapy",
-        "patellofemoral", "pfp", "pain", "sore", "soreness", "swelling",
+        "patellofemoral", "patellar", "pfp", "pain", "sore", "soreness", "swelling",
         "non-cycling", "cross train", "cross-training", "swimming", "running",
         "quad", "glute", "hamstring", "calf", "hip", "mobility",
         "prehab", "prevention", "biomechanics", "bike fit", "saddle",
         "cleat", "pedal", "alignment", "tracking", "chondromalacia",
+        "it band", "itb", "iliotibial", "meniscus", "mcl", "lcl",
+        "bursitis", "tendinopathy", "tendinitis", "sprain", "strain",
+        "ligament", "cartilage", "joint", "popliteal", "pes anserine",
     ],
 }
 
