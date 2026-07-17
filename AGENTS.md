@@ -169,16 +169,78 @@ When modifying Garmin authentication code, update BOTH versions:
 - `personal_cycling_agent/src/ingestion/garmin_connect.py` (Home Assistant add-on)
 - `src/ingestion/garmin_connect.py` (standalone/development)
 
-## Sync Progress UI — Critical Invariants
+## Page Specs — Layout & Invariants
 
-The sync progress dialog (`_render_sync_progress` in `src/visualize.py`) has requirements that MUST be preserved:
+Sidebar navigation order: Dashboard, Activities, Trends, Map, Profile, Settings.
+Default page: Dashboard. Page routing via `st.session_state.nav_page`.
 
-1. **Re-detection is mandatory, but page-scoped.** The function MUST check `bg.is_running` on both `get_default_sync()` and `get_default_task()` before returning early. Session flags (`syncing`/`rearsing`) can be stale or cleared after page navigation — the background task snapshot is the source of truth. Without this check, navigating away and back loses the progress window. **However, the progress window must ONLY appear on the page where the sync was initiated.** (Settings).** `_render_sync_progress()` must only be called from the Settings page — never from Dashboard, Trends, or any other page. A background task running in the background should NOT cause the progress dialog to appear on unrelated pages.
+### Dashboard (`_render_dashboard`)
 
-2. **No auto-rerun polling.** NEVER add `time.sleep()` + `st.rerun()` to poll for progress updates. This refreshes the entire page and breaks the UX. The blocking `_wait_for_task` approach is correct — it updates in-place via `st.empty()` placeholders.
+**Sections (top to bottom):** 7-day week strip, sync progress (dashboard origin only), readiness card, morning check-in, compact coach chat.
 
-3. **Progress must resume from current snapshot.** On re-entry (page refresh or navigation back), `_wait_for_task` MUST read `bg.snapshot()` before rendering so the progress bar, status label, and log show actual state — not "Waiting..."/0%.
+**Buttons:**
+- `🔄 Sync` (week strip header) — syncs last 1 day, sets `sync_origin="dashboard"`. Progress shows **only** on Dashboard.
+- `📊 Rules` (week strip header) — generates weekly plan via rules engine.
+- `🤖 AI` (week strip header) — generates weekly plan via LLM.
 
-4. **Keep `_render_sync_progress` inside Settings page only.** Do NOT move it to run before page routing. It belongs where the sync buttons are. The re-detection (point 1) handles the "navigate away and back" case.
+**Coach chat (compact):** Last 6 messages, text input, Send/Clear buttons. Shares `coach_messages` session state with full Coach page.
 
-5. **Sync both copies.** Changes to `src/visualize.py` MUST be copied to `personal_cycling_agent/src/visualize.py` before Docker rebuild.
+**Invariant:** Dashboard sync progress MUST NOT appear on any other page.
+
+### Activities (`_render_activity_detail`)
+
+**Sections:** Activity selectbox, metadata cards (date/duration/distance/calories/power/HR), computed metrics (CP/NP/IF/TSS/VI/W'/decoupling), stream charts (power/HR/speed/cadence/altitude).
+
+**Invariant:** Read-only page. No buttons that trigger background tasks.
+
+### Trends (`_render_trends`)
+
+**Sections:** Date range selectbox (This Year/90d/30d/All Time), CTL/ATL/TSB chart, CP chart, wellness charts (HRV/RHR/weight/sleep/stress — conditional on data).
+
+**Invariant:** Read-only page. No buttons that trigger background tasks.
+
+### Map (`_render_map`)
+
+**Sections:** City text input, radius slider, route stats, scatter map (Mapbox or geo fallback).
+
+**Invariant:** Read-only page. Caches geocode results in `_geocode_cache` session state.
+
+### Profile (`_render_profile`)
+
+**Sections:** Identity (name/weight/height), training discipline, physiological baselines (FTP/max HR/resting HR/gender/LT1/LT2), goals & constraints, equipment, TSB floor, location & schedule. Schedule config grid (7×24).
+
+**Buttons:** `Save Profile` (writes `config.user_profile_path()`), `Save Schedule`.
+
+### Settings (`_render_garmin_setup` + `_render_llm_settings` + `_render_memory_settings`)
+
+**Sections (top to bottom):** Garmin login form, sync buttons, sync progress (settings origin only), LLM endpoint config, memory journal.
+
+**Buttons:**
+- `Sync All Historical Data` — syncs all history (3650 days, unbounded), sets `sync_origin="settings"`. Progress shows **only** on Settings.
+- `Reparse FIT` — re-parses all FIT files, sets `sync_origin="settings"`. Progress shows **only** on Settings.
+- `💾 Save` (LLM) — saves LLM config.
+- `🔍 Test Connection` (LLM) — tests LLM endpoint.
+
+**Invariant:** Garmin MFA flow lives here. Settings sync/reparse progress MUST NOT appear on any other page.
+
+### Coach (section within Dashboard, NOT a separate page)
+
+The compact coach chat is a section within Dashboard (`_render_dashboard_coach`), not a separate nav page. There is also a full `_render_coach()` function with `_render_sync_controls()` but it is **not** in the sidebar navigation — it exists as a shared component.
+
+**Dashboard coach chat:** Last 6 messages, text input, Send/Clear. Shares `coach_messages` with full Coach.
+
+### Sync Progress — Cross-page Rules
+
+`_render_sync_progress(origin)` is called from Dashboard, Settings, and Coach. The `origin` parameter gates visibility:
+
+- Dashboard sync (`sync_origin="dashboard"`) → progress shows **only** on Dashboard.
+- Settings sync/reparse (`sync_origin="settings"`) → progress shows **only** on Settings.
+- Coach sync/prescribe (`sync_origin="coach"`) → progress shows **only** on Coach.
+
+`_clear_sync_flags()` clears `syncing`, `rearsing`, and `sync_origin` when tasks complete.
+
+**NEVER** move `_render_sync_progress` to run before page routing. It belongs where the sync buttons are.
+
+### File Sync Rule
+
+Changes to `src/visualize.py` MUST be copied to `personal_cycling_agent/src/visualize.py` before Docker rebuild. The Dockerfile copies from `personal_cycling_agent/`.
