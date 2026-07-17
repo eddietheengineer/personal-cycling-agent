@@ -2031,10 +2031,15 @@ def _render_garmin_setup():
     c3.metric("Wellness syncs", stats.get("total_wellness_syncs", 0))
     c4.metric("Errors", stats.get("total_errors", 0))
 
-    if stats.get("last_activity_sync_time"):
-        st.write(f"Last activity sync: **{stats['last_activity_sync_time']}**")
-    if stats.get("last_wellness_sync_time"):
-        st.write(f"Last wellness sync: **{stats['last_wellness_sync_time']}**")
+    # Last synced timestamps from DB
+    try:
+        last_activities = db.get_last_synced("garmin_activities")
+        last_wellness = db.get_last_synced("garmin_wellness")
+        c_la, c_lw = st.columns(2)
+        c_la.write(f"Last synced activities: **{last_activities or 'never'}**")
+        c_lw.write(f"Last synced wellness: **{last_wellness or 'never'}**")
+    except Exception:
+        pass
     if stats.get("last_error"):
         st.error(f"Last error: {stats['last_error']} ({stats.get('last_error_time', '')})")
 
