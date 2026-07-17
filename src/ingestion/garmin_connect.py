@@ -1193,7 +1193,7 @@ def sync_garmin(
     total_with_hrv = 0
 
     for i, d in enumerate(fetch_dates):
-
+        target_str = d.strftime("%Y-%m-%d")
         # Fetch HRV
         rmssd = None
         try:
