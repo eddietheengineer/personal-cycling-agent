@@ -327,6 +327,7 @@ pages = [
     ("📈 Trends", "Trends"),
     ("🗺 Map", "Map"),
     ("👤 Profile", "Profile"),
+    ("🧠 Wiki", "Wiki"),
     ("⚙️ Settings", "Settings"),
 ]
 
@@ -743,6 +744,15 @@ def _render_dashboard_coach():
         journal_context = load_recent(30)
         if journal_context:
             system_prompt = f"## Memory Journal\n{journal_context}\n\n{system_prompt}"
+
+        # Inject wiki context if available
+        try:
+            from src.wiki.query import get_context_for_coach
+            wiki_context = get_context_for_coach()
+            if wiki_context:
+                system_prompt = f"## Wiki Knowledge Base\n{wiki_context}\n\n{system_prompt}"
+        except Exception:
+            pass
 
         conv_text = "\n".join(
             f"{m['role'].upper()}: {m['content']}"
@@ -2187,6 +2197,248 @@ def _render_memory_settings():
                 st.rerun()
 
 # ---------------------------------------------------------------------------
+# Wiki — LLM-maintained second brain
+# ---------------------------------------------------------------------------
+def _render_wiki():
+    """Render the LLM Wiki page: ingest, query, browse."""
+    from src.wiki.engine import ensure_wiki, wiki_stats, search_pages, read_page, all_pages
+    from src.wiki.index import read_index, read_log, read_recent_log
+    from src.wiki.ingest import ingest_source, quick_ingest
+    from src.wiki.query import query_wiki
+
+    st.title("🧠 Wiki")
+    st.caption(
+        "LLM-maintained knowledge base. Ingest sources, ask questions, browse pages. "
+        "Covers: performance, wellness, ML, health."
+    )
+
+    # Initialize wiki on first visit
+    ensure_wiki()
+
+    # ── Stats bar ─────────────────────────────────────────────────────
+    stats = wiki_stats()
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Sources", stats["sources"])
+    c2.metric("Entities", stats["entities"])
+    c3.metric("Concepts", stats["concepts"])
+    c4.metric("Analyses", stats["analyses"])
+    c5.metric("Total Pages", stats["total_pages"])
+
+    st.markdown("---")
+
+    # ── Tabs ──────────────────────────────────────────────────────────
+    tab_ingest, tab_query, tab_browse, tab_log = st.tabs([
+        "📥 Ingest", "❓ Query", "📚 Browse", "📋 Log"
+    ])
+
+    # ── INGEST TAB ────────────────────────────────────────────────────
+    with tab_ingest:
+        st.subheader("Ingest a Source")
+        st.caption(
+            "Paste content from an article, research paper, notes, or any text. "
+            "The LLM will process it and integrate it into the wiki."
+        )
+
+        ingest_title = st.text_input("Source Title", placeholder="e.g., Knee Recovery Protocol for Cyclists")
+        ingest_domain = st.selectbox(
+            "Domain",
+            options=["health", "wellness", "performance", "ml"],
+            help="Classify the source domain",
+        )
+        ingest_author = st.text_input("Author (optional)")
+        ingest_url = st.text_input("URL (optional)")
+        ingest_content = st.text_area(
+            "Content",
+            height=300,
+            placeholder="Paste the article text, notes, or research content here...",
+        )
+
+        col_i1, col_i2, col_i3 = st.columns([2, 1, 1])
+        with col_i1:
+            ingest_clicked = st.button(
+                "🧠 Ingest with LLM", type="primary",
+                disabled=not (ingest_title.strip() and ingest_content.strip()),
+                help="LLM will process and integrate into wiki",
+            )
+        with col_i2:
+            quick_clicked = st.button(
+                "💾 Quick Save",
+                disabled=not (ingest_title.strip() and ingest_content.strip()),
+                help="Save raw content without LLM processing",
+            )
+        with col_i3:
+            sample_clicked = st.button("📄 Sample", help="Load a sample source")
+
+        if sample_clicked:
+            st.session_state.wiki_sample_loaded = True
+            st.rerun()
+
+        if "wiki_sample_loaded" in st.session_state and st.session_state.wiki_sample_loaded:
+            st.session_state.wiki_sample_loaded = False
+            st.info("Paste your content above. The LLM will extract entities, concepts, and integrate everything.")
+
+        if ingest_clicked:
+            with st.status("Ingesting source...", expanded=True) as status:
+                status.write(f"Processing: **{ingest_title}** (domain: {ingest_domain})")
+                try:
+                    result = ingest_source(
+                        title=ingest_title.strip(),
+                        content=ingest_content.strip(),
+                        domain=ingest_domain,
+                        author=ingest_author.strip(),
+                        url=ingest_url.strip(),
+                    )
+                    status.update(
+                        label=f"✅ Ingested: {ingest_title}",
+                        state="complete",
+                    )
+                    st.success(
+                        f"Created {result.get('entities_created', 0)} entities, "
+                        f"{result.get('concepts_created', 0)} concepts, "
+                        f"updated {result.get('pages_updated', 0)} pages."
+                    )
+                    if result.get("contradictions"):
+                        st.warning("Contradictions found:")
+                        for c in result["contradictions"]:
+                            st.write(f"- {c}")
+                except Exception as e:
+                    status.update(label=f"❌ Ingest failed", state="error")
+                    st.error(f"Ingest failed: {e}")
+
+        if quick_clicked:
+            try:
+                slug = quick_ingest(
+                    title=ingest_title.strip(),
+                    content=ingest_content.strip(),
+                    domain=ingest_domain,
+                    author=ingest_author.strip(),
+                    url=ingest_url.strip(),
+                )
+                st.success(f"Quick-saved as **{slug}**. Use 'Ingest with LLM' to process later.")
+            except Exception as e:
+                st.error(f"Quick save failed: {e}")
+
+    # ── QUERY TAB ─────────────────────────────────────────────────────
+    with tab_query:
+        st.subheader("Ask the Wiki")
+        st.caption(
+            "Query your knowledge base. The LLM searches relevant pages and synthesizes an answer."
+        )
+
+        query_input = st.text_input(
+            "Your question",
+            placeholder="e.g., What's the best recovery protocol for knee issues?",
+            key="wiki_query_input",
+        )
+
+        col_q1, col_q2 = st.columns([3, 1])
+        with col_q1:
+            query_clicked = st.button("🔍 Search & Answer", type="primary", disabled=not query_input.strip())
+        with col_q2:
+            file_analysis = st.checkbox("File as analysis", value=False,
+                help="Save substantial answers as wiki pages")
+
+        if query_clicked:
+            with st.status("Searching wiki...", expanded=True) as status:
+                status.write(f"Query: **{query_input}**")
+                try:
+                    result = query_wiki(query_input.strip(), file_analysis=file_analysis)
+                    status.update(label="✅ Answer found", state="complete")
+
+                    st.markdown("### Answer")
+                    st.markdown(result.get("answer", "No answer found."))
+
+                    if result.get("citations"):
+                        st.markdown("**Citations:**")
+                        for cite in result["citations"]:
+                            st.write(f"- {cite}")
+
+                    st.caption(f"Confidence: {result.get('confidence', 'unknown')}")
+
+                    if result.get("suggested_sources"):
+                        st.markdown("**Suggested sources to add:**")
+                        for s in result["suggested_sources"]:
+                            st.write(f"- {s}")
+
+                    if result.get("filed_as"):
+                        st.success(f"Analysis filed as: {result['filed_as']}")
+
+                except Exception as e:
+                    status.update(label="❌ Query failed", state="error")
+                    st.error(f"Query failed: {e}")
+
+    # ── BROWSE TAB ────────────────────────────────────────────────────
+    with tab_browse:
+        st.subheader("Browse Wiki")
+
+        # Search bar
+        search_query = st.text_input(
+            "Search pages...",
+            placeholder="Search entities, concepts, sources...",
+            key="wiki_search",
+        )
+
+        if search_query.strip():
+            results = search_pages(search_query.strip())
+            if results:
+                st.write(f"**{len(results)}** pages found")
+                for r in results[:20]:
+                    with st.expander(
+                        f"**{r.get('title', r['slug'])}** "
+                        f"(`{r['directory']}`) — score: {r['score']}"
+                    ):
+                        st.markdown(r.get("snippet", "No snippet available"))
+            else:
+                st.info("No pages match your search.")
+        else:
+            # Show index
+            index_content = read_index()
+            if index_content:
+                st.markdown(index_content)
+            else:
+                st.info("Wiki is empty. Ingest some sources to get started.")
+
+        # Page viewer
+        st.markdown("---")
+        st.subheader("View Page")
+
+        all_wiki_pages = all_pages()
+        if all_wiki_pages:
+            page_options = [
+                f"[{p['directory']}] {p.get('title', p['slug'])}"
+                for p in all_wiki_pages
+            ]
+            selected_page = st.selectbox(
+                "Select a page to view",
+                options=page_options,
+                key="wiki_page_viewer",
+            )
+            if selected_page:
+                # Parse directory and slug from selection
+                bracket_end = selected_page.index("]") + 2
+                directory = selected_page[1:selected_page.index("]")]
+                title_part = selected_page[bracket_end:]
+                # Find the matching page
+                for p in all_wiki_pages:
+                    if p["directory"] == directory and p.get("title", p["slug"]) == title_part:
+                        content = read_page(p["directory"], p["slug"])
+                        if content:
+                            st.markdown(content)
+                        break
+        else:
+            st.info("No pages to browse yet.")
+
+    # ── LOG TAB ───────────────────────────────────────────────────────
+    with tab_log:
+        st.subheader("Wiki Activity Log")
+        st.caption("Chronological record of all wiki operations.")
+
+        log_content = read_recent_log(50)
+        if log_content:
+            st.markdown(log_content)
+        else:
+            st.info("No activity logged yet.")
+# ---------------------------------------------------------------------------
 # Shared sync controls (used by Coach page)
 # ---------------------------------------------------------------------------
 def _render_sync_controls():
@@ -2669,6 +2921,8 @@ elif nav_page == "Map":
     _render_map()
 elif nav_page == "Profile":
     _render_profile()
+elif nav_page == "Wiki":
+    _render_wiki()
 elif nav_page == "Settings":
     _render_garmin_setup()
     st.divider()
