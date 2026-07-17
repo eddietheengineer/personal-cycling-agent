@@ -90,7 +90,7 @@ _HR_RANGES = [
 ]
 
 _LIGHT_COLORS = ["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728", "#9467bd"]
-_DARK_COLORS = ["#5cb8e0", "#6ecf6e", "#ffb347", "#ff7b7b", "#c99fff"]
+_DARK_COLORS = ["#4fc3f7", "#66dd77", "#ffab40", "#ff5252", "#ba68c8"]
 
 
 def _zone_for_value(value: float, threshold: float, ranges: list) -> int:
@@ -131,9 +131,8 @@ def _build_zone_chart(
     x_min = [_elapsed_to_minutes(e) for e in elapsed]
     data_max = max(values) if values else 0
 
-    # Detect theme for line color
     theme = st.get_option("theme.base")
-    line_color = "#f0f0f0" if theme == "dark" else "#222222"
+    line_color = "#ffffff" if theme == "dark" else "#1a1a1a"
 
     fig = go.Figure()
 
@@ -144,7 +143,7 @@ def _build_zone_chart(
             y_hi = min(hi * threshold, data_max * 1.05)
             fig.add_hrect(
                 y0=y_lo, y1=y_hi,
-                fillcolor=color, opacity=0.12,
+                fillcolor=color, opacity=0.25,
                 line=dict(width=0),
                 layer="below",
             )
@@ -153,7 +152,7 @@ def _build_zone_chart(
     if n > 0:
         fig.add_trace(go.Scatter(
             x=x_min, y=values, mode="lines",
-            line=dict(width=2, color=line_color),
+            line=dict(width=2.5, color=line_color),
             hovertemplate=f"Elapsed: %{{x:.1f}} min<br>{y_label}: %{{y:.0f}}<extra></extra>",
             name="",
         ))

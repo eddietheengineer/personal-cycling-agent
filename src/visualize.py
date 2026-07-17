@@ -1141,14 +1141,15 @@ def _render_activity_detail():
             fig = _build_zone_chart(elapsed, values, max_hr, zones, y_label, title, st)
             st.plotly_chart(fig, width="stretch")
         else:
+            theme = st.get_option("theme.base")
             fig = px.line(
                 x=[_elapsed_to_minutes(e) for e in elapsed],
                 y=values,
                 labels={"x": "Elapsed (min)", "y": y_label},
                 title=title,
-                template="plotly_white",
+                template="plotly_white" if theme != "dark" else "plotly_dark",
             )
-            fig.update_traces(line=dict(width=1.5))
+            fig.update_traces(line=dict(width=2.5))
             fig.update_layout(height=320, margin=dict(l=50, r=20, t=40, b=40))
             st.plotly_chart(fig, width="stretch")
 
@@ -1160,6 +1161,9 @@ def _render_activity_detail():
 # Trends tab
 # ---------------------------------------------------------------------------
 def _render_trends():
+    theme = st.get_option("theme.base")
+    dark_mode = theme == "dark"
+    trend_template = "plotly_dark" if dark_mode else "plotly_white"
     # Date range presets
     wellness_rows = db.get_trend_data("wellness", ["date"])
     if not wellness_rows:
@@ -1225,18 +1229,21 @@ def _render_trends():
             df_load = pd.DataFrame(history)
 
             # Plot historical data
+            ctl_color = "#4fc3f7" if dark_mode else "#1f77b4"
+            atl_color = "#ffb347" if dark_mode else "#ff7f0e"
+            tsb_color = "#66dd77" if dark_mode else "#2ca02c"
             fig = px.line(
                 df_load, x="date", y=["ctl", "atl", "tsb"],
                 labels={"value": "", "variable": ""},
                 title="CTL · ATL · TSB",
-                template="plotly_white",
+                template=trend_template,
                 color_discrete_map={
-                    "ctl": "#1f77b4",
-                    "atl": "#ff7f0e",
-                    "tsb": "#2ca02c",
+                    "ctl": ctl_color,
+                    "atl": atl_color,
+                    "tsb": tsb_color,
                 },
             )
-            fig.update_traces(line=dict(width=2))
+            fig.update_traces(line=dict(width=2.5))
             fig.update_layout(height=350, legend=dict(title=""))
 
             # Overlay projected plan data as dashed lines
@@ -1244,21 +1251,21 @@ def _render_trends():
             plan = load_weekly_plan()
             if plan and plan.ctl_series:
                 plan_dates = [d.date for d in plan.days]
-                colors = {"ctl": "#1f77b4", "atl": "#ff7f0e", "tsb": "#2ca02c"}
+                colors = {"ctl": ctl_color, "atl": atl_color, "tsb": tsb_color}
                 series_map = {"ctl": plan.ctl_series, "atl": plan.atl_series, "tsb": plan.tsb_series}
                 for metric in ["ctl", "atl", "tsb"]:
                     import plotly.graph_objects as go
                     fig.add_trace(go.Scatter(
                         x=plan_dates, y=series_map[metric],
                         mode="lines", name=f"{metric} (projected)",
-                        line=dict(color=colors[metric], width=2, dash="dash"),
+                        line=dict(color=colors[metric], width=2.5, dash="dash"),
                         opacity=0.7,
                     ))
 
             # Add zone bands for TSB
-            fig.add_hline(y=10, line_dash="dot", line_color="#2ca02c", opacity=0.4, annotation_text="Fresh")
+            fig.add_hline(y=10, line_dash="dot", line_color=tsb_color, opacity=0.4, annotation_text="Fresh")
             fig.add_hline(y=-10, line_dash="dot", line_color="#dc3545", opacity=0.4, annotation_text="Tired")
-            fig.add_hrect(y0=-10, y1=10, fillcolor="grey", opacity=0.06, layer="below")
+            fig.add_hrect(y0=-10, y1=10, fillcolor="grey", opacity=0.12, layer="below")
 
             st.plotly_chart(fig, width="stretch")
 
@@ -1269,9 +1276,9 @@ def _render_trends():
             df_cp, x="date", y="cp_used",
             labels={"cp_used": "CP (W)"},
             title="Critical Power",
-            template="plotly_white",
+            template=trend_template,
         )
-        fig.update_traces(line=dict(width=2, color="#9467bd"))
+        fig.update_traces(line=dict(width=2.5, color="#9467bd"))
         fig.update_layout(height=280)
         st.plotly_chart(fig, width="stretch")
 
@@ -1295,11 +1302,11 @@ def _render_trends():
             rmssd_rows, x="date", y="rmssd",
             labels={"rmssd": "RMSSD (ms)"},
             title="HRV (RMSSD)",
-            template="plotly_white",
+            template=trend_template,
         )
         mean_rmssd = rmssd_rows["rmssd"].mean()
         fig.add_hline(y=mean_rmssd, line_dash="dash", annotation_text=f"Mean: {mean_rmssd:.0f}")
-        fig.update_traces(line=dict(width=1.5))
+        fig.update_traces(line=dict(width=2.5))
         fig.update_layout(height=280)
         st.plotly_chart(fig, width="stretch")
 
@@ -1310,9 +1317,9 @@ def _render_trends():
             rhr_rows, x="date", y="resting_hr",
             labels={"resting_hr": "Resting HR (bpm)"},
             title="Resting Heart Rate",
-            template="plotly_white",
+            template=trend_template,
         )
-        fig.update_traces(line=dict(width=1.5))
+        fig.update_traces(line=dict(width=2.5))
         fig.update_layout(height=280)
         st.plotly_chart(fig, width="stretch")
 
@@ -1323,9 +1330,9 @@ def _render_trends():
             weight_rows, x="date", y="weight",
             labels={"weight": "Weight (kg)"},
             title="Weight",
-            template="plotly_white",
+            template=trend_template,
         )
-        fig.update_traces(line=dict(width=1.5))
+        fig.update_traces(line=dict(width=2.5))
         fig.update_layout(height=280)
         st.plotly_chart(fig, width="stretch")
 
@@ -1339,18 +1346,18 @@ def _render_trends():
             fig.add_trace(go.Scatter(
                 x=sleep_rows["date"], y=sleep_rows["sleep_hours"],
                 name="Hours", mode="lines",
-                line=dict(width=2, color="#9467bd"),
+                line=dict(width=2.5, color="#9467bd"),
             ))
         if sleep_rows["sleep_score"].notna().any():
             fig.add_trace(go.Scatter(
                 x=sleep_rows["date"], y=sleep_rows["sleep_score"],
                 name="Score", mode="lines",
-                line=dict(width=2, color="#1f77b4"),
+                line=dict(width=2.5, color="#1f77b4"),
             ))
         fig.update_layout(
             title="Sleep",
             height=280,
-            template="plotly_white",
+            template=trend_template,
             yaxis=dict(title="Hours / Score"),
             legend=dict(title=""),
         )
@@ -1363,9 +1370,9 @@ def _render_trends():
             stress_rows, x="date", y="stress",
             labels={"stress": "Stress"},
             title="Daily Stress",
-            template="plotly_white",
+            template=trend_template,
         )
-        fig.update_traces(line=dict(width=1.5))
+        fig.update_traces(line=dict(width=2.5))
         fig.update_layout(height=280)
         st.plotly_chart(fig, width="stretch")
 
