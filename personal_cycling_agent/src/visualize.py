@@ -686,6 +686,105 @@ def _render_dashboard_checkin():
                 st.rerun()
 
 
+# ── Lazy wiki retrieval for coach context ──────────────────────────────
+
+_WIKI_KEYWORDS = {
+    "performance": [
+        "critical power", "cp", "ftp", "w'", "w prime", "normalized power", "np",
+        "tss", "training stress", "ctl", "atl", "tsb", "if", "intensity factor",
+        "variability index", "vi", "decoupling", "durability", "power", "threshold",
+        "lt1", "lt2", "dfa", "strain", "impulse-response", "banister", "training load",
+        "acute chronic", "acwr", "zone", "zones", "power zone", "pdc", "pmax",
+        "three-dimensional", "3d ir", "kontro", "skiba", "clarke", "coggan",
+        "training zone", "functional threshold", "lactate", "ventilatory threshold",
+        "power duration", "power-duration", "work capacity", "aerobic", "anaerobic",
+        "glycolytic", "phosphocreatine", "alactic", "oxidative", "energy system",
+        "reconstitution", "recovery tau", "detrain", "detraining", "cp decay",
+    ],
+    "wellness": [
+        "hrv", "rmssd", "heart rate variability", "resting hr", "rhr", "sleep",
+        "recovery", "readiness", "wellness", "stress", "soreness", "doms",
+        "morning", "check-in", "checkin", "fatigue", "sleep quality",
+        "baseline", "normality", "kiviniemi", "plews", "swc", "dfa-a1",
+        "autonomic", "parasympathetic", "vagal", "orthostatic",
+        "multi-modal", "multimodal", "alfonso", "saw", "readiness index",
+        "pain", "guardrail", "sleep debt",
+    ],
+    "ml": [
+        "model", "machine learning", "prediction", "predict", "feature",
+        "lasso", "regression", "training data", "personal ml", "personal ml",
+        "algorithm", "accuracy", "rmse", "drift", "online learning",
+        "rothschild", "tidymodels", "z-score", "lag feature", "correlation",
+        "pruning", "ewma", "composite score", "well-being score",
+        "sleep index", "acwr", "feature engineering",
+    ],
+    "health": [
+        "knee", "injury", "injured", "rehab", "rehabilitation", "recovery",
+        "exercise", "stretch", "strengthen", "pt", "physical therapy",
+        "patellofemoral", "pfp", "pain", "sore", "soreness", "swelling",
+        "non-cycling", "cross train", "cross-training", "swimming", "running",
+        "quad", "glute", "hamstring", "calf", "hip", "mobility",
+        "prehab", "prevention", "biomechanics", "bike fit", "saddle",
+        "cleat", "pedal", "alignment", "tracking", "chondromalacia",
+    ],
+}
+
+
+def _wiki_context_for_question(question: str) -> str:
+    """
+    Search the wiki for relevant pages based on the user's question.
+    Only injects context when the question touches wiki domains.
+
+    Returns a concise context block or empty string.
+    """
+    q = question.lower()
+
+    # Determine which domains are relevant
+    active_domains = []
+    for domain, keywords in _WIKI_KEYWORDS.items():
+        for kw in keywords:
+            if kw in q:
+                active_domains.append(domain)
+                break
+
+    if not active_domains:
+        return ""
+
+    # Search the wiki for relevant pages
+    from src.wiki.engine import search_pages
+
+    # Search with the full question
+    results = search_pages(question)
+
+    # Also search with domain-filtered terms if results are sparse
+    if len(results) < 2:
+        for domain in active_domains:
+            for kw in _WIKI_KEYWORDS[domain]:
+                if kw in q:
+                    extra = search_pages(kw)
+                    existing_slugs = {r["slug"] for r in results}
+                    for r in extra:
+                        if r["slug"] not in existing_slugs:
+                            results.append(r)
+                            existing_slugs.add(r["slug"])
+                    if len(results) >= 5:
+                        break
+
+    if not results:
+        return ""
+
+    # Build concise context from top results (max 5 pages, snippets only)
+    lines = []
+    for r in results[:5]:
+        title = r.get("title", r["slug"])
+        snippet = r.get("snippet", "")
+        lines.append(f"- **{title}** ({r.get('directory', '')}): {snippet}")
+
+    return (
+        f"Relevant wiki pages for this question:\n"
+        + "\n".join(lines)
+        + "\n\nRead these pages for detailed information before answering."
+    )
 def _render_dashboard_coach():
     """Compact coach chat section."""
     if "coach_messages" not in st.session_state:
@@ -745,10 +844,9 @@ def _render_dashboard_coach():
         if journal_context:
             system_prompt = f"## Memory Journal\n{journal_context}\n\n{system_prompt}"
 
-        # Inject wiki context if available
+        # Inject wiki context only when the question touches wiki domains
         try:
-            from src.wiki.query import get_context_for_coach
-            wiki_context = get_context_for_coach()
+            wiki_context = _wiki_context_for_question(user_input.strip())
             if wiki_context:
                 system_prompt = f"## Wiki Knowledge Base\n{wiki_context}\n\n{system_prompt}"
         except Exception:
