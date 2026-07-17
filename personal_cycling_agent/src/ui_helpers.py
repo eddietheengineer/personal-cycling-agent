@@ -13,11 +13,11 @@ from typing import Optional
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
-def _format_duration(ms: Optional[float]) -> str:
-    """Format Garmin duration (milliseconds) into human-readable string."""
-    if ms is None or ms < 0:
+def _format_duration(seconds: Optional[float]) -> str:
+    """Format duration (seconds) into human-readable string."""
+    if seconds is None or seconds < 0:
         return "\u2014"
-    sec = int(ms / 1000)
+    sec = int(seconds)
     h, rem = divmod(sec, 3600)
     m, s = divmod(rem, 60)
     if h:
