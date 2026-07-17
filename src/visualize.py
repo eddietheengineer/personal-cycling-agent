@@ -165,17 +165,30 @@ def _wait_for_task(bg, syncing_key="syncing", rearsing_key=None, sync_mode_key="
                 return None
 
             time.sleep(0.5)
-def _render_sync_progress() -> None:
+def _clear_sync_flags() -> None:
+    """Clear all sync-related session state flags."""
+    st.session_state.syncing = False
+    st.session_state.rearsing = False
+    st.session_state.sync_origin = ""
+
+def _render_sync_progress(origin: str) -> None:
     """Render the sync progress dialog when a sync is running or just completed.
+
+    Only shows progress on the page that initiated the sync (via `origin`).
+    This prevents the progress dialog from leaking to unrelated pages.
 
     Block-waits on the background task, showing live progress via st.status().
     On page refresh, resumes from the current task snapshot so progress is not lost.
-
     Also re-detects running tasks by checking background task snapshots directly,
-    so navigating away and back still shows the progress window.
+    so navigating away and back to the same page still shows the progress window.
     """
     syncing = st.session_state.get("syncing")
     rearsing = st.session_state.get("rearsing")
+    sync_origin = st.session_state.get("sync_origin", "")
+
+    # Only show progress on the page that initiated the sync
+    if sync_origin and sync_origin != origin:
+        return
 
     # Re-detect: even if flags are cleared, check if a background task is still running
     from src.tasks.worker import get_default_sync, get_default_task
@@ -205,7 +218,7 @@ def _render_sync_progress() -> None:
     if syncing and sync_mode != "prescribe":
         bg = get_default_sync()
         if bg is None:
-            st.session_state.syncing = False
+            _clear_sync_flags()
             st.rerun()
         # Check if task already finished before entering blocking wait
         snap = bg.snapshot()
@@ -221,11 +234,11 @@ def _render_sync_progress() -> None:
                     except Exception:
                         pass
                 st.session_state.sync_result = result
-            st.session_state.syncing = False
+            _clear_sync_flags()
             st.rerun()
         elif snap["status"] == "failed":
             st.session_state.sync_error = snap.get("error", "Unknown error")
-            st.session_state.syncing = False
+            _clear_sync_flags()
             st.rerun()
         else:
             result = _wait_for_task(bg, syncing_key="syncing")
@@ -239,35 +252,31 @@ def _render_sync_progress() -> None:
                     except Exception:
                         pass
                 st.session_state.sync_result = result
-            st.session_state.syncing = False
+            _clear_sync_flags()
             st.rerun()
 
     # Block-wait for BackgroundTask (reparse, prescribe)
     if rearsing or (syncing and sync_mode == "prescribe"):
         bg = get_default_task()
         if bg is None:
-            st.session_state.syncing = False
-            st.session_state.rearsing = False
+            _clear_sync_flags()
             st.rerun()
         # Check if task already finished before entering blocking wait
         snap = bg.snapshot()
         if snap["status"] == "completed":
             result = snap.get("result", {})
             st.session_state.sync_result = result
-            st.session_state.syncing = False
-            st.session_state.rearsing = False
+            _clear_sync_flags()
             st.rerun()
         elif snap["status"] == "failed":
             st.session_state.sync_error = snap.get("error", "Unknown error")
-            st.session_state.syncing = False
-            st.session_state.rearsing = False
+            _clear_sync_flags()
             st.rerun()
         else:
             result = _wait_for_task(bg, syncing_key="syncing", rearsing_key="rearsing")
             if result is not None:
                 st.session_state.sync_result = result
-            st.session_state.syncing = False
-            st.session_state.rearsing = False
+            _clear_sync_flags()
             st.rerun()
 
 # ---------------------------------------------------------------------------
@@ -347,6 +356,9 @@ def _render_dashboard():
     # ── 7-Day Training Calendar ─────────────────────────────────────────
     _render_week_strip()
 
+    # ── Render progress dialog (dashboard sync) ──────────────────────
+    _render_sync_progress(origin="dashboard")
+
     st.divider()
 
     # ── Readiness Summary ───────────────────────────────────────────────
@@ -386,6 +398,7 @@ def _render_week_strip():
                     run_prescribe_after=True,
                 )
                 st.session_state.syncing = True
+                st.session_state.sync_origin = "dashboard"
                 st.session_state.sync_mode = "dashboard"
                 st.session_state.sync_days = 1
                 st.session_state.sync_result = None
@@ -1756,6 +1769,7 @@ def _render_garmin_setup():
                 run_analyze_after=True,
             )
             st.session_state.syncing = True
+            st.session_state.sync_origin = "settings"
             st.session_state.sync_mode = "all"
             st.session_state.sync_days = 3650
             st.session_state.sync_result = None
@@ -1784,13 +1798,14 @@ def _render_garmin_setup():
 
             background_task(_reparse_work, result_key="reparse")
             st.session_state.rearsing = True
+            st.session_state.sync_origin = "settings"
             st.session_state.sync_log = []
             st.session_state.sync_progress = 0
             st.rerun()
 
 
     # ── Render progress dialog ───────────────────────────────────────
-    _render_sync_progress()
+    _render_sync_progress(origin="settings")
 
     # ── Show sync errors ──────────────────────────────────────────────
     if st.session_state.get("sync_error"):
@@ -2185,7 +2200,7 @@ def _render_sync_controls():
                 unbounded=False,
                 run_analyze_after=True,
             )
-            st.session_state.syncing = True
+            st.session_state.sync_origin = "coach"
             st.session_state.sync_mode = "update"
             st.session_state.sync_days = 7
             st.session_state.sync_result = None
@@ -2217,12 +2232,17 @@ def _render_sync_controls():
 
             background_task(_prescribe_work, result_key="prescribe")
             st.session_state.syncing = True
+            st.session_state.sync_origin = "coach"
             st.session_state.sync_mode = "prescribe"
             st.session_state.sync_result = None
             st.session_state.sync_error = None
             st.session_state.sync_log = []
             st.session_state.sync_progress = 0
             st.rerun()
+
+
+    # ── Render progress dialog ───────────────────────────────────────
+    _render_sync_progress(origin="coach")
 
 
     # ── Show sync errors ──────────────────────────────────────────────
