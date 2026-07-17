@@ -231,7 +231,7 @@ The compact coach chat is a section within Dashboard (`_render_dashboard_coach`)
 
 ### Sync Progress — Cross-page Rules
 
-`_render_sync_progress(origin)` is called from Dashboard and Settings. The `origin` parameter gates visibility:
+`_render_sync_progress(origin)` is called from Dashboard, Settings, and `_render_sync_controls` (dead code, `origin="coach"`). The `origin` parameter gates visibility:
 
 - Dashboard sync (`sync_origin="dashboard"`, `sync_mode="dashboard"`) → progress shows **only** on Dashboard. Uses `BackgroundSync`, sets `syncing=True`.
 - Settings sync (`sync_origin="settings"`, `sync_mode="all"`) → progress shows **only** on Settings. Uses `BackgroundSync`, sets `syncing=True`.
@@ -239,7 +239,7 @@ The compact coach chat is a section within Dashboard (`_render_dashboard_coach`)
 
 `sync_mode` values: `"dashboard"` (1-day sync), `"all"` (full historical), `"update"` (Coach 7-day — dead code), `"prescribe"` (Coach prescription — dead code).
 
-`_clear_sync_flags()` clears `syncing`, `rearsing`, and `sync_origin` when tasks complete.
+`_clear_sync_flags()` clears `syncing`, `rearsing`, `sync_origin`, and `sync_mode` when tasks complete.
 
 **NEVER** move `_render_sync_progress` to run before page routing. It belongs where the sync buttons are.
 

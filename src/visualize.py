@@ -405,7 +405,7 @@ def _render_week_strip():
             st.caption(f"Plan from {plan.week_start} · {plan.readiness_summary}")
     with h_cols[1]:
         if st.button("🔄 Sync", use_container_width=True, key="sync_dash"):
-            if not st.session_state.get("syncing"):
+            if not st.session_state.get("syncing") and not st.session_state.get("rearsing"):
                 from src.tasks.worker import background_sync
                 background_sync(
                     days=1,
@@ -1777,7 +1777,7 @@ def _render_garmin_setup():
             key="reparse_fit",
         )
     if sync_all_clicked:
-        if not st.session_state.get("syncing"):
+        if not st.session_state.get("syncing") and not st.session_state.get("rearsing"):
             from src.tasks.worker import background_sync
             background_sync(
                 days=3650,
@@ -1796,7 +1796,7 @@ def _render_garmin_setup():
 
     # ── Reparse FIT files ────────────────────────────────────────────
     if reparse_clicked:
-        if not st.session_state.get("rearsing"):
+        if not st.session_state.get("rearsing") and not st.session_state.get("syncing"):
             from src.tasks.worker import background_task
             from src.ingestion.garmin_connect import reparse_all_fit_files
             from src.main import run_analyze
@@ -2211,7 +2211,7 @@ def _render_sync_controls():
 
     # ── Handle button clicks ──────────────────────────────────────────
     if sync_clicked:
-        if not st.session_state.get("syncing"):
+        if not st.session_state.get("syncing") and not st.session_state.get("rearsing"):
             from src.tasks.worker import background_sync
             background_sync(
                 days=7,
@@ -2229,7 +2229,7 @@ def _render_sync_controls():
             st.rerun()
 
     if prescribe_clicked:
-        if not st.session_state.get("syncing"):
+        if not st.session_state.get("syncing") and not st.session_state.get("rearsing"):
             from src.tasks.worker import background_task
             from src.main import run_analyze, run_prescribe
 
