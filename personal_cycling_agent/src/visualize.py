@@ -1456,7 +1456,7 @@ def _geocode_city(city: str) -> tuple[float, float] | None:
 
 def _render_map():
     """Render a map tab with heatmap of route activity."""
-    from geopy.distance import geodesic
+    import math
 
     st.subheader("Route Map")
 
@@ -1473,46 +1473,52 @@ def _render_map():
     center_lat, center_lon = center
     st.info(f"Center: {city} ({center_lat:.4f}, {center_lon:.4f}) — Radius: {radius_miles} mi")
 
-    # Get distinct activity IDs with route data
-    route_ids = db.conn.execute(
-        "SELECT DISTINCT activity_id FROM activity_routes"
-    ).fetchall()
-
-    if not route_ids:
+    # Check if any route data exists
+    has_routes = db.conn.execute(
+        "SELECT COUNT(*) FROM activity_routes"
+    ).fetchone()[0]
+    if has_routes == 0:
         st.info("No route data found. Run --sync-routes first.")
         return
 
-    # For each activity, compute centroid and check if within radius
-    matching_ids: list[str] = []
-    all_points: list[dict] = []
+    # Compute all centroids in a single query
+    centroids = db.conn.execute(
+        "SELECT activity_id, AVG(latitude), AVG(longitude) FROM activity_routes GROUP BY activity_id"
+    ).fetchall()
 
-    for (activity_id,) in route_ids:
-        # Get centroid of this activity's route
-        centroid = db.conn.execute(
-            "SELECT AVG(latitude), AVG(longitude) FROM activity_routes WHERE activity_id = ?",
-            (activity_id,),
-        ).fetchone()
+    if not centroids:
+        st.info("No route data found. Run --sync-routes first.")
+        return
 
-        if centroid[0] is None or centroid[1] is None:
+    # Filter matching activities using haversine approximation
+    radius_km = radius_miles * 1.60934
+    center_lat_rad = math.radians(center_lat)
+    center_lon_rad = math.radians(center_lon)
+    R = 6371.0  # Earth radius in km
+
+    matching_ids = []
+    for activity_id, c_lat, c_lon in centroids:
+        if c_lat is None or c_lon is None:
             continue
-
-        dist = geodesic((center_lat, center_lon), (centroid[0], centroid[1])).miles
-
-        if dist <= radius_miles:
+        dlat = math.radians(c_lat) - center_lat_rad
+        dlon = math.radians(c_lon) - center_lon_rad
+        a = math.sin(dlat / 2) ** 2 + math.cos(center_lat_rad) * math.cos(math.radians(c_lat)) * math.sin(dlon / 2) ** 2
+        dist_km = R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        if dist_km <= radius_km:
             matching_ids.append(activity_id)
-            # Fetch all points for this activity
-            points = db.conn.execute(
-                "SELECT latitude, longitude FROM activity_routes WHERE activity_id = ? ORDER BY sequence",
-                (activity_id,),
-            ).fetchall()
-            for (lat, lon) in points:
-                all_points.append({"lat": lat, "lon": lon, "activity_id": activity_id})
 
-    if not all_points:
+    if not matching_ids:
         st.info(f"No routes found within {radius_miles} mi of {city}.")
         return
 
-    df = pd.DataFrame(all_points)
+    # Fetch all points for matching activities in a single query
+    placeholders = ",".join(["?"] * len(matching_ids))
+    points = db.conn.execute(
+        f"SELECT latitude, longitude, activity_id FROM activity_routes WHERE activity_id IN ({placeholders}) ORDER BY activity_id, sequence",
+        matching_ids,
+    ).fetchall()
+
+    df = pd.DataFrame(points, columns=["lat", "lon", "activity_id"])
 
     # Stats
     col1, col2, col3 = st.columns(3)
