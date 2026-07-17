@@ -305,6 +305,17 @@ if "db" not in st.session_state:
 
 db = st.session_state.db
 
+# ---------------------------------------------------------------------------
+# Auto-sync scheduler (start on first run)
+# ---------------------------------------------------------------------------
+if "scheduler_started" not in st.session_state:
+    st.session_state.scheduler_started = True
+    try:
+        from src.tasks.scheduler import get_scheduler
+        get_scheduler().start()
+    except Exception:
+        pass  # Non-critical: scheduler fails silently if Garmin not configured
+
 
 # ---------------------------------------------------------------------------
 # Sidebar navigation (compact icon-based)
@@ -354,6 +365,18 @@ def _render_dashboard():
 
     st.title("Cycling Dashboard")
 
+
+    # ── Auto-sync status badge ───────────────────────────────────────
+    try:
+        from src.tasks.scheduler import get_scheduler
+        _sched = get_scheduler()
+        if _sched.enabled:
+            status_icon = "🟢" if _sched.is_running else "🟡"
+            st.caption(f"{status_icon} Auto-sync {'running' if _sched.is_running else 'starting'}")
+        else:
+            st.caption("⚪ Auto-sync off (enable in Settings)")
+    except Exception:
+        pass
 
     # ── 7-Day Training Calendar ─────────────────────────────────────────
     _render_week_strip()
@@ -1952,6 +1975,68 @@ def _render_garmin_setup():
                 st.session_state.sync_log = []
                 st.session_state.sync_progress = 0
                 st.rerun()
+
+    # ── Auto-sync configuration ──────────────────────────────────────
+    st.subheader("Auto-Sync")
+    st.caption(
+        "Automatically poll Garmin Connect for new activities and wellness data "
+        "on a schedule. No manual sync needed."
+    )
+
+    from src.tasks.scheduler import get_scheduler
+    scheduler = get_scheduler()
+
+    enabled = scheduler.enabled
+    activity_min = scheduler.activity_interval_minutes
+    wellness_hr = scheduler.wellness_interval_hours
+
+    col_as1, col_as2, col_as3 = st.columns([2, 1, 1])
+    col_as1.toggle("Enable auto-sync", value=enabled, key="auto_sync_toggle")
+    col_as2.number_input(
+        "Activity check (min)",
+        min_value=10, max_value=120, value=activity_min, step=5,
+        key="auto_sync_activity_min",
+        help="How often to check for new completed activities",
+    )
+    col_as3.number_input(
+        "Wellness check (hours)",
+        min_value=1, max_value=24, value=wellness_hr, step=1,
+        key="auto_sync_wellness_hr",
+        help="How often to check for new daily wellness data (HRV, RHR, sleep)",
+    )
+
+    if st.button("Save Auto-Sync Settings", type="primary", use_container_width=True, key="save_auto_sync"):
+        new_enabled = st.session_state.auto_sync_toggle
+        new_activity_min = st.session_state.auto_sync_activity_min
+        new_wellness_hr = st.session_state.auto_sync_wellness_hr
+
+        scheduler.set_enabled(new_enabled)
+        scheduler.set_intervals(new_activity_min, new_wellness_hr)
+        st.session_state.auto_sync_saved = True
+        st.rerun()
+
+    if st.session_state.get("auto_sync_saved"):
+        st.success("Auto-sync settings saved.")
+        st.session_state.auto_sync_saved = False
+
+    # Status
+    stats = scheduler.stats
+    st.markdown("---")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(
+        "Status",
+        "Running" if scheduler.is_running else ("Enabled (starting)" if scheduler.enabled else "Off"),
+    )
+    c2.metric("Activity syncs", stats.get("total_activity_syncs", 0))
+    c3.metric("Wellness syncs", stats.get("total_wellness_syncs", 0))
+    c4.metric("Errors", stats.get("total_errors", 0))
+
+    if stats.get("last_activity_sync_time"):
+        st.write(f"Last activity sync: **{stats['last_activity_sync_time']}**")
+    if stats.get("last_wellness_sync_time"):
+        st.write(f"Last wellness sync: **{stats['last_wellness_sync_time']}**")
+    if stats.get("last_error"):
+        st.error(f"Last error: {stats['last_error']} ({stats.get('last_error_time', '')})")
 
 # ---------------------------------------------------------------------------
 # Garmin connection check (session state or cached tokens)
