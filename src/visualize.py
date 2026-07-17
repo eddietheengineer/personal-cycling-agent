@@ -1041,7 +1041,7 @@ def _render_activity_detail():
     options = []
     id_map = {}
     for a in activities:
-        label = f"{a['start_date'][:10]} — {a['activity_type']}"
+        label = f"{a['start_date'][:10]} — {a.get('activity_name') or a.get('activity_type') or 'Activity'}"
         options.append(label)
         id_map[label] = a["id"]
 
@@ -1055,19 +1055,19 @@ def _render_activity_detail():
         return
 
     # -- Metadata cards --
-    st.subheader(f"Activity: {combined['activity_type']}")
-    st.caption(f"ID: {combined['id']}")
+    st.subheader(f"Activity: {combined.get('activity_name') or combined.get('activity_type') or 'Unknown'}")
+    st.caption(f"ID: {combined['id']} | Type: {combined.get('activity_type', 'Unknown') or 'Unknown'}")
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Date", combined["start_date"][:10])
-    col2.metric("Duration", _format_duration(combined.get("duration")))
-    col3.metric("Distance", _distance_km(combined.get("distance")))
-    col4.metric("Calories", f"{combined.get('calories', 0):.0f}" if combined.get("calories") else "—")
+    col2.metric("Duration", _format_duration(combined.get("duration")), help=f"Source: {combined.get('source_duration', 'API')}")
+    col3.metric("Distance", _distance_km(combined.get("distance")), help=f"Source: {combined.get('source_distance', 'API')}")
+    col4.metric("Calories", f"{combined.get('calories', 0):.0f}" if combined.get("calories") else "—", help=f"Source: {combined.get('source_calories', 'API')}")
 
     col5, col6, col7, col8 = st.columns(4)
-    col5.metric("Avg Power", f"{combined.get('average_power', 0):.0f} W" if combined.get("average_power") else "—")
+    col5.metric("Avg Power", f"{combined.get('average_power', 0):.0f} W" if combined.get("average_power") else "—", help=f"Source: {combined.get('source_power', 'API')}")
     col6.metric("Max Power", f"{combined.get('max_power', 0):.0f} W" if combined.get("max_power") else "—")
-    col7.metric("Avg HR", f"{combined.get('average_hr', 0):.0f} bpm" if combined.get("average_hr") else "—")
+    col7.metric("Avg HR", f"{combined.get('average_hr', 0):.0f} bpm" if combined.get("average_hr") else "—", help=f"Source: {combined.get('source_hr', 'API')}")
     col8.metric("Max HR", f"{combined.get('max_hr', 0):.0f} bpm" if combined.get("max_hr") else "—")
 
     # Computed metrics (if available)
@@ -1095,6 +1095,50 @@ def _render_activity_detail():
                 computed_cols[idx].metric(label, f"{val:.1f} {unit}")
         else:
             computed_cols[idx].metric(label, "—")
+
+    # -- Training Effects --
+    st.subheader("Training Effects")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Aerobic TE", f"{combined.get('aerobic_training_effect', 0):.1f}" if combined.get('aerobic_training_effect') else "—")
+    col2.metric("Anaerobic TE", f"{combined.get('anaerobic_training_effect', 0):.1f}" if combined.get('anaerobic_training_effect') else "—")
+    col3.metric("VO2 Max", f"{combined.get('vo2_max', 0):.0f}" if combined.get('vo2_max') else "—")
+
+    col4, col5, col6 = st.columns(3)
+    col4.metric("TSS", f"{combined.get('tss', 0):.1f}" if combined.get('tss') else "—")
+    col5.metric("Intensity Factor", f"{combined.get('intensity_factor', 0):.3f}" if combined.get('intensity_factor') else "—")
+    col6.metric("Moving Time", _format_duration(combined.get('moving_duration')) if combined.get('moving_duration') else "—")
+
+    # -- Environment --
+    st.subheader("Environment")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Elev Gain", f"{combined.get('elevation_gain', 0):.0f} m" if combined.get('elevation_gain') else "—")
+    col2.metric("Elev Loss", f"{combined.get('elevation_loss', 0):.0f} m" if combined.get('elevation_loss') else "—")
+    col3.metric("Min Elev", f"{combined.get('min_elevation', 0):.0f} m" if combined.get('min_elevation') else "—")
+    col4.metric("Max Elev", f"{combined.get('max_elevation', 0):.0f} m" if combined.get('max_elevation') else "—")
+
+    col5, col6 = st.columns(2)
+    col5.metric("Temp", f"{combined.get('min_temperature', 0):.0f}–{combined.get('max_temperature', 0):.0f} °C" if combined.get('min_temperature') and combined.get('max_temperature') else "—")
+    col6.metric("Respiration", f"{combined.get('avg_respiration_rate', 0):.1f} /min" if combined.get('avg_respiration_rate') else "—")
+
+    # -- HR Zones (expandable) --
+    with st.expander("Heart Rate Zones"):
+        hr_cols = st.columns(5)
+        for i, col in enumerate(hr_cols):
+            val = combined.get(f"hr_zone_{i+1}")
+            col.metric(f"Zone {i+1}", f"{_format_duration(val)}" if val else "—")
+
+    with st.expander("Power Zones"):
+        pwr_cols = st.columns(7)
+        for i, col in enumerate(pwr_cols):
+            val = combined.get(f"power_zone_{i+1}")
+            col.metric(f"Zone {i+1}", f"{_format_duration(val)}" if val else "—")
+
+    with st.expander("Max Average Power"):
+        durations = ["1s", "2s", "5s", "10s", "20s", "30s", "60s", "120s", "300s", "600s", "1200s", "1800s", "3600s"]
+        pwr_cols = st.columns(4)
+        for i, dur in enumerate(durations):
+            val = combined.get(f"max_avg_power_{dur}")
+            pwr_cols[i % 4].metric(dur, f"{val:.0f} W" if val else "—")
 
     # -- Stream charts --
     stream_metrics = ["power", "heart_rate", "speed", "cadence", "altitude"]

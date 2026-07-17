@@ -8,6 +8,7 @@ Tables:
 """
 
 import logging
+import json
 import os
 import sqlite3
 from datetime import datetime
@@ -102,6 +103,69 @@ class CyclingDB:
 
         self.conn.commit()
 
+    def _migrate_activity_api_fields(self):
+        """Add API-only fields to activities table if they don't exist."""
+        c = self.conn.cursor()
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='activities'")
+        if c.fetchone() is None:
+            return
+        c.execute("PRAGMA table_info(activities)")
+        existing_cols = {row[1] for row in c.fetchall()}
+
+        new_cols = {
+            "activity_name": "TEXT",
+            "aerobic_training_effect": "REAL",
+            "anaerobic_training_effect": "REAL",
+            "vo2_max": "REAL",
+            "elevation_gain": "REAL",
+            "elevation_loss": "REAL",
+            "min_elevation": "REAL",
+            "max_elevation": "REAL",
+            "min_temperature": "REAL",
+            "max_temperature": "REAL",
+            "avg_respiration_rate": "REAL",
+            "max_respiration_rate": "REAL",
+            "avg_left_balance": "REAL",
+            "moving_duration": "REAL",
+            "intensity_factor": "REAL",
+            "hr_zone_1": "REAL",
+            "hr_zone_2": "REAL",
+            "hr_zone_3": "REAL",
+            "hr_zone_4": "REAL",
+            "hr_zone_5": "REAL",
+            "power_zone_1": "REAL",
+            "power_zone_2": "REAL",
+            "power_zone_3": "REAL",
+            "power_zone_4": "REAL",
+            "power_zone_5": "REAL",
+            "power_zone_6": "REAL",
+            "power_zone_7": "REAL",
+            "max_avg_power_1s": "REAL",
+            "max_avg_power_2s": "REAL",
+            "max_avg_power_5s": "REAL",
+            "max_avg_power_10s": "REAL",
+            "max_avg_power_20s": "REAL",
+            "max_avg_power_30s": "REAL",
+            "max_avg_power_60s": "REAL",
+            "max_avg_power_120s": "REAL",
+            "max_avg_power_300s": "REAL",
+            "max_avg_power_600s": "REAL",
+            "max_avg_power_1200s": "REAL",
+            "max_avg_power_1800s": "REAL",
+            "max_avg_power_3600s": "REAL",
+            "source_duration": "TEXT",
+            "source_distance": "TEXT",
+            "source_power": "TEXT",
+            "source_hr": "TEXT",
+            "source_calories": "TEXT",
+        }
+
+        for col, col_type in new_cols.items():
+            if col not in existing_cols:
+                c.execute(f"ALTER TABLE activities ADD COLUMN {col} {col_type}")
+                logger.info(f"Migrated: added column {col} to activities")
+
+        self.conn.commit()
 
     def _migrate_raw_tables(self):
         """Backfill raw_activities from existing activities table data."""
@@ -453,6 +517,7 @@ class CyclingDB:
         self.conn.commit()
         # Run raw tables migration after all tables exist
         self._migrate_raw_tables()
+        self._migrate_activity_api_fields()
 
     # -- Wellness --
 
@@ -707,6 +772,8 @@ class CyclingDB:
         - Start with API values (duration_ms/1000, distance_cm/100)
         - Override with FIT session values if available and reasonable
         - Override duration with stream-derived duration_sec from activity_metrics
+        - Extract API-only fields from raw_json
+        - Compute source indicators (FIT vs API)
         - Store result in activities table as garmin_{garmin_id}
 
         Returns the number of activities refreshed.
@@ -776,16 +843,106 @@ class CyclingDB:
             if am and am.get("duration_sec") is not None and am["duration_sec"] > 0:
                 duration = am["duration_sec"]
 
+            # Parse raw_json for API-only fields
+            row_dict = dict(row)
+            raw_json = row_dict.get("raw_json")
+            api_data = json.loads(raw_json) if raw_json else {}
+
+            # Activity name and type
+            activity_name = api_data.get("activityName")
+            activity_type = row_dict.get("activity_type_key") or (api_data.get("activityType", {}).get("typeKey") if isinstance(api_data.get("activityType"), dict) else None)
+
+            # Training effects
+            aerobic_te = api_data.get("aerobicTrainingEffect")
+            anaerobic_te = api_data.get("anaerobicTrainingEffect")
+
+            # VO2 Max
+            vo2_max = api_data.get("vO2MaxValue")
+
+            # Elevation
+            elev_gain = api_data.get("elevationGain")
+            elev_loss = api_data.get("elevationLoss")
+            min_elev = api_data.get("minElevation")
+            max_elev = api_data.get("maxElevation")
+
+            # Temperature
+            min_temp = api_data.get("minTemperature")
+            max_temp = api_data.get("maxTemperature")
+
+            # Respiration
+            avg_resp = api_data.get("avgRespirationRate")
+            max_resp = api_data.get("maxRespirationRate")
+
+            # Balance
+            avg_left_balance = api_data.get("avgLeftBalance")
+
+            # Moving duration (seconds)
+            moving_dur = (api_data.get("movingDuration") or 0) / 1000.0 if api_data.get("movingDuration") else None
+
+            # Intensity factor
+            intensity_factor = api_data.get("intensityFactor")
+
+            # HR zones
+            hr_z1 = api_data.get("hrTimeInZone_1")
+            hr_z2 = api_data.get("hrTimeInZone_2")
+            hr_z3 = api_data.get("hrTimeInZone_3")
+            hr_z4 = api_data.get("hrTimeInZone_4")
+            hr_z5 = api_data.get("hrTimeInZone_5")
+
+            # Power zones
+            pwr_z1 = api_data.get("powerTimeInZone_1")
+            pwr_z2 = api_data.get("powerTimeInZone_2")
+            pwr_z3 = api_data.get("powerTimeInZone_3")
+            pwr_z4 = api_data.get("powerTimeInZone_4")
+            pwr_z5 = api_data.get("powerTimeInZone_5")
+            pwr_z6 = api_data.get("powerTimeInZone_6")
+            pwr_z7 = api_data.get("powerTimeInZone_7")
+
+            # Max avg power at various durations
+            max_pwr_1s = api_data.get("maxAvgPower_1")
+            max_pwr_2s = api_data.get("maxAvgPower_2")
+            max_pwr_5s = api_data.get("maxAvgPower_5")
+            max_pwr_10s = api_data.get("maxAvgPower_10")
+            max_pwr_20s = api_data.get("maxAvgPower_20")
+            max_pwr_30s = api_data.get("maxAvgPower_30")
+            max_pwr_60s = api_data.get("maxAvgPower_60")
+            max_pwr_120s = api_data.get("maxAvgPower_120")
+            max_pwr_300s = api_data.get("maxAvgPower_300")
+            max_pwr_600s = api_data.get("maxAvgPower_600")
+            max_pwr_1200s = api_data.get("maxAvgPower_1200")
+            max_pwr_1800s = api_data.get("maxAvgPower_1800")
+            max_pwr_3600s = api_data.get("maxAvgPower_3600")
+
+            # Source indicators
+            source_duration = "FIT" if fit and fit["total_elapsed_time_ms"] else "API"
+            source_distance = "FIT" if fit and fit["total_distance_m"] else "API"
+            source_power = "FIT" if fit and fit["avg_power"] else "API"
+            source_hr = "FIT" if fit and fit["avg_heart_rate"] else "API"
+            source_calories = "FIT" if fit and fit["total_calories"] else "API"
+
             self.conn.execute(
                 """INSERT OR REPLACE INTO activities
-                    (id, start_date, activity_type, duration, distance,
+                    (id, start_date, activity_type, activity_name, duration, distance,
                      average_power, max_power, average_hr, max_hr,
-                     calories, tss, normalized_power, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                     calories, tss, normalized_power, intensity_factor,
+                     aerobic_training_effect, anaerobic_training_effect, vo2_max,
+                     elevation_gain, elevation_loss, min_elevation, max_elevation,
+                     min_temperature, max_temperature,
+                     avg_respiration_rate, max_respiration_rate, avg_left_balance,
+                     moving_duration,
+                     hr_zone_1, hr_zone_2, hr_zone_3, hr_zone_4, hr_zone_5,
+                     power_zone_1, power_zone_2, power_zone_3, power_zone_4, power_zone_5, power_zone_6, power_zone_7,
+                     max_avg_power_1s, max_avg_power_2s, max_avg_power_5s, max_avg_power_10s,
+                     max_avg_power_20s, max_avg_power_30s, max_avg_power_60s, max_avg_power_120s,
+                     max_avg_power_300s, max_avg_power_600s, max_avg_power_1200s, max_avg_power_1800s, max_avg_power_3600s,
+                     source_duration, source_distance, source_power, source_hr, source_calories,
+                     updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
                 (
                     db_id,
                     start_date,
                     activity_type,
+                    activity_name,
                     duration,
                     distance,
                     avg_power,
@@ -795,6 +952,50 @@ class CyclingDB:
                     calories,
                     tss,
                     norm_power,
+                    intensity_factor,
+                    aerobic_te,
+                    anaerobic_te,
+                    vo2_max,
+                    elev_gain,
+                    elev_loss,
+                    min_elev,
+                    max_elev,
+                    min_temp,
+                    max_temp,
+                    avg_resp,
+                    max_resp,
+                    avg_left_balance,
+                    moving_dur,
+                    hr_z1,
+                    hr_z2,
+                    hr_z3,
+                    hr_z4,
+                    hr_z5,
+                    pwr_z1,
+                    pwr_z2,
+                    pwr_z3,
+                    pwr_z4,
+                    pwr_z5,
+                    pwr_z6,
+                    pwr_z7,
+                    max_pwr_1s,
+                    max_pwr_2s,
+                    max_pwr_5s,
+                    max_pwr_10s,
+                    max_pwr_20s,
+                    max_pwr_30s,
+                    max_pwr_60s,
+                    max_pwr_120s,
+                    max_pwr_300s,
+                    max_pwr_600s,
+                    max_pwr_1200s,
+                    max_pwr_1800s,
+                    max_pwr_3600s,
+                    source_duration,
+                    source_distance,
+                    source_power,
+                    source_hr,
+                    source_calories,
                 ),
             )
             refreshed += 1
