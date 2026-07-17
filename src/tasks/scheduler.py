@@ -241,8 +241,17 @@ class SyncScheduler:
 
         if enabled:
             self.start()
+            # Trigger immediate sync on enable
+            threading.Thread(target=self._initial_sync, daemon=True, name="initial-sync").start()
         else:
             self.stop()
+
+    def _initial_sync(self) -> None:
+        """Run both activity and wellness sync immediately after enabling."""
+        logger.info("Auto-sync enabled: running initial sync")
+        self._sync_activities()
+        self._sync_wellness()
+        logger.info("Auto-sync initial sync complete")
 
     def set_intervals(self, activity_minutes: int, wellness_hours: int) -> None:
         """Update sync intervals and persist to config.env."""
