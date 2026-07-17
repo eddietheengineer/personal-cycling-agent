@@ -170,6 +170,7 @@ def _clear_sync_flags() -> None:
     st.session_state.syncing = False
     st.session_state.rearsing = False
     st.session_state.sync_origin = ""
+    st.session_state.sync_mode = ""
 
 def _render_sync_progress(origin: str) -> None:
     """Render the sync progress dialog when a sync is running or just completed.
@@ -358,6 +359,21 @@ def _render_dashboard():
 
     # ── Render progress dialog (dashboard sync) ──────────────────────
     _render_sync_progress(origin="dashboard")
+
+    # ── Show sync errors ──────────────────────────────────────────────
+    if st.session_state.get("sync_error"):
+        err = st.session_state.sync_error
+        st.error(f"Sync failed: {err}")
+        if "MFA" in err or "mfa" in err or "two-factor" in err:
+            st.info("Your session has expired. Please sign in again on Settings.")
+        st.session_state.sync_error = None
+
+    # ── Show sync result ──────────────────────────────────────────────
+    if st.session_state.get("sync_result"):
+        result = st.session_state.sync_result
+        synced = result.get("activities_synced", 0)
+        st.success(f"Synced {synced} new activities.")
+        st.session_state.sync_result = None
 
     st.divider()
 
@@ -1798,6 +1814,8 @@ def _render_garmin_setup():
 
             background_task(_reparse_work, result_key="reparse")
             st.session_state.rearsing = True
+            st.session_state.sync_result = None
+            st.session_state.sync_error = None
             st.session_state.sync_origin = "settings"
             st.session_state.sync_log = []
             st.session_state.sync_progress = 0
