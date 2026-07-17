@@ -2200,6 +2200,7 @@ def _render_sync_controls():
                 unbounded=False,
                 run_analyze_after=True,
             )
+            st.session_state.syncing = True
             st.session_state.sync_origin = "coach"
             st.session_state.sync_mode = "update"
             st.session_state.sync_days = 7

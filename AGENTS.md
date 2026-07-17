@@ -225,17 +225,19 @@ Default page: Dashboard. Page routing via `st.session_state.nav_page`.
 
 ### Coach (section within Dashboard, NOT a separate page)
 
-The compact coach chat is a section within Dashboard (`_render_dashboard_coach`), not a separate nav page. There is also a full `_render_coach()` function with `_render_sync_controls()` but it is **not** in the sidebar navigation — it exists as a shared component.
+The compact coach chat is a section within Dashboard (`_render_dashboard_coach`), not a separate nav page. There is also a full `_render_coach()` function with `_render_sync_controls()` but it is **dead code** — not called from the sidebar navigation or main dispatch. If `_render_coach()` is ever wired up, it will need its own nav entry.
 
 **Dashboard coach chat:** Last 6 messages, text input, Send/Clear. Shares `coach_messages` with full Coach.
 
 ### Sync Progress — Cross-page Rules
 
-`_render_sync_progress(origin)` is called from Dashboard, Settings, and Coach. The `origin` parameter gates visibility:
+`_render_sync_progress(origin)` is called from Dashboard and Settings. The `origin` parameter gates visibility:
 
-- Dashboard sync (`sync_origin="dashboard"`) → progress shows **only** on Dashboard.
-- Settings sync/reparse (`sync_origin="settings"`) → progress shows **only** on Settings.
-- Coach sync/prescribe (`sync_origin="coach"`) → progress shows **only** on Coach.
+- Dashboard sync (`sync_origin="dashboard"`, `sync_mode="dashboard"`) → progress shows **only** on Dashboard. Uses `BackgroundSync`, sets `syncing=True`.
+- Settings sync (`sync_origin="settings"`, `sync_mode="all"`) → progress shows **only** on Settings. Uses `BackgroundSync`, sets `syncing=True`.
+- Settings reparse (`sync_origin="settings"`, no sync_mode) → progress shows **only** on Settings. Uses `BackgroundTask`, sets `rearsing=True` (NOT `syncing`).
+
+`sync_mode` values: `"dashboard"` (1-day sync), `"all"` (full historical), `"update"` (Coach 7-day — dead code), `"prescribe"` (Coach prescription — dead code).
 
 `_clear_sync_flags()` clears `syncing`, `rearsing`, and `sync_origin` when tasks complete.
 
