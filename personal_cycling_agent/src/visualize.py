@@ -2031,13 +2031,48 @@ def _render_garmin_setup():
     c3.metric("Wellness syncs", stats.get("total_wellness_syncs", 0))
     c4.metric("Errors", stats.get("total_errors", 0))
 
-    # Last synced timestamps from DB
+    # Last synced timestamps from DB (relative)
     try:
-        last_activities = db.get_last_synced("garmin_activities")
-        last_wellness = db.get_last_synced("garmin_wellness")
+        from datetime import datetime, timezone
+
+        def _relative_time(ts_str: str | None) -> str:
+            if not ts_str:
+                return "never"
+            try:
+                dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                try:
+                    dt = datetime.strptime(ts_str, "%Y-%m-%d")
+                except ValueError:
+                    return ts_str
+            diff = datetime.now() - dt
+            total_seconds = int(diff.total_seconds())
+            if total_seconds < 60:
+                return f"{total_seconds}s ago"
+            minutes = total_seconds // 60
+            if minutes < 60:
+                return f"{minutes}m ago"
+            hours = minutes // 60
+            if hours < 24:
+                return f"{hours}h ago"
+            days = hours // 24
+            return f"{days}d ago"
+
+        # Activities: use latest activity timestamp
+        act_row = db.conn.execute(
+            "SELECT start_date FROM activities ORDER BY start_date DESC LIMIT 1"
+        ).fetchone()
+        last_act = act_row["start_date"] if act_row else None
+
+        # Wellness: use latest wellness date
+        wel_row = db.conn.execute(
+            "SELECT date FROM wellness ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        last_wel = wel_row["date"] if wel_row else None
+
         c_la, c_lw = st.columns(2)
-        c_la.write(f"Last synced activities: **{last_activities or 'never'}**")
-        c_lw.write(f"Last synced wellness: **{last_wellness or 'never'}**")
+        c_la.write(f"Last synced activities: **{_relative_time(last_act)}**")
+        c_lw.write(f"Last synced wellness: **{_relative_time(last_wel)}**")
     except Exception:
         pass
     if stats.get("last_error"):
