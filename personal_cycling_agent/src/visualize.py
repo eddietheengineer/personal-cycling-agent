@@ -1038,7 +1038,7 @@ def _render_activity_detail():
         return
 
     # Collect distinct activity types
-    types = sorted({a.get("activity_type") or "unknown" for a in activities})
+    types = sorted({a["activity_type"] if a["activity_type"] else "unknown" for a in activities})
     type_labels = ["All"] + [t.replace("_", " ").title() for t in types]
 
     # Filter bar
@@ -1046,13 +1046,13 @@ def _render_activity_detail():
     chosen_type_label = c1.selectbox("Activity type", type_labels, key="activity_type_filter")
     if chosen_type_label != "All":
         chosen_type = [t for t, l in zip(types, type_labels[1:]) if l == chosen_type_label][0]
-        activities = [a for a in activities if (a.get("activity_type") or "unknown") == chosen_type]
+        activities = [a for a in activities if (a["activity_type"] or "unknown") == chosen_type]
 
     # Build display labels sorted by date descending (most recent first)
     options = []
     id_map = {}
     for a in activities:
-        label = f"{a['start_date'][:10]} — {a.get('activity_name') or a.get('activity_type') or 'Activity'}"
+        label = f"{a['start_date'][:10]} — {a['activity_name'] or a['activity_type'] or 'Activity'}"
         options.append(label)
         id_map[label] = a["id"]
 
