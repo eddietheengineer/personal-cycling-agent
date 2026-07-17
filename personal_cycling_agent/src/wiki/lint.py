@@ -212,8 +212,8 @@ def _to_slug(text: str) -> str:
     s = text.lower().strip()
     # Remove "et al.", "et al"
     s = re.sub(r'\bet\s+al\.?\b', 'et-al', s)
-    # Replace colons, apostrophes, hyphens with nothing (they're separators)
-    s = s.replace(":", "").replace("'", "").replace("-", " ")
+    # Replace colons, apostrophes, hyphens, underscores with spaces (separators)
+    s = s.replace(":", " ").replace("'", " ").replace("-", " ").replace("_", " ")
     # Collapse whitespace
     s = re.sub(r'\s+', '-', s.strip())
     # Remove trailing/leading hyphens
