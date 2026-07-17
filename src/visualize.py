@@ -371,7 +371,7 @@ def _render_dashboard():
     # ── Show sync result ──────────────────────────────────────────────
     if st.session_state.get("sync_result"):
         result = st.session_state.sync_result
-        synced = result.get("activities_synced", 0)
+        synced = result.get("activities", {}).get("activities_processed", 0)
         st.success(f"Synced {synced} new activities.")
         st.session_state.sync_result = None
 
