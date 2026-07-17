@@ -253,7 +253,8 @@ class CyclingDB:
             CREATE TABLE IF NOT EXISTS sync_state (
                 source          TEXT    PRIMARY KEY,
                 last_synced_at  TEXT    NOT NULL,
-                details         TEXT
+                details         TEXT,
+                resume_offset   INTEGER DEFAULT 0
             )
         """)
 

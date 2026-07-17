@@ -1,0 +1,232 @@
+"""Tests for the Settings page: Garmin Connect, LLM settings, Memory Journal."""
+
+import os
+import sqlite3
+import sys
+from pathlib import Path
+
+import pytest
+from streamlit.testing.v1 import AppTest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+VISUALIZE_PATH = str(Path(__file__).resolve().parent.parent / "src" / "visualize.py")
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def _minimal_vault(tmp_path):
+    """Create a vault with a minimal SQLite DB for AppTest."""
+    vault = tmp_path / "vault"
+    data_dir = vault / "data"
+    data_dir.mkdir(parents=True)
+
+    db_path = data_dir / "cycling_agent.sqlite"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("CREATE TABLE IF NOT EXISTS wellness (date TEXT PRIMARY KEY, weight REAL, resting_hr REAL, rmssd REAL, stress REAL, sleep_score REAL, sleep_hours REAL, steps INTEGER, spo2 REAL, body_battery_start REAL, body_battery_end REAL, calories REAL, active_calories REAL, distance_m REAL, min_hr REAL, max_hr REAL, updated_at TEXT NOT NULL DEFAULT (datetime('now')))")
+    conn.execute("CREATE TABLE IF NOT EXISTS activities (id TEXT PRIMARY KEY, start_date TEXT NOT NULL, activity_type TEXT, duration REAL, distance REAL, average_power REAL, max_power REAL, average_hr REAL, max_hr REAL, calories REAL, tss REAL, ifr REAL, normalized_power REAL, file_type TEXT, updated_at TEXT NOT NULL DEFAULT (datetime('now')))")
+    conn.execute("CREATE TABLE IF NOT EXISTS morning_checkin (date TEXT PRIMARY KEY, soreness INTEGER, stress INTEGER, sleep_quality INTEGER, mood INTEGER, energy INTEGER, motivation INTEGER, caffeine INTEGER DEFAULT 0, alcohol INTEGER DEFAULT 0, late_meals INTEGER DEFAULT 0, updated_at TEXT NOT NULL DEFAULT (datetime('now')))")
+    conn.execute("CREATE TABLE IF NOT EXISTS sync_state (source TEXT PRIMARY KEY, last_synced_at TEXT NOT NULL, details TEXT, resume_offset INTEGER DEFAULT 0)")
+    conn.execute("CREATE TABLE IF NOT EXISTS activity_metrics (activity_id TEXT NOT NULL, ftp_used REAL, normalized_power REAL, intensity_factor REAL, tss REAL, variability_index REAL, w_prime_capacity REAL, w_prime_min_balance REAL, decoupling_drift REAL, duration_sec REAL, computed_at TEXT NOT NULL DEFAULT (datetime('now')), PRIMARY KEY (activity_id))")
+    conn.execute("CREATE TABLE IF NOT EXISTS activity_streams (id INTEGER PRIMARY KEY AUTOINCREMENT, activity_id TEXT NOT NULL, elapsed REAL NOT NULL, metric TEXT NOT NULL, value REAL NOT NULL)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_streams_activity ON activity_streams(activity_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_streams_metric ON activity_streams(metric)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_streams_activity_metric ON activity_streams(activity_id, metric)")
+    conn.execute("CREATE TABLE IF NOT EXISTS activity_routes (activity_id TEXT NOT NULL, latitude REAL NOT NULL, longitude REAL NOT NULL, sequence INTEGER NOT NULL, PRIMARY KEY (activity_id, sequence))")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_routes_activity ON activity_routes(activity_id)")
+    conn.commit()
+    conn.close()
+
+    os.environ["CYCLING_AGENT_VAULT"] = str(vault)
+    os.environ["PANDAS_PYARROW_TO_PYTHON"] = "deprecated"
+    os.environ["ATHLETE_NAME"] = "Test Rider"
+    os.environ["WEIGHT_KG"] = "72"
+    os.environ["HEIGHT_CM"] = "175"
+    os.environ["DISCIPLINE"] = "road"
+    os.environ["FTP_WATTS"] = "250"
+    os.environ["MAX_HR"] = "190"
+    os.environ["RESTING_HR"] = "52"
+    os.environ["LT1_POWER"] = "150"
+    os.environ["LT2_POWER"] = "220"
+    os.environ["PRIMARY_GOAL"] = "Improve FTP"
+    os.environ["SECONDARY_GOAL"] = "Race readiness"
+    os.environ["TRAINING_DAYS"] = "Mon,Wed,Fri"
+    os.environ["MAX_SESSION_DURATION"] = "2h"
+    os.environ["TERRAIN"] = "Hilly"
+    os.environ["BIKES"] = "Road bike"
+    os.environ["POWER_METER"] = "PowerTap"
+    os.environ["HR_MONITOR"] = "Garmin HRM"
+    os.environ["GARMIN_EMAIL"] = ""
+    os.environ["GARMIN_PASSWORD"] = ""
+
+    yield str(vault)
+
+    for k in list(os.environ.keys()):
+        if k in ("CYCLING_AGENT_VAULT", "PANDAS_PYARROW_TO_PYTHON",
+                  "ATHLETE_NAME", "WEIGHT_KG", "HEIGHT_CM", "DISCIPLINE",
+                  "FTP_WATTS", "MAX_HR", "RESTING_HR", "LT1_POWER", "LT2_POWER",
+                  "PRIMARY_GOAL", "SECONDARY_GOAL", "TRAINING_DAYS",
+                  "MAX_SESSION_DURATION", "TERRAIN", "BIKES", "POWER_METER",
+                  "HR_MONITOR", "GARMIN_EMAIL", "GARMIN_PASSWORD"):
+            del os.environ[k]
+
+
+@pytest.fixture
+def app(_minimal_vault) -> AppTest:
+    """Create a fresh AppTest for the visualize script."""
+    return AppTest.from_file(VISUALIZE_PATH)
+
+
+def _go(app: AppTest, page: str) -> AppTest:
+    """Navigate to *page* by setting session state directly, then re-run."""
+    app.session_state.nav_page = page
+    app.run()
+    return app
+
+
+# ---------------------------------------------------------------------------
+# Garmin Connect Section Tests
+# ---------------------------------------------------------------------------
+
+
+class TestGarminConnectSection:
+    """Garmin Connect subheader and sign-in UI."""
+
+    def test_garmin_connect_subheader(self, app):
+        """Settings page shows 'Garmin Connect' subheader."""
+        _go(app, "Settings")
+        subheaders = [s.value for s in app.subheader]
+        assert "Garmin Connect" in subheaders
+
+    def test_not_connected_info_message(self, app):
+        """Shows not connected message when no credentials are set."""
+        _go(app, "Settings")
+        infos = [i.value for i in app.info]
+        assert any("Not connected" in v or "not connected" in v.lower() for v in infos)
+
+    def test_sign_in_button_present(self, app):
+        """Sign In button is rendered in the Garmin sign-in form."""
+        _go(app, "Settings")
+        btn_labels = [b.label for b in app.button]
+        assert "Sign In" in btn_labels
+
+    def test_garmin_email_input_present(self, app):
+        """Garmin Email text input is present."""
+        _go(app, "Settings")
+        email_inputs = [t for t in app.text_input if "Email" in t.label]
+        assert len(email_inputs) >= 1
+
+    def test_garmin_password_input_present(self, app):
+        """Garmin Password text input is present."""
+        _go(app, "Settings")
+        pw_inputs = [t for t in app.text_input if "Password" in t.label]
+        assert len(pw_inputs) >= 1
+
+    def test_sync_all_historical_button_present(self, app):
+        """Sync All Historical Data button is rendered."""
+        _go(app, "Settings")
+        btn_labels = [b.label for b in app.button]
+        assert "Sync All Historical Data" in btn_labels
+
+    def test_sync_all_historical_disabled_without_auth(self, app):
+        """Sync All Historical Data button is disabled without auth."""
+        _go(app, "Settings")
+        sync_btns = [b for b in app.button if b.label == "Sync All Historical Data"]
+        assert len(sync_btns) >= 1
+        assert sync_btns[0].disabled
+
+    def test_reparse_fit_button_present(self, app):
+        """Reparse FIT button is rendered."""
+        _go(app, "Settings")
+        btn_keys = [b.key for b in app.button]
+        assert "reparse_fit" in btn_keys
+
+    def test_sync_metrics_displayed(self, app):
+        """Wellness/Activities/Routes metric counters are rendered."""
+        _go(app, "Settings")
+        metrics = [m.label for m in app.metric]
+        assert "Wellness Days" in metrics
+        assert "Activities" in metrics
+        assert "Routes" in metrics
+
+
+# ---------------------------------------------------------------------------
+# LLM Settings Tests
+# ---------------------------------------------------------------------------
+
+
+class TestLLMSettings:
+    """LLM Endpoint configuration section."""
+
+    def test_llm_subheader(self, app):
+        """LLM Endpoint subheader is rendered."""
+        _go(app, "Settings")
+        subheaders = [s.value for s in app.subheader]
+        assert "LLM Endpoint" in subheaders
+
+    def test_base_url_input(self, app):
+        """Base URL text input is present."""
+        _go(app, "Settings")
+        url_inputs = [t for t in app.text_input if t.label == "Base URL"]
+        assert len(url_inputs) >= 1
+
+    def test_api_key_input(self, app):
+        """API Key text input is present."""
+        _go(app, "Settings")
+        key_inputs = [t for t in app.text_input if t.label == "API Key"]
+        assert len(key_inputs) >= 1
+
+    def test_timeout_number_input(self, app):
+        """Timeout number input is present."""
+        _go(app, "Settings")
+        timeout_inputs = [n for n in app.number_input if "Timeout" in n.label]
+        assert len(timeout_inputs) >= 1
+
+    def test_test_connection_button(self, app):
+        """Test Connection button is rendered."""
+        _go(app, "Settings")
+        btn_keys = [b.key for b in app.button]
+        assert "test_llm" in btn_keys
+
+    def test_save_llm_button(self, app):
+        """Save LLM settings button is rendered."""
+        _go(app, "Settings")
+        btn_keys = [b.key for b in app.button]
+        assert "save_llm" in btn_keys
+
+
+# ---------------------------------------------------------------------------
+# Memory Journal Tests
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryJournal:
+    """Memory Journal viewer and management controls."""
+
+    def test_memory_journal_subheader(self, app):
+        """Memory Journal subheader is rendered."""
+        _go(app, "Settings")
+        subheaders = [s.value for s in app.subheader]
+        assert "Memory Journal" in subheaders
+
+    def test_clear_journal_button(self, app):
+        """Clear Journal button is rendered."""
+        _go(app, "Settings")
+        btn_keys = [b.key for b in app.button]
+        assert "clear_journal" in btn_keys
+
+    def test_add_entry_button(self, app):
+        """Add Entry button is rendered."""
+        _go(app, "Settings")
+        btn_keys = [b.key for b in app.button]
+        assert "add_entry_btn" in btn_keys
+
+    def test_journal_viewer_present(self, app):
+        """Journal viewer markdown block is rendered."""
+        _go(app, "Settings")
+        markdowns = [m.value for m in app.markdown]
+        # The journal viewer renders a div with max-height style
+        assert any("max-height" in m for m in markdowns)
