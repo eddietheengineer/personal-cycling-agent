@@ -2413,8 +2413,8 @@ def _render_wiki():
     st.markdown("---")
 
     # ── Tabs ──────────────────────────────────────────────────────────
-    tab_ingest, tab_query, tab_browse, tab_log = st.tabs([
-        "📥 Ingest", "❓ Query", "📚 Browse", "📋 Log"
+    tab_ingest, tab_query, tab_browse, tab_log, tab_lint, tab_digest = st.tabs([
+        "📥 Ingest", "❓ Query", "📚 Browse", "📋 Log", "🔍 Lint", "📊 Digest"
     ])
 
     # ── INGEST TAB ────────────────────────────────────────────────────
@@ -2624,6 +2624,112 @@ def _render_wiki():
             st.markdown(log_content)
         else:
             st.info("No activity logged yet.")
+
+    # ── LINT TAB ──────────────────────────────────────────────────────
+    with tab_lint:
+        from src.wiki.lint import lint_wiki, lint_wiki_for_display
+
+        st.subheader("Wiki Lint")
+        st.caption(
+            "Check for broken links, orphaned pages, thin content, stale pages, "
+            "and missing cross-references."
+        )
+
+        col_l1, col_l2 = st.columns([1, 3])
+        with col_l1:
+            lint_clicked = st.button("🔍 Run Lint", type="primary")
+
+        if lint_clicked:
+            with st.status("Running lint checks...", expanded=True) as status:
+                try:
+                    issues = lint_wiki()
+                    report = lint_wiki_for_display(issues)
+
+                    # Summary metrics
+                    by_severity: dict[str, list] = {}
+                    for issue in issues:
+                        by_severity.setdefault(issue.severity, []).append(issue)
+                    errors = len(by_severity.get("error", []))
+                    warnings = len(by_severity.get("warning", []))
+                    info = len(by_severity.get("info", []))
+
+                    m1, m2, m3 = st.columns(3)
+                    m1.metric("Errors", errors)
+                    m2.metric("Warnings", warnings)
+                    m3.metric("Info", info)
+
+                    status.update(
+                        label=f"✅ Lint complete: {len(issues)} issues found",
+                        state="complete",
+                    )
+
+                    st.markdown(report)
+                except Exception as e:
+                    status.update(label="❌ Lint failed", state="error")
+                    st.error(f"Lint failed: {e}")
+
+    # ── DIGEST TAB ────────────────────────────────────────────────────
+    with tab_digest:
+        from src.wiki.digest import generate_digest, list_digests
+
+        st.subheader("Weekly Digest")
+        st.caption(
+            "Generate a weekly synthesis of wiki activity, or browse past digests."
+        )
+
+        col_d1, col_d2 = st.columns([1, 3])
+        with col_d1:
+            digest_clicked = st.button("📊 Generate Weekly Digest", type="primary")
+
+        if digest_clicked:
+            with st.status("Generating digest...", expanded=True) as status:
+                try:
+                    result = generate_digest(week_offset=0)
+                    if result.get("path"):
+                        status.update(
+                            label=f"✅ Digest generated for {result['week_label']}",
+                            state="complete",
+                        )
+                        st.success(f"Digest saved for week **{result['week_label']}**")
+                        if result.get("summary"):
+                            st.markdown(result["summary"])
+                    else:
+                        status.update(
+                            label=f"No activity for {result['week_label']}",
+                            state="complete",
+                        )
+                        st.info(result.get("summary", "No wiki activity this week."))
+                except Exception as e:
+                    status.update(label="❌ Digest generation failed", state="error")
+                    st.error(f"Digest generation failed: {e}")
+
+        st.markdown("---")
+        st.subheader("Past Digests")
+
+        digests = list_digests()
+        if digests:
+            digest_options = [
+                f"{d.get('week', '')} — {d.get('title', d['slug'])}"
+                for d in digests
+            ]
+            selected_digest = st.selectbox(
+                "Select a digest to view",
+                options=digest_options,
+                key="wiki_digest_viewer",
+            )
+            if selected_digest:
+                # Find the matching digest entry
+                for d in digests:
+                    label = f"{d.get('week', '')} — {d.get('title', d['slug'])}"
+                    if label == selected_digest:
+                        content = read_page("syntheses", d["slug"])
+                        if content:
+                            st.markdown(content)
+                        else:
+                            st.info("Digest content not found.")
+                        break
+        else:
+            st.info("No digests generated yet. Click 'Generate Weekly Digest' to create one.")
 # ---------------------------------------------------------------------------
 # Shared sync controls (used by Coach page)
 # ---------------------------------------------------------------------------
