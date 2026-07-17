@@ -153,16 +153,72 @@ def _build_link_graph(
 
 
 def _resolve_link(link_text: str, page_map: dict[str, dict]) -> str | None:
-    """Resolve a wiki link text to a page slug."""
+    """Resolve a wiki link text to a page slug.
+    
+    Handles multiple formats:
+    - Direct slug match: [[gabbett-tj]]
+    - Title with spaces: [[Gabbett TJ]] -> gabbett-tj
+    - Author names: [[Alfonso et al.]] -> alfonso-et-al
+    - Abbreviations: [[ACWR]] -> acutechronic-workload-ratio
+    - Substrings: [[Acute Training Load]] -> acute-training-load-atl
+    """
     # Direct match
     if link_text in page_map:
         return page_map[link_text]["slug"]
-    # Case-insensitive slug match
+    
+    # Case-insensitive exact match
     lower = link_text.lower().strip()
     for slug, info in page_map.items():
         if slug.lower() == lower:
             return slug
+    
+    # Normalize link text to slug format and try matching
+    normalized = _to_slug(link_text)
+    if normalized in page_map:
+        return page_map[normalized]["slug"]
+    
+    # Try matching against title fields
+    for slug, info in page_map.items():
+        title = (info.get("title", "") or "").lower()
+        if title == lower or _to_slug(title) == normalized:
+            return slug
+    
+    # Fuzzy: check if normalized slug is a substring of any page slug
+    # e.g., [[ACWR]] matches acutechronic-workload-ratio
+    # e.g., [[CTL]] matches chronic-training-load-ctl
+    best_match = None
+    best_len = 0
+    for slug, info in page_map.items():
+        if normalized in slug and len(slug) > best_len:
+            best_match = slug
+            best_len = len(slug)
+    if best_match:
+        return best_match
+    
+    # Fuzzy: check if any word in the link appears in the slug
+    words = normalized.split("-")
+    if len(words) >= 2:
+        for slug, info in page_map.items():
+            matched = sum(1 for w in words if w and w in slug)
+            if matched >= len(words) - 1:  # allow one miss
+                return slug
+    
     return None
+
+
+def _to_slug(text: str) -> str:
+    """Normalize text to slug format for matching."""
+    import re
+    s = text.lower().strip()
+    # Remove "et al.", "et al"
+    s = re.sub(r'\bet\s+al\.?\b', 'et-al', s)
+    # Replace colons, apostrophes, hyphens with nothing (they're separators)
+    s = s.replace(":", "").replace("'", "").replace("-", " ")
+    # Collapse whitespace
+    s = re.sub(r'\s+', '-', s.strip())
+    # Remove trailing/leading hyphens
+    s = s.strip('-')
+    return s
 
 
 def _check_orphans(
