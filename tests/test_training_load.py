@@ -25,14 +25,14 @@ class TestEma:
         assert _ema([42.0], half_life=7.0) == [42.0]
 
     def test_known_half_life_decay(self):
-        """After one half-life of zeros, EMA decays nearly to zero."""
+        """After one half-life of zeros, EMA decays to ~50% of initial value."""
         half_life = 7.0
         n = int(half_life)  # 7 days
         values = [100.0] + [0.0] * n
         result = _ema(values, half_life=half_life)
-        # w = exp(-ln(2)/7) ≈ 0.9057. After 7 steps of zero input:
-        # EMA[7] = (1-w)^7 * 100 ≈ 6.6e-06 ≈ 0
-        assert abs(result[-1]) < 0.01
+        # alpha = 1 - exp(-ln(2)/7) ≈ 0.0943, (1-alpha)^7 ≈ 0.5
+        # EMA[7] ≈ 0.5 * 100 = 50
+        assert 45 < result[-1] < 55
 
     def test_steady_value(self):
         """Constant input should converge to that constant."""
@@ -45,13 +45,13 @@ class TestEma:
         assert _ema([0.0, 0.0, 0.0], half_life=18.0) == [0.0, 0.0, 0.0]
 
     def test_weight_formula(self):
-        """Verify w = exp(-ln(2) / half_life)."""
+        """Verify alpha = 1 - exp(-ln(2) / half_life)."""
         half_life = 18.0
-        expected_w = math.exp(-math.log(2) / half_life)
+        expected_alpha = 1.0 - math.exp(-math.log(2) / half_life)
         values = [0.0, 1.0]
         result = _ema(values, half_life=half_life)
-        # EMA[0] = 0, EMA[1] = (1-w)*0 + w*1 = w
-        assert abs(result[1] - expected_w) < 1e-15
+        # EMA[0] = 0, EMA[1] = (1-alpha)*0 + alpha*1 = alpha
+        assert abs(result[1] - expected_alpha) < 1e-15
 
 
 # ── compute_training_load ─────────────────────────────────────────────
@@ -114,17 +114,16 @@ class TestComputeTrainingLoad:
         assert result.date == "2025-01-03"
 
     def test_increasing_tss(self):
-        """Rising TSS: CTL retains more history weight, can exceed ATL."""
+        """Rising TSS: ATL (7-day) rises faster than CTL (42-day)."""
         records = []
         for i in range(14):
             d = (date(2025, 1, 1) + timedelta(days=i)).isoformat()
             records.append({"date": d, "tss": float(i * 50 + 50)})
         result = compute_training_load(records, ftp=200)
-        # CTL (18-day half-life) retains more of the history; with this
-        # EMA formulation (w=exp(-ln(2)/half_life)), CTL can exceed ATL
-        # on a rising trend because the longer half-life preserves more
-        # of the accumulated values.
-        assert result.atl < result.ctl
+        # ATL (7-day half-life) responds faster to rising TSS than CTL (42-day).
+        # With correct EMA: alpha_7 ≈ 0.094, alpha_42 ≈ 0.016.
+        # ATL gives more weight to recent high values, so ATL > CTL on rising trend.
+        assert result.ctl < result.atl
 
 
 # ── compute_training_load_history ─────────────────────────────────────

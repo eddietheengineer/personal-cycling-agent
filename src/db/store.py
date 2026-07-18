@@ -427,6 +427,9 @@ class CyclingDB:
                 pain_score      REAL,
                 pain_location   TEXT,
                 notes           TEXT,
+                caffeine        INTEGER DEFAULT 0,
+                alcohol         INTEGER DEFAULT 0,
+                late_meals      INTEGER DEFAULT 0,
                 recorded_at     TEXT    NOT NULL DEFAULT (datetime('now')),
                 UNIQUE(athlete_id, date)
             )
