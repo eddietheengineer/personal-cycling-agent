@@ -865,6 +865,7 @@ def _render_dashboard_coach():
             w_prime=analysis.get("w_prime") if analysis else None,
             durability=analysis.get("durability") if analysis else None,
             decoupling=analysis.get("decoupling") if analysis else None,
+            analysis=analysis,
         )
 
         journal_context = load_recent(30)
@@ -886,12 +887,29 @@ def _render_dashboard_coach():
         full_prompt = f"{system_prompt}\n\nConversation:\n{conv_text}\n\nASSISTANT:"
 
         try:
+            from src.agent.db_query import query_db
+
             with st.spinner("Coach is thinking..."):
                 response = llm_client.generate(full_prompt, stream=False)
+
+            # If coach requests a DB query, execute it and ask again
+            if response.strip().startswith("QUERY:"):
+                sql = response.strip()[6:].strip()
+                result = query_db(sql, cfg.vault_path())
+
+                # Feed query result back for a final answer
+                followup = (
+                    f"{full_prompt}\n\nASSISTANT: QUERY: {sql}\n"
+                    f"SYSTEM: Query results:\n{result}\n\n"
+                    f"ASSISTANT:"
+                )
+                response = llm_client.generate(followup, stream=False)
+
             st.session_state.coach_messages.append({"role": "assistant", "content": response})
 
             def _extract_and_save():
                 try:
+                    from src.memory.journal import extract_memories, append_entry
                     bullets = extract_memories(user_input.strip(), response)
                     for bullet in bullets:
                         append_entry(bullet)

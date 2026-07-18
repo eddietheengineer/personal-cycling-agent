@@ -44,6 +44,7 @@ def build_system_prompt(
     durability: list[dict[str, Any]] | None = None,
     decoupling: list[dict[str, Any]] | None = None,
     recent_activities: list[dict[str, Any]] | None = None,
+    analysis: dict[str, Any] | None = None,
 ) -> str:
     """
     Build a complete system prompt for the LLM.
@@ -147,13 +148,115 @@ def build_system_prompt(
                 f"avg power {act.get('average_power', '?')}W, "
                 f"TSS {act.get('tss', '?')}, "
                 f"IF {act.get('intensity_factor', '?')})"
-            )
         sections.append(f"\n## Recent Activities\n" + "\n".join(activity_lines))
+
+    # Full analysis data (if available)
+    if analysis:
+        analysis_sections = []
+
+        # Training load trend
+        tlh = analysis.get("training_load_history", [])
+        if tlh:
+            lines = ["## Training Load (last 14 days)"]
+            for e in tlh[-14:]:
+                lines.append(f"  {e['date']}: CTL={e['ctl']:.1f} ATL={e['atl']:.1f} TSB={e['tsb']:.1f}")
+            analysis_sections.append("\n".join(lines))
+
+        # Current training load
+        tl = analysis.get("training_load", {})
+        if tl:
+            analysis_sections.append(
+                f"## Current Training Load: CTL={tl.get('ctl',0):.1f} ATL={tl.get('atl',0):.1f} TSB={tl.get('tsb',0):.1f}"
+            )
+
+        # Recent power metrics
+        pm = analysis.get("power_metrics", [])
+        if pm:
+            lines = ["## Recent Power Metrics (last 14)"]
+            for e in pm[-14:]:
+                lines.append(
+                    f"  {e['activity_id']}: NP={e['normalized_power']:.0f} IF={e['intensity_factor']:.2f} "
+                    f"TSS={e['tss']:.0f} VI={e['variability_index']:.2f}"
+                )
+            analysis_sections.append("\n".join(lines))
+
+        # Recent strain scores
+        ss = analysis.get("strain_scores", [])
+        if ss:
+            lines = ["## Recent Strain Scores (last 14)"]
+            for e in ss[-14:]:
+                lines.append(
+                    f"  SS_total={e['ss_total']:.0f} SS_cp={e['ss_cp']:.0f} "
+                    f"SS_wp={e['ss_wp']:.0f} TSS_eq={e['tss_equivalent']:.0f}"
+                )
+            analysis_sections.append("\n".join(lines))
+
+        # Recent W'
+        wp = analysis.get("w_prime", [])
+        if wp:
+            lines = ["## Recent W' Balance (last 14)"]
+            for e in wp[-14:]:
+                lines.append(
+                    f"  Capacity={e.get('w_prime_capacity',0):.1f}kJ "
+                    f"MinBalance={e.get('min_balance_pct',0):.0f}%"
+                )
+            analysis_sections.append("\n".join(lines))
+
+        # Recent durability
+        dur = analysis.get("durability", [])
+        if dur:
+            lines = ["## Recent Durability (last 14)"]
+            for e in dur[-14:]:
+                lines.append(
+                    f"  TotalKJ={e.get('total_kj',0):.0f} "
+                    f"Deg1m={e.get('degradation_1min','N/A')}% "
+                    f"Deg5m={e.get('degradation_5min','N/A')}%"
+                )
+            analysis_sections.append("\n".join(lines))
+
+        # Recent decoupling
+        dec = analysis.get("decoupling", [])
+        if dec:
+            lines = ["## Recent Decoupling (last 14)"]
+            for e in dec[-14:]:
+                lines.append(
+                    f"  Drift={e.get('drift_pct','N/A')}% "
+                    f"IncreaseDur={'APPROVED' if e.get('increase_duration_recommended') else 'HOLD'}"
+                )
+            analysis_sections.append("\n".join(lines))
+
+        # Pmax
+        pmax = analysis.get("pmax_estimates", [])
+        if pmax:
+            latest = pmax[-1]
+            analysis_sections.append(f"## Pmax: {latest.get('pmax',0):.0f}W ({latest.get('method','?')})")
+
+        # 3D IR
+        ir = analysis.get("three_dim_ir", {})
+        if ir:
+            analysis_sections.append(f"## 3D IR Readiness: {ir.get('readiness_from_fitness',0):.1f}%")
+
+        # CP
+        cp = analysis.get("cp")
+        if cp:
+            analysis_sections.append(f"## Current CP: {cp:.0f}W")
+
+        # Feedback
+        fb = analysis.get("feedback", {})
+        if fb:
+            analysis_sections.append(f"## Coach Feedback: {fb.get('reason','')}")
+
+        sections.append("\n".join(analysis_sections))
 
     # Instruction
     sections.append(
         "\n## Instruction\n"
-        "Based on the data above, prescribe today's training session. Include:\n"
+        "You have access to detailed training data above. When the user asks about\n"
+        "training history, patterns, or causes of issues, analyze the data provided.\n"
+        "If you need more specific data, you can query the database by starting your\n"
+        "response with `QUERY: <SQL SELECT statement>` — the system will execute it\n"
+        "and return the results. Only use queries when the data above is insufficient.\n\n"
+        "When prescribing training, include:\n"
         "1. Session type and duration\n"
         "2. Target power zones and wattage ranges\n"
         "3. Heart rate guidance\n"

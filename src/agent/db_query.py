@@ -1,0 +1,99 @@
+"""
+Safe database query tool for the coach AI.
+
+Allows the coach to query the cycling database for any data it needs
+to answer questions about training history, patterns, and causes.
+"""
+
+import logging
+import sqlite3
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# Tables the coach is allowed to read
+ALLOWED_TABLES = {
+    "activities",
+    "activity_streams",
+    "activity_metrics",
+    "activity_routes",
+    "wellness",
+    "morning_checkin",
+    "daily_readiness",
+    "raw_activities",
+    "raw_fit_sessions",
+    "sync_state",
+    "hr_calibration",
+}
+
+# Dangerous keywords that are never allowed
+BLOCKED_KEYWORDS = {
+    "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
+    "ATTACH", "DETACH", "REPLACE", "PRAGMA", "VACUUM",
+    ".exec", "exec(", "execute(", "os.", "subprocess",
+}
+
+
+def query_db(sql: str, vault_path: Path, limit: int = 100) -> str:
+    """
+    Execute a read-only SQL query against the cycling database.
+
+    Args:
+        sql: SQL SELECT query
+        vault_path: Path to the cycling agent vault
+        limit: Maximum rows to return
+
+    Returns:
+        Query results as a formatted string, or an error message.
+    """
+    sql_upper = sql.strip().upper()
+
+    # Safety checks
+    for kw in BLOCKED_KEYWORDS:
+        if kw in sql_upper:
+            return f"ERROR: Query contains blocked keyword '{kw}'. Only SELECT queries are allowed."
+
+    if not sql_upper.startswith("SELECT"):
+        return "ERROR: Only SELECT queries are allowed."
+
+    # Inject LIMIT if not present
+    if "LIMIT" not in sql_upper:
+        sql = f"({sql}) LIMIT {limit}"
+
+    db_path = vault_path / "data" / "cycling_agent.sqlite"
+    if not db_path.exists():
+        return f"ERROR: Database not found at {db_path}"
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            return "No results found."
+
+        # Format as table
+        columns = [desc[0] for desc in cursor.description]
+        lines = ["| " + " | ".join(columns) + " |"]
+        lines.append("| " + " | ".join(["---"] * len(columns)) + " |")
+
+        for row in rows:
+            values = []
+            for val in row:
+                if val is None:
+                    values.append("—")
+                elif isinstance(val, float):
+                    values.append(f"{val:.1f}")
+                else:
+                    values.append(str(val))
+            lines.append("| " + " | ".join(values) + " |")
+
+        return "\n".join(lines)
+
+    except sqlite3.Error as e:
+        return f"SQL ERROR: {e}"
+    except Exception as e:
+        return f"ERROR: {e}"
