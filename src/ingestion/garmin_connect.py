@@ -200,9 +200,14 @@ def _create_client(tokenstore: str | None = None) -> "garminconnect.Garmin":
     if tokenstore is None:
         tokenstore = os.getenv("GARMIN_TOKENSTORE", "")
 
-    # Use garmin-auth for token persistence and rate-limit-aware auth.
-    # Tokens are cached in the vault directory so cron runs don't re-auth.
-    # Use return_on_mfa=True to avoid interactive prompts in non-interactive contexts.
+    # Fallback: try vault/.garminconnect, then ~/.garminconnect
+    if not tokenstore:
+        vault = os.getenv("CYCLING_AGENT_VAULT", "")
+        if vault and os.path.isdir(os.path.join(vault, ".garminconnect")):
+            tokenstore = os.path.join(vault, ".garminconnect")
+        elif os.path.isdir(os.path.expanduser("~/.garminconnect")):
+            tokenstore = os.path.expanduser("~/.garminconnect")
+
     auth = GarminAuth(
         email=email,
         password=password,
