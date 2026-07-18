@@ -19,4 +19,4 @@ RUN useradd -m -s /bin/bash cycling && chown -R cycling:cycling /app
 
 USER cycling
 
-CMD [ "/run.sh" ]
+CMD [ "sh", "-c", "/run.sh" ]

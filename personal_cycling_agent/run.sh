@@ -19,7 +19,7 @@ mkdir -p "${DATA_DIR}/data" "${DATA_DIR}/raw/fit"
 # ── Load or bootstrap config.env ─────────────────────────────────────
 if [ -f "${DATA_DIR}/config.env" ]; then
     set -a
-    # shellcheck disable=SC1090
+CMD [ "sh", "-c", "/run.sh" ]
     source "${DATA_DIR}/config.env"
     set +a
 else
