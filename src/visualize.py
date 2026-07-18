@@ -2023,8 +2023,43 @@ def _render_garmin_setup():
             help="Re-parse all local FIT files and recalculate metrics. No network calls.",
             key="reparse_fit",
         )
+
+    # ── Force resync (clears sync state) ─────────────────────────────
+    st.caption("⚠️ Force Resync re-downloads every activity from Garmin, even already-synced ones. Takes a while.")
+    force_resync_clicked = st.button(
+        "🔄 Force Resync All Activities",
+        disabled=not is_connected or st.session_state.get("syncing"),
+        key="force_resync_all",
+        help="Reset sync state and re-download all activities from scratch.",
+    )
+
     if sync_all_clicked:
         if not st.session_state.get("syncing") and not st.session_state.get("rearsing"):
+            from src.tasks.worker import background_sync
+            background_sync(
+                days=3650,
+                unbounded=True,
+                run_analyze_after=True,
+            )
+            st.session_state.syncing = True
+            st.session_state.sync_origin = "settings"
+            st.session_state.sync_mode = "all"
+            st.session_state.sync_days = 3650
+            st.session_state.sync_result = None
+            st.session_state.sync_error = None
+            st.session_state.sync_log = []
+            st.session_state.sync_progress = 0
+            st.rerun()
+
+    if force_resync_clicked:
+        if not st.session_state.get("syncing") and not st.session_state.get("rearsing"):
+            # Clear sync state so everything gets re-fetched
+            from src import config as cfg
+            db = CyclingDB(str(cfg.db_path("cycling_agent.sqlite")))
+            db.set_last_synced("garmin_activities", None, resume_offset=0)
+            db.close()
+            st.info("Sync state cleared. Starting full re-download...")
+
             from src.tasks.worker import background_sync
             background_sync(
                 days=3650,
