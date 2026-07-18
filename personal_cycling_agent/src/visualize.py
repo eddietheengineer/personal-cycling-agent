@@ -845,6 +845,7 @@ def _render_dashboard_coach():
         st.session_state.coach_messages.append({"role": "user", "content": user_input.strip()})
 
         from src.agent import prompt_builder, llm_client
+        from src.memory.journal import load_recent
         from src import config as cfg
 
         analysis = None
