@@ -2028,7 +2028,7 @@ def _render_garmin_setup():
     st.caption("⚠️ Force Resync re-downloads every activity from Garmin, even already-synced ones. Takes a while.")
     force_resync_clicked = st.button(
         "🔄 Force Resync All Activities",
-        disabled=not is_connected or st.session_state.get("syncing"),
+        disabled=not is_connected or bool(st.session_state.get("syncing")),
         key="force_resync_all",
         help="Reset sync state and re-download all activities from scratch.",
     )
