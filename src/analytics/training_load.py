@@ -40,11 +40,11 @@ def _ema(values: list[float], half_life: float) -> list[float]:
     if not values:
         return []
 
-    alpha = 1 - math.exp(-math.log(2) / half_life)
+    w = math.exp(-math.log(2) / half_life)
     ema = [values[0]]
 
     for i in range(1, len(values)):
-        ema.append((1 - alpha) * ema[-1] + alpha * values[i])
+        ema.append((1 - w) * ema[-1] + w * values[i])
 
     return ema
 

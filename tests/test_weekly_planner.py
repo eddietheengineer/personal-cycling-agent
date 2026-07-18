@@ -35,6 +35,17 @@ def _collect_fstring_names(source: str) -> set[str]:
 
 def _collect_local_names(source: str) -> set[str]:
     """Collect all names assigned/imported in the module."""
+    def _extract_names(target):
+        """Recursively extract Name nodes from assignment targets (handles tuples)."""
+        if isinstance(target, ast.Name):
+            return {target.id}
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            names = set()
+            for elt in target.elts:
+                names.update(_extract_names(elt))
+            return names
+        return set()
+
     tree = ast.parse(source)
     names: set[str] = set()
     for node in ast.walk(tree):
@@ -50,23 +61,19 @@ def _collect_local_names(source: str) -> set[str]:
             for child in ast.walk(node):
                 if isinstance(child, ast.Assign):
                     for target in child.targets:
-                        if isinstance(target, ast.Name):
-                            names.add(target.id)
+                        names.update(_extract_names(target))
                 elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
                     names.add(child.target.id)
                 elif isinstance(child, ast.For):
-                    if isinstance(child.target, ast.Name):
-                        names.add(child.target.id)
+                    names.update(_extract_names(child.target))
                 elif isinstance(child, ast.With):
                     if child.items and child.items[0].optional_vars:
                         ov = child.items[0].optional_vars
-                        if isinstance(ov, ast.Name):
-                            names.add(ov.id)
+                        names.update(_extract_names(ov))
     for node in ast.iter_child_nodes(tree):
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Name):
-                    names.add(target.id)
+                names.update(_extract_names(target))
     return names
 
 

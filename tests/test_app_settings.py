@@ -42,6 +42,7 @@ def _minimal_vault(tmp_path):
 
     os.environ["CYCLING_AGENT_VAULT"] = str(vault)
     os.environ["PANDAS_PYARROW_TO_PYTHON"] = "deprecated"
+    os.environ["GARMIN_TOKENSTORE"] = str(vault / "nonexistent_tokenstore")
     os.environ["ATHLETE_NAME"] = "Test Rider"
     os.environ["WEIGHT_KG"] = "72"
     os.environ["HEIGHT_CM"] = "175"
@@ -66,6 +67,7 @@ def _minimal_vault(tmp_path):
 
     for k in list(os.environ.keys()):
         if k in ("CYCLING_AGENT_VAULT", "PANDAS_PYARROW_TO_PYTHON",
+                  "GARMIN_TOKENSTORE",
                   "ATHLETE_NAME", "WEIGHT_KG", "HEIGHT_CM", "DISCIPLINE",
                   "FTP_WATTS", "MAX_HR", "RESTING_HR", "LT1_POWER", "LT2_POWER",
                   "PRIMARY_GOAL", "SECONDARY_GOAL", "TRAINING_DAYS",
@@ -130,14 +132,12 @@ class TestGarminConnectSection:
         _go(app, "Settings")
         btn_labels = [b.label for b in app.button]
         assert "Sync All Historical Data" in btn_labels
-
     def test_sync_all_historical_disabled_without_auth(self, app):
         """Sync All Historical Data button is disabled without auth."""
         _go(app, "Settings")
         sync_btns = [b for b in app.button if b.label == "Sync All Historical Data"]
         assert len(sync_btns) >= 1
         assert sync_btns[0].disabled
-
     def test_reparse_fit_button_present(self, app):
         """Reparse FIT button is rendered."""
         _go(app, "Settings")

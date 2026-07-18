@@ -308,11 +308,11 @@ class TestActivityDetailContracts:
         db.close()
 
     def test_format_duration_correct(self, seed_db):
-        """Duration formatting converts milliseconds to human-readable."""
+        """Duration formatting converts seconds to human-readable."""
         from src.ui_helpers import _format_duration
 
-        assert _format_duration(3600000) == "1h 0m 0s"
-        assert _format_duration(900000) == "15m 0s"
+        assert _format_duration(3600) == "1h 0m 0s"
+        assert _format_duration(900) == "15m 0s"
         assert _format_duration(None) == "—"
 
     def test_distance_km_conversion(self, seed_db):

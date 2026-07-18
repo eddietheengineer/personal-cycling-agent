@@ -1193,27 +1193,36 @@ def sync_garmin(
     if progress_callback is not None:
         progress_callback(10, "Bulk data fetched, now fetching HRV and sleep...")
 
-    # --- Per-day fetch all wellness endpoints ---
-    # Only fetch days that don't already have wellness records in the DB
-    existing_dates = db.get_wellness_dates(
-        oldest=sync_dates[-1].strftime("%Y-%m-%d"),
-        newest=sync_dates[0].strftime("%Y-%m-%d"),
-    )
-    missing_dates = [d for d in sync_dates if d.strftime("%Y-%m-%d") not in existing_dates]
-
-    # Further narrow: only days that have weight or steps data from bulk fetch.
-    # Days without any bulk data have no watch worn — skip per-day calls.
+    # --- Narrow to days with actual watch data ---
+    # Only fetch per-day endpoints for days that have weight or steps data from bulk fetch.
+    # Days without any bulk data have no watch worn — skip them entirely.
     bulk_dates = set(weight_by_date.keys()) | set(steps_by_date.keys())
-    fetch_dates = [d for d in missing_dates if d.strftime("%Y-%m-%d") in bulk_dates]
 
-    skipped_existing = len(missing_dates) - len(fetch_dates)
-    if skipped_existing > 0:
+    # Also exclude days already in the DB
+    existing_dates = db.get_wellness_dates(
+        oldest=start_date.strftime("%Y-%m-%d"),
+        newest=end_date.strftime("%Y-%m-%d"),
+    )
+
+    # Only sync dates that have bulk data AND are not already in DB
+    fetch_dates = [
+        d for d in sync_dates
+        if d.strftime("%Y-%m-%d") in bulk_dates
+        and d.strftime("%Y-%m-%d") not in existing_dates
+    ]
+
+    skipped_no_watch = len(sync_dates) - len([
+        d for d in sync_dates if d.strftime("%Y-%m-%d") in bulk_dates
+    ])
+    skipped_existing = len(existing_dates & bulk_dates)
+
+    if skipped_no_watch > 0:
         logger.info(
-            f"Skipping {skipped_existing} days with no Garmin data (watch not worn), "
-            f"fetching {len(fetch_dates)} days with data"
+            f"Skipping {skipped_no_watch} days with no watch data (no weight/steps)"
         )
-    if existing_dates:
-        logger.info(f"Also skipping {len(existing_dates)} days already in DB")
+    if skipped_existing > 0:
+        logger.info(f"Skipping {skipped_existing} days already in DB")
+    logger.info(f"Fetching {len(fetch_dates)} days with watch data")
 
     total_stored = 0
     total_with_hrv = 0

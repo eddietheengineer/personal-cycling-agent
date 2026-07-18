@@ -25,30 +25,30 @@ from src.ui_helpers import (
 
 class TestFormatDuration:
     def test_hours_minutes_seconds(self):
-        assert _format_duration(3661000) == "1h 1m 1s"
+        assert _format_duration(3661) == "1h 1m 1s"
 
     def test_minutes_seconds(self):
-        assert _format_duration(90000) == "1m 30s"
+        assert _format_duration(90) == "1m 30s"
 
     def test_none(self):
-        assert _format_duration(None) == "\u2014"
+        assert _format_duration(None) == "—"
 
     def test_zero(self):
         assert _format_duration(0) == "0m 0s"
 
     def test_only_seconds(self):
-        assert _format_duration(45000) == "0m 45s"
+        assert _format_duration(45) == "0m 45s"
 
     def test_exactly_one_hour(self):
-        assert _format_duration(3600000) == "1h 0m 0s"
+        assert _format_duration(3600) == "1h 0m 0s"
 
     def test_large_duration(self):
-        # 5h 30m 15s = 19815 seconds = 19815000 ms
-        assert _format_duration(19815000) == "5h 30m 15s"
+        # 5h 30m 15s = 19815 seconds
+        assert _format_duration(19815) == "5h 30m 15s"
 
     def test_sub_second_truncation(self):
         # 900.5 seconds -> int(900.5) = 900 -> 15m 0s
-        assert _format_duration(900500) == "15m 0s"
+        assert _format_duration(900.5) == "15m 0s"
 
 
 # ---------------------------------------------------------------------------

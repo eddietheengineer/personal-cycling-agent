@@ -90,7 +90,7 @@ _HR_RANGES = [
 ]
 
 _LIGHT_COLORS = ["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728", "#9467bd"]
-_DARK_COLORS = ["#4fc3f7", "#66dd77", "#ffab40", "#ff5252", "#ba68c8"]
+_DARK_COLORS = ["#4fc3f7", "#66dd77", "#ffab40", "#ff5252", "#c99fff"]
 
 
 def _zone_for_value(value: float, threshold: float, ranges: list) -> int:

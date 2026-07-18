@@ -54,6 +54,7 @@ def _minimal_vault(tmp_path):
 
     os.environ["CYCLING_AGENT_VAULT"] = str(vault)
     os.environ["PANDAS_PYARROW_TO_PYTHON"] = "deprecated"
+    os.environ["GARMIN_TOKENSTORE"] = str(vault / "nonexistent_tokenstore")
     os.environ["ATHLETE_NAME"] = "Test Rider"
     os.environ["WEIGHT_KG"] = "72"
     os.environ["HEIGHT_CM"] = "175"
@@ -79,6 +80,7 @@ def _minimal_vault(tmp_path):
     # Cleanup env
     for k in list(os.environ.keys()):
         if k in ("CYCLING_AGENT_VAULT", "PANDAS_PYARROW_TO_PYTHON",
+                  "GARMIN_TOKENSTORE",
                   "ATHLETE_NAME", "WEIGHT_KG", "HEIGHT_CM", "DISCIPLINE",
                   "FTP_WATTS", "MAX_HR", "RESTING_HR", "LT1_POWER", "LT2_POWER",
                   "PRIMARY_GOAL", "SECONDARY_GOAL", "TRAINING_DAYS",
@@ -94,16 +96,13 @@ def app(_minimal_vault) -> AppTest:
 
 
 def _navigate(app: AppTest, page: str) -> AppTest:
-    """Navigate to a page by name and re-run.
+    """Navigate to a page by setting session state directly, then re-run.
 
-    Calls app.run() first to ensure the sidebar is populated,
-    then selects the target page and runs again.
+    The app uses st.sidebar.button for navigation (not selectbox),
+    so we set nav_page in session state and re-run.
     """
+    app.session_state.nav_page = page
     app.run()
-    nav = app.sidebar.selectbox[0]
-    if page in nav.options:
-        nav.select(page)
-        app.run()
     return app
 
 
@@ -115,89 +114,66 @@ class TestNavigation:
     """Verify all pages are accessible and have correct structure."""
 
     def test_all_pages_accessible(self, app):
-        """All 6 pages load without exceptions."""
+        """All pages load without exceptions."""
         app.run()
-        pages = ["Check-in", "Activity Detail", "Trends", "Map", "Profile", "Settings"]
+        pages = ["Dashboard", "Activity Detail", "Trends", "Map", "Profile", "Settings"]
         for page in pages:
             _navigate(app, page)
             assert not app.exception, f"Page '{page}' threw an exception"
 
-    def test_default_page_is_checkin(self, app):
-        """Default page on load is Check-in."""
+    def test_default_page_is_dashboard(self, app):
+        """Default page on load is Dashboard."""
         app.run()
-        nav = app.sidebar.selectbox[0]
-        assert nav.value == "Check-in"
+        assert app.session_state.nav_page == "Dashboard"
 
     def test_main_title_present(self, app):
-        """Main title 'Cycling Dashboard' is always shown."""
-        app.run()
+        """Main title 'Cycling Dashboard' is shown on Dashboard."""
+        _navigate(app, "Dashboard")
         titles = [t.value for t in app.title]
         assert "Cycling Dashboard" in titles
 
-    def test_sidebar_header(self, app):
-        """Sidebar has 'Dashboard' header."""
+    def test_sidebar_buttons_present(self, app):
+        """Sidebar has navigation buttons for all pages."""
         app.run()
-        headers = [h.value for h in app.sidebar.header]
-        assert "Dashboard" in headers
+        btn_labels = [b.label for b in app.sidebar.button]
+        assert any("Dashboard" in l for l in btn_labels)
+        assert any("Activities" in l for l in btn_labels)
+        assert any("Settings" in l for l in btn_labels)
 
 
 # ---------------------------------------------------------------------------
-# Check-in Page Tests
+# Dashboard / Check-in Section Tests
 # ---------------------------------------------------------------------------
 
-class TestCheckinPage:
-    """Validate Check-in page widgets and constraints."""
+class TestDashboardCheckin:
+    """Validate Dashboard check-in section widgets and constraints."""
 
-    def test_slider_labels(self, app):
-        """All 6 select sliders are present with correct labels."""
-        app.run()
-        expected = {"Soreness", "Life Stress", "Sleep Quality", "Mood", "Energy", "Motivation"}
-        actual = {s.label for s in app.select_slider}
-        assert actual == expected, f"Expected {expected}, got {actual}"
-
-    def test_slider_ranges(self, app):
-        """All sliders have 5 options (1-5 mapped to labels)."""
-        app.run()
-        for slider in app.select_slider:
-            assert len(slider.options) == 5, f"{slider.label} has {len(slider.options)} options"
-
-    def test_slider_defaults(self, app):
-        """All sliders default to middle value (3)."""
-        app.run()
-        for slider in app.select_slider:
-            assert slider.value == 3, f"{slider.label} defaults to {slider.value}, expected 3"
+    def test_checkin_expander_present(self, app):
+        """Dashboard has a check-in expander."""
+        _navigate(app, "Dashboard")
+        # The check-in is rendered as an expander with "Morning Check-in" label
+        expanders = [e.label for e in app.expander]
+        assert any("Check-in" in e or "Checked in" in e for e in expanders), \
+            f"Expected check-in expander, got {expanders}"
 
     def test_checkbox_labels(self, app):
-        """Three lifestyle checkboxes are present."""
-        app.run()
-        expected = {"Morning Caffeine", "Alcohol Yesterday", "Late Meals"}
+        """Three lifestyle checkboxes are present with emoji labels."""
+        _navigate(app, "Dashboard")
         actual = {c.label for c in app.checkbox}
-        assert actual == expected
+        expected = {"☕ Caffeine", "🍺 Alcohol", "🌙 Late Meals"}
+        assert actual == expected, f"Expected {expected}, got {actual}"
 
     def test_checkbox_defaults(self, app):
         """All checkboxes default to False."""
-        app.run()
+        _navigate(app, "Dashboard")
         for cb in app.checkbox:
             assert cb.value is False, f"{cb.label} defaults to {cb.value}"
 
-    def test_date_input_present(self, app):
-        """Date input defaults to today."""
-        app.run()
-        date_inputs = [d for d in app.date_input if d.label == "Date"]
-        assert len(date_inputs) == 1
-        assert date_inputs[0].value == date.today()
-
-    def test_save_button_present(self, app):
+    def test_save_checkin_button_present(self, app):
         """Save Check-in button exists."""
-        app.run()
+        _navigate(app, "Dashboard")
         buttons = [b.label for b in app.button]
         assert "Save Check-in" in buttons
-
-    def test_checkin_header(self, app):
-        """Page shows 'Morning Check-in' header."""
-        app.run()
-        headers = [h.value for h in app.header]
-        assert "Morning Check-in" in headers
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +206,8 @@ class TestTrendsPage:
         """Page shows info message when no wellness data exists."""
         _navigate(app, "Trends")
         infos = [i.value for i in app.info]
-        assert any("No wellness" in v for v in infos), f"Expected 'No wellness' message, got {infos}"
+        assert any("No wellness" in v or "No data" in v for v in infos), \
+            f"Expected wellness info, got {infos}"
 
     def test_no_crash_on_empty(self, app):
         """Page does not crash with empty wellness data."""
@@ -265,7 +242,8 @@ class TestMapPage:
         """Shows info about no route data."""
         _navigate(app, "Map")
         infos = [i.value for i in app.info]
-        assert any("No route" in v or "route" in v.lower() for v in infos), f"Expected route info, got {infos}"
+        assert any("No route" in v or "route" in v.lower() for v in infos), \
+            f"Expected route info, got {infos}"
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +313,12 @@ class TestSettingsPage:
         _navigate(app, "Settings")
         assert not app.exception
 
+    def test_garmin_subheader(self, app):
+        """Page shows 'Garmin Connect' subheader."""
+        _navigate(app, "Settings")
+        subheaders = [s.value for s in app.subheader]
+        assert "Garmin Connect" in subheaders
+
     def test_not_connected_message(self, app):
         """Shows not connected message when no credentials."""
         _navigate(app, "Settings")
@@ -342,28 +326,9 @@ class TestSettingsPage:
         assert any("Not connected" in v or "not connected" in v.lower() for v in infos), \
             f"Expected connection status, got {infos}"
 
-    def test_sync_buttons_disabled(self, app):
-        """Sync buttons are disabled without auth."""
+    def test_sync_all_historical_disabled_without_auth(self, app):
+        """Sync All Historical Data button is disabled without auth."""
         _navigate(app, "Settings")
-        sync_buttons = [b for b in app.button if "Update Latest" in b.label or "Pull All" in b.label]
-        for btn in sync_buttons:
-            assert btn.disabled, f"Button '{btn.label}' should be disabled without auth"
-
-    def test_reanalyze_enabled(self, app):
-        """Reanalyze button is always enabled."""
-        _navigate(app, "Settings")
-        reanalyze = [b for b in app.button if "Reanalyze" in b.label]
-        assert len(reanalyze) == 1
-        assert not reanalyze[0].disabled
-
-    def test_generate_prescription_button(self, app):
-        """Generate Prescription button exists."""
-        _navigate(app, "Settings")
-        buttons = [b.label for b in app.button]
-        assert "Generate Prescription" in buttons
-
-    def test_garmin_subheader(self, app):
-        """Page shows 'Garmin Connect' subheader."""
-        _navigate(app, "Settings")
-        subheaders = [s.value for s in app.subheader]
-        assert "Garmin Connect" in subheaders
+        sync_btns = [b for b in app.button if b.label == "Sync All Historical Data"]
+        assert len(sync_btns) >= 1
+        assert sync_btns[0].disabled

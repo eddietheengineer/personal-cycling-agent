@@ -2237,8 +2237,15 @@ def _check_garmin_connected() -> bool:
     if st.session_state.get("garmin_auth_state") == "connected":
         return True
     # Check for cached tokens on disk — try multiple paths
+    tokenstore_env = os.environ.get("GARMIN_TOKENSTORE", "")
+    if tokenstore_env:
+        # If GARMIN_TOKENSTORE is explicitly set, only check that path
+        if os.path.isdir(tokenstore_env):
+            files = [f for f in os.listdir(tokenstore_env) if f.endswith(('.json', '.pkl'))]
+            if files:
+                return True
+        return False
     candidates = [
-        os.environ.get("GARMIN_TOKENSTORE", ""),
         os.path.join(os.environ.get("CYCLING_AGENT_VAULT", ""), ".garminconnect"),
         os.path.expanduser("~/.garminconnect"),
     ]
