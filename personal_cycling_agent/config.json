@@ -9,11 +9,16 @@
     "aarch64"
   ],
   "ingress": true,
+  "ports": {
+    "8501/tcp": null
+  },
   "ingress_port": 8501,
   "ingress_stream": true,
   "panel_icon": "mdi:bicycle",
   "panel_title": "Cycling",
   "init": false,
   "hassio_api": true,
-  "options": {}
+  "options": {
+    "port": 8501
+  }
 }
