@@ -148,6 +148,7 @@ def build_system_prompt(
                 f"avg power {act.get('average_power', '?')}W, "
                 f"TSS {act.get('tss', '?')}, "
                 f"IF {act.get('intensity_factor', '?')})"
+            )
         sections.append(f"\n## Recent Activities\n" + "\n".join(activity_lines))
 
     # Full analysis data (if available)
