@@ -2744,7 +2744,7 @@ def _render_wiki():
         all_wiki_pages = all_pages()
         if all_wiki_pages:
             page_options = [
-                f"[{p['directory']}] {p.get('title', p['slug'])}"
+                f"[{p.get('type', 'page')}] {p.get('title', p['slug'])}"
                 for p in all_wiki_pages
             ]
             selected_page = st.selectbox(
@@ -2753,14 +2753,15 @@ def _render_wiki():
                 key="wiki_page_viewer",
             )
             if selected_page:
-                # Parse directory and slug from selection
+                # Parse type and title from selection
                 bracket_end = selected_page.index("]") + 2
-                directory = selected_page[1:selected_page.index("]")]
+                page_type = selected_page[1:selected_page.index("]")]
                 title_part = selected_page[bracket_end:]
                 # Find the matching page
                 for p in all_wiki_pages:
-                    if p["directory"] == directory and p.get("title", p["slug"]) == title_part:
-                        content = read_page(p["directory"], p["slug"])
+                    if p.get("type", "page") == page_type and p.get("title", p["slug"]) == title_part:
+                        directory = p.get("type", "page") + "s"
+                        content = read_page(directory, p["slug"])
                         if content:
                             st.markdown(content)
                         break
