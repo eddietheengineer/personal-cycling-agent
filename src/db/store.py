@@ -278,21 +278,6 @@ class CyclingDB:
             )
         """)
 
-        c.execute("""
-            CREATE TABLE IF NOT EXISTS morning_checkin (
-                date            TEXT    PRIMARY KEY,
-                soreness        INTEGER,
-                stress          REAL,
-                sleep_quality   INTEGER,
-                mood            INTEGER,
-                energy          INTEGER,
-                motivation      INTEGER,
-                caffeine        INTEGER DEFAULT 0,
-                alcohol         INTEGER DEFAULT 0,
-                late_meals      INTEGER DEFAULT 0,
-                updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
-            )
-        """)
 
         c.execute("""
             CREATE TABLE IF NOT EXISTS activities (
@@ -691,11 +676,25 @@ class CyclingDB:
 
             c.execute(
                 """
-                INSERT OR REPLACE INTO activities
+                INSERT INTO activities
                     (id, start_date, activity_type, duration, distance,
                      average_power, max_power, average_hr, max_hr,
                      calories, tss, ifr, normalized_power, file_type)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    start_date = excluded.start_date,
+                    activity_type = excluded.activity_type,
+                    duration = excluded.duration,
+                    distance = excluded.distance,
+                    average_power = excluded.average_power,
+                    max_power = excluded.max_power,
+                    average_hr = excluded.average_hr,
+                    max_hr = excluded.max_hr,
+                    calories = excluded.calories,
+                    tss = excluded.tss,
+                    ifr = excluded.ifr,
+                    normalized_power = excluded.normalized_power,
+                    file_type = excluded.file_type
                 """,
                 (
                     aid,
@@ -1170,7 +1169,7 @@ class CyclingDB:
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 activity_id,
-                metrics.get("cp_used"),
+                metrics.get("ftp_used"),
                 metrics.get("cp_used"),
                 metrics.get("normalized_power"),
                 metrics.get("intensity_factor"),
@@ -1339,85 +1338,6 @@ class CyclingDB:
         ).fetchone()
         return row[0]
 
-    # -- Morning Checkin --
-
-    def insert_morning_checkin(self, record: dict[str, Any]) -> int:
-        """Insert or replace a morning checkin record. Returns the row id."""
-        self.conn.execute(
-            "INSERT INTO morning_checkin "
-            "(athlete_id, date, perceived_readiness, soreness, stress, "
-            " sleep_quality, mood, energy, motivation, pain_score, pain_location, notes) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(athlete_id, date) DO UPDATE SET "
-            "perceived_readiness = excluded.perceived_readiness, "
-            "soreness = excluded.soreness, "
-            "stress = excluded.stress, "
-            "sleep_quality = excluded.sleep_quality, "
-            "mood = excluded.mood, "
-            "energy = excluded.energy, "
-            "motivation = excluded.motivation, "
-            "pain_score = excluded.pain_score, "
-            "pain_location = excluded.pain_location, "
-            "notes = excluded.notes, "
-            "recorded_at = datetime('now')",
-            (
-                record.get("athlete_id"),
-                record.get("date"),
-                record.get("perceived_readiness"),
-                record.get("soreness"),
-                record.get("stress"),
-                record.get("sleep_quality"),
-                record.get("mood"),
-                record.get("energy"),
-                record.get("motivation"),
-                record.get("pain_score"),
-                record.get("pain_location"),
-                record.get("notes"),
-            ),
-        )
-        self.conn.commit()
-        return int(self.conn.execute(
-            "SELECT id FROM morning_checkin WHERE athlete_id = ? AND date = ?",
-            (record.get("athlete_id"), record.get("date")),
-        ).fetchone()[0])
-
-    def get_morning_checkin(self, athlete_id: str, date: str) -> dict[str, Any] | None:
-        """Get a morning checkin for a specific athlete and date."""
-        row = self.conn.execute(
-            "SELECT * FROM morning_checkin WHERE athlete_id = ? AND date = ?",
-            (athlete_id, date),
-        ).fetchone()
-        return dict(row) if row else None
-
-    def get_recent_morning_checkins(
-        self, athlete_id: str, days: int = 30
-    ) -> list[dict[str, Any]]:
-        """Get recent morning checkins for an athlete, ordered by date desc."""
-        rows = self.conn.execute(
-            "SELECT * FROM morning_checkin "
-            "WHERE athlete_id = ? AND date >= date('now', ?) "
-            "ORDER BY date DESC",
-            (athlete_id, f"-{days} days"),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def get_morning_checkins(
-        self, athlete_id: str, oldest: str | None = None, newest: str | None = None
-    ) -> list[dict[str, Any]]:
-        """Query morning checkins with optional date range."""
-        query = "SELECT * FROM morning_checkin WHERE athlete_id = ?"
-        params: list[Any] = [athlete_id]
-
-        if oldest:
-            query += " AND date >= ?"
-            params.append(oldest)
-        if newest:
-            query += " AND date <= ?"
-            params.append(newest)
-
-        query += " ORDER BY date DESC"
-        rows = self.conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
 
     # -- Daily Readiness --
 

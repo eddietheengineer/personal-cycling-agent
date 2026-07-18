@@ -218,6 +218,14 @@ class IndividualRecoveryModel:
             contributions = {}
             limiting = "cold_start"
 
+        # Compute confidence based on model status
+        if self.metrics.status == "cold_start":
+            confidence = 0.3
+        elif self.metrics.status == "warming":
+            confidence = min(0.3 + 0.05 * self.metrics.n_samples, 0.7)
+        else:
+            confidence = min(0.7 + 0.01 * (self.metrics.n_samples - 28), 0.95)
+
         return PredictionResult(
             predicted_prs=predicted,
             confidence=confidence,
@@ -313,6 +321,8 @@ class IndividualRecoveryModel:
 
     def get_feature_importance(self) -> dict[str, float]:
         """Return absolute feature weights (importance)."""
+        if not hasattr(self.model, "coef_") or self.model.coef_ is None:
+            return {name: 0.0 for name in self.feature_names}
         importance = {}
         coef = self.model.coef_
         for i, name in enumerate(self.feature_names):

@@ -57,7 +57,7 @@ def _safe_timestamp_to_date(ts_ms: float | int | None) -> str | None:
     if ts_sec <= 0:
         return None
     try:
-        return datetime.fromtimestamp(ts_sec).strftime("%Y-%m-%d")
+        return datetime.utcfromtimestamp(ts_sec).strftime("%Y-%m-%d")
     except (OSError, OverflowError, ValueError):
         return None
 
@@ -162,7 +162,17 @@ def _retry_on_rate_limit(fn, max_retries: int = 3):
     for attempt in range(1, max_retries + 1):
         try:
             return fn()
-        except garminconnect.GarminConnectTooManyRequestsError as e:
+        except Exception as e:
+            # Guard against garminconnect module not being imported
+            if garminconnect is None:
+                raise RuntimeError(
+                    "garminconnect module not available. "
+                    "Install python-garminconnect."
+                ) from e
+            # Check if this is a 429 rate limit error
+            error_cls = garminconnect.GarminConnectTooManyRequestsError
+            if not isinstance(e, error_cls):
+                raise
             _rate_limiter.record_429()
             if attempt == max_retries:
                 logger.warning(
@@ -239,6 +249,12 @@ def _create_client(tokenstore: str | None = None) -> "garminconnect.Garmin":
         raise RuntimeError(
             "Garmin login requires MFA but running non-interactively. "
             "Please log in via the Settings page first to cache tokens."
+        )
+
+    if result is None:
+        raise RuntimeError(
+            "Garmin login returned None — check credentials, network, "
+            "or token directory permissions."
         )
 
     return result

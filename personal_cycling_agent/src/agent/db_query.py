@@ -30,8 +30,17 @@ ALLOWED_TABLES = {
 BLOCKED_KEYWORDS = {
     "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
     "ATTACH", "DETACH", "REPLACE", "PRAGMA", "VACUUM",
-    ".exec", "exec(", "execute(", "os.", "subprocess",
+    "UNION", "LOAD_EXTENSION", "READFILE", "WRITEFILE",
+    ".EXEC", "OS.", "SUBPROCESS", "SQLite_master",
 }
+
+# Dangerous patterns (regex-like substring checks)
+BLOCKED_PATTERNS = [
+    "--",       # SQL comment
+    "/*",       # Block comment start
+    "*/",       # Block comment end
+    ";",        # Statement separator
+]
 
 
 def query_db(sql: str, vault_path: Path, limit: int = 100) -> str:
@@ -48,10 +57,15 @@ def query_db(sql: str, vault_path: Path, limit: int = 100) -> str:
     """
     sql_upper = sql.strip().upper()
 
-    # Safety checks
+    # Safety checks: blocked keywords
     for kw in BLOCKED_KEYWORDS:
         if kw in sql_upper:
             return f"ERROR: Query contains blocked keyword '{kw}'. Only SELECT queries are allowed."
+
+    # Safety checks: blocked patterns (comments, statement separators)
+    for pattern in BLOCKED_PATTERNS:
+        if pattern in sql:
+            return f"ERROR: Query contains blocked pattern '{pattern}'. Only simple SELECT queries are allowed."
 
     if not sql_upper.startswith("SELECT"):
         return "ERROR: Only SELECT queries are allowed."

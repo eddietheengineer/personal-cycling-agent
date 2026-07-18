@@ -32,19 +32,22 @@ def _ema(values: list[float], half_life: float) -> list[float]:
     """
     Compute exponential moving average with a given half-life in days.
 
-    Uses the weight formula: w = exp(-ln(2) / half_life)
-    EMA[i] = (1 - w) * EMA[i-1] + w * value[i]
+    Uses the weight formula: alpha = 1 - exp(-ln(2) / half_life)
+    EMA[i] = (1 - alpha) * EMA[i-1] + alpha * value[i]
+
+    For half_life=42 (CTL), alpha ≈ 0.038, giving ~96.2% weight to
+    the previous EMA and ~3.8% to the new daily value.
 
     For the first value, EMA equals the value itself.
     """
     if not values:
         return []
 
-    w = math.exp(-math.log(2) / half_life)
+    alpha = 1.0 - math.exp(-math.log(2) / half_life)
     ema = [values[0]]
 
     for i in range(1, len(values)):
-        ema.append((1 - w) * ema[-1] + w * values[i])
+        ema.append((1.0 - alpha) * ema[-1] + alpha * values[i])
 
     return ema
 

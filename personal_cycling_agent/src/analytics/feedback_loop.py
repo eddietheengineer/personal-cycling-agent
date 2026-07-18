@@ -64,11 +64,10 @@ def analyze_post_ride_feedback(
     tss_ratio = actual_tss / planned_tss if planned_tss > 0 else 1.0
 
     # --- Zone Analysis ---
-    zone_drift = 0.0
-    for zone in ["Z1", "Z2", "Z3", "Z4", "Z5"]:
-        planned_pct = planned_zones.get(zone, 0)
-        actual_pct = actual_zones.get(zone, 0)
-        zone_drift += actual_pct - planned_pct
+    zone_drift = sum(
+        abs(actual_zones.get(z, 0) - planned_zones.get(z, 0))
+        for z in ["Z1", "Z2", "Z3", "Z4", "Z5"]
+    )
 
     # --- Intensity Analysis ---
     intensity_ratio = actual_intensity / planned_intensity if planned_intensity > 0 else 1.0
