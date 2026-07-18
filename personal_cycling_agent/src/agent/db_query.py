@@ -72,7 +72,7 @@ def query_db(sql: str, vault_path: Path, limit: int = 100) -> str:
 
     # Inject LIMIT if not present
     if "LIMIT" not in sql_upper:
-        sql = f"({sql}) LIMIT {limit}"
+        sql = f"{sql} LIMIT {limit}"
 
     db_path = vault_path / "data" / "cycling_agent.sqlite"
     if not db_path.exists():
@@ -84,13 +84,13 @@ def query_db(sql: str, vault_path: Path, limit: int = 100) -> str:
         cursor = conn.cursor()
         cursor.execute(sql)
         rows = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
         conn.close()
 
         if not rows:
             return "No results found."
 
         # Format as table
-        columns = [desc[0] for desc in cursor.description]
         lines = ["| " + " | ".join(columns) + " |"]
         lines.append("| " + " | ".join(["---"] * len(columns)) + " |")
 
