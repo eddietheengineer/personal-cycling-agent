@@ -50,6 +50,22 @@ def append_entry(entry: str) -> None:
             f.write(block)
 
 
+def append_conversation(user_msg: str, assistant_msg: str) -> None:
+    """Append a full coach conversation exchange to the journal (thread-safe)."""
+    path = _journal_path()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    block = (
+        f"## {now}\n"
+        f"**You:** {user_msg}\n\n"
+        f"**Coach:** {assistant_msg}\n"
+    )
+
+    with _lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(block)
+
+
 # ── LLM extraction ────────────────────────────────────────────────────
 
 _EXTRACT_PROMPT = """\

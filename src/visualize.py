@@ -907,6 +907,14 @@ def _render_dashboard_coach():
 
             st.session_state.coach_messages.append({"role": "assistant", "content": response})
 
+            # Save full conversation to journal
+            try:
+                from src.memory.journal import append_conversation
+                append_conversation(user_input.strip(), response)
+            except Exception:
+                pass
+
+            # Extract key facts in background (non-blocking)
             def _extract_and_save():
                 try:
                     from src.memory.journal import extract_memories, append_entry
