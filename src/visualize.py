@@ -1144,12 +1144,30 @@ def _render_activity_detail():
             val = combined.get(f"power_zone_{i+1}")
             col.metric(f"Zone {i+1}", f"{_format_duration(val)}" if val else "—")
 
-    with st.expander("Max Average Power"):
-        durations = ["1s", "2s", "5s", "10s", "20s", "30s", "60s", "120s", "300s", "600s", "1200s", "1800s", "3600s"]
-        pwr_cols = st.columns(4)
-        for i, dur in enumerate(durations):
+    with st.expander("Power Duration Curve"):
+        durations_s = [1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1200, 1800, 3600]
+        durations_label = ["1s", "2s", "5s", "10s", "20s", "30s", "60s", "2m", "5m", "10m", "20m", "30m", "60m"]
+        pwr_vals = []
+        for s, dur in zip(durations_s, ["1s", "2s", "5s", "10s", "20s", "30s", "60s", "120s", "300s", "600s", "1200s", "1800s", "3600s"]):
             val = combined.get(f"max_avg_power_{dur}")
-            pwr_cols[i % 4].metric(dur, f"{val:.0f} W" if val else "—")
+            pwr_vals.append(val)
+
+        has_pwr = any(v is not None for v in pwr_vals)
+        if has_pwr:
+            theme = st.get_option("theme.base")
+            fig = px.line(
+                x=durations_label,
+                y=pwr_vals,
+                markers=True,
+                labels={"x": "Duration", "y": "Power (W)"},
+                title="Power Duration Curve",
+                template="plotly_white" if theme != "dark" else "plotly_dark",
+            )
+            fig.update_traces(line=dict(width=3), marker=dict(size=8))
+            fig.update_layout(height=350, margin=dict(l=50, r=20, t=40, b=40))
+            st.plotly_chart(fig, width="stretch")
+        else:
+            st.info("No power duration data available for this activity.")
 
     # -- Stream charts --
     stream_metrics = ["power", "heart_rate", "speed", "cadence", "altitude"]
