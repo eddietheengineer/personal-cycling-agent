@@ -2760,7 +2760,7 @@ def _render_wiki():
                 # Find the matching page
                 for p in all_wiki_pages:
                     if p.get("type", "page") == page_type and p.get("title", p["slug"]) == title_part:
-                        directory = p.get("type", "page") + "s"
+                        directory = p["path"].split("/")[0]
                         content = read_page(directory, p["slug"])
                         if content:
                             st.markdown(content)
