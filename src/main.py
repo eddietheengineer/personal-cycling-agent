@@ -530,7 +530,7 @@ def run_analyze() -> dict:
         "training_load": training_load_result,
         "training_load_history": training_load_history,
         "power_metrics": power_metrics_results,
-        "recent_activities": activity_dicts[:5],
+        "recent_activities": activity_dicts[-14:],
         "w_prime": w_prime_results,
         "durability": durability_results,
         "decoupling": decoupling_results,

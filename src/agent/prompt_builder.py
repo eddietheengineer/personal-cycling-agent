@@ -140,12 +140,13 @@ def build_system_prompt(
     # Recent activities context
     if recent_activities and len(recent_activities) > 0:
         activity_lines = []
-        for act in recent_activities[:5]:
+        for act in recent_activities:
             activity_lines.append(
-                f"- {act.get('start_date', '?')}: {act.get('activity_type', '?')} "
-                f"for {act.get('duration', '?')}s, "
+                f"- {act.get('start_date', '?')}: {act.get('activity_name', '') or act.get('activity_type', '?')} "
+                f"({act.get('duration', 0)/60:.0f}min, "
                 f"avg power {act.get('average_power', '?')}W, "
-                f"TSS {act.get('tss', '?')}"
+                f"TSS {act.get('tss', '?')}, "
+                f"IF {act.get('intensity_factor', '?')})"
             )
         sections.append(f"\n## Recent Activities\n" + "\n".join(activity_lines))
 
