@@ -52,6 +52,14 @@ class CyclingDB:
             "distance_m": "REAL",
             "min_hr": "REAL",
             "max_hr": "REAL",
+            "respiration_rate": "REAL",
+            "floors": "INTEGER",
+            "hydration_ml": "REAL",
+            "intensity_minutes": "REAL",
+            "body_battery": "REAL",
+            "training_readiness_score": "REAL",
+            "endurance_score": "REAL",
+            "hill_score": "REAL",
         }
 
         for col, typ in columns.items():
@@ -258,6 +266,14 @@ class CyclingDB:
                 distance_m        REAL,
                 min_hr            REAL,
                 max_hr            REAL,
+                respiration_rate  REAL,
+                floors            INTEGER,
+                hydration_ml      REAL,
+                intensity_minutes REAL,
+                body_battery      REAL,
+                training_readiness_score REAL,
+                endurance_score   REAL,
+                hill_score        REAL,
                 updated_at        TEXT    NOT NULL DEFAULT (datetime('now'))
             )
         """)
@@ -396,6 +412,16 @@ class CyclingDB:
                 avg_power              REAL,
                 max_power              REAL,
                 parsed_at              TEXT   NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        # Raw wellness data (immutable, append-only)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS raw_wellness (
+                date              TEXT    NOT NULL,
+                source            TEXT    NOT NULL,
+                raw_json          TEXT,
+                synced_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (date, source)
             )
         """)
 
@@ -540,8 +566,10 @@ class CyclingDB:
                 INSERT INTO wellness
                     (date, weight, resting_hr, rmssd, stress, sleep_score, sleep_hours, steps,
                      spo2, body_battery_start, body_battery_end, calories, active_calories,
-                     distance_m, min_hr, max_hr)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     distance_m, min_hr, max_hr, respiration_rate, floors, hydration_ml,
+                     intensity_minutes, body_battery, training_readiness_score,
+                     endurance_score, hill_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(date) DO UPDATE SET
                     weight = excluded.weight,
                     resting_hr = excluded.resting_hr,
@@ -557,7 +585,15 @@ class CyclingDB:
                     active_calories = excluded.active_calories,
                     distance_m = excluded.distance_m,
                     min_hr = excluded.min_hr,
-                    max_hr = excluded.max_hr
+                    max_hr = excluded.max_hr,
+                    respiration_rate = excluded.respiration_rate,
+                    floors = excluded.floors,
+                    hydration_ml = excluded.hydration_ml,
+                    intensity_minutes = excluded.intensity_minutes,
+                    body_battery = excluded.body_battery,
+                    training_readiness_score = excluded.training_readiness_score,
+                    endurance_score = excluded.endurance_score,
+                    hill_score = excluded.hill_score
                 """,
                 (
                     date,
@@ -576,6 +612,14 @@ class CyclingDB:
                     rec.get("distance_m"),
                     rec.get("min_hr"),
                     rec.get("max_hr"),
+                    rec.get("respiration_rate"),
+                    rec.get("floors"),
+                    rec.get("hydration_ml"),
+                    rec.get("intensity_minutes"),
+                    rec.get("body_battery"),
+                    rec.get("training_readiness_score"),
+                    rec.get("endurance_score"),
+                    rec.get("hill_score"),
                 ),
             )
             n += 1
@@ -675,6 +719,21 @@ class CyclingDB:
         self.conn.commit()
         logger.info(f"Stored {n} activity records")
         return n
+
+    def store_raw_wellness(self, date: str, source: str, data: Any) -> None:
+        """Store raw JSON response from a Garmin wellness API call."""
+        c = self.conn.cursor()
+        c.execute(
+            """
+            INSERT INTO raw_wellness (date, source, raw_json)
+            VALUES (?, ?, ?)
+            ON CONFLICT(date, source) DO UPDATE SET
+                raw_json = excluded.raw_json,
+                synced_at = datetime('now')
+            """,
+            (date, source, json.dumps(data) if not isinstance(data, str) else data),
+        )
+        self.conn.commit()
 
     def get_activities(
         self,

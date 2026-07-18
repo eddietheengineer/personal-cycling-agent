@@ -62,6 +62,21 @@ def _safe_timestamp_to_date(ts_ms: float | int | None) -> str | None:
         return None
 
 
+def _extract_floors(floors_data: dict[str, Any]) -> int | None:
+    """Extract total floors ascended from Garmin floors data.
+
+    floorValuesArray is a list of [startTime, endTime, floorsAscended, floorsDescended].
+    """
+    arr = floors_data.get("floorValuesArray")
+    if not arr:
+        return None
+    total = 0
+    for entry in arr:
+        if isinstance(entry, (list, tuple)) and len(entry) >= 3:
+            total += entry[2]
+    return total if total > 0 else None
+
+
 class RateLimiter:
     """Proactive rate limiting for Garmin Connect API calls.
 
@@ -1012,6 +1027,7 @@ def sync_garmin(
     tokenstore: str | None = None,
     unbounded: bool = False,
     progress_callback: "Callable[[int, str], None] | None" = None,
+    force_resync: bool = False,
 ) -> dict[str, int]:
     """
     Sync wellness data from Garmin Connect using bulk fetching where possible.
@@ -1047,6 +1063,13 @@ def sync_garmin(
         )
 
     db = CyclingDB(db_path)
+    if force_resync:
+        logger.info("Force resync: clearing existing wellness data")
+        db.conn.execute("DELETE FROM wellness")
+        db.conn.execute("DELETE FROM raw_wellness")
+        db.conn.execute("DELETE FROM sync_state WHERE source='garmin_wellness'")
+        db.conn.commit()
+        last_synced = None
     last_synced = db.get_last_synced("garmin_wellness")
 
     today = datetime.now().date()
@@ -1170,7 +1193,7 @@ def sync_garmin(
     if progress_callback is not None:
         progress_callback(10, "Bulk data fetched, now fetching HRV and sleep...")
 
-    # --- Per-day fetch HRV and sleep ---
+    # --- Per-day fetch all wellness endpoints ---
     # Only fetch days that don't already have wellness records in the DB
     existing_dates = db.get_wellness_dates(
         oldest=sync_dates[-1].strftime("%Y-%m-%d"),
@@ -1179,7 +1202,7 @@ def sync_garmin(
     missing_dates = [d for d in sync_dates if d.strftime("%Y-%m-%d") not in existing_dates]
 
     # Further narrow: only days that have weight or steps data from bulk fetch.
-    # Days without any bulk data have no watch worn — skip HRV/sleep/stats calls.
+    # Days without any bulk data have no watch worn — skip per-day calls.
     bulk_dates = set(weight_by_date.keys()) | set(steps_by_date.keys())
     fetch_dates = [d for d in missing_dates if d.strftime("%Y-%m-%d") in bulk_dates]
 
@@ -1190,22 +1213,80 @@ def sync_garmin(
             f"fetching {len(fetch_dates)} days with data"
         )
     if existing_dates:
-        logger.info(
-            f"Also skipping {len(existing_dates)} days already in DB"
-        )
+        logger.info(f"Also skipping {len(existing_dates)} days already in DB")
 
     total_stored = 0
     total_with_hrv = 0
 
+    # Bulk fetch endurance/hill scores (date range)
+    endurance_by_date: dict[str, float] = {}
+    hill_by_date: dict[str, float] = {}
+    try:
+        _rate_limiter.wait()
+        endurance_data = _retry_on_rate_limit(
+            lambda: client.get_endurance_score(
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d"),
+            )
+        )
+        if isinstance(endurance_data, list):
+            for entry in endurance_data:
+                d = entry.get("calendarDate") or _safe_timestamp_to_date(entry.get("dateTimestamp"))
+                if d:
+                    endurance_by_date[d] = entry.get("enduranceScore")
+    except Exception as e:
+        logger.warning(f"Failed to bulk fetch endurance scores: {e}")
+    try:
+        _rate_limiter.wait()
+        hill_data = _retry_on_rate_limit(
+            lambda: client.get_hill_score(
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d"),
+            )
+        )
+        if isinstance(hill_data, list):
+            for entry in hill_data:
+                d = entry.get("calendarDate") or _safe_timestamp_to_date(entry.get("dateTimestamp"))
+                if d:
+                    hill_by_date[d] = entry.get("hillScore")
+    except Exception as e:
+        logger.warning(f"Failed to bulk fetch hill scores: {e}")
+
+    if progress_callback is not None:
+        progress_callback(10, "Bulk data fetched, now fetching per-day data...")
+
     for i, d in enumerate(fetch_dates):
         target_str = d.strftime("%Y-%m-%d")
-        # Fetch HRV
+
+        # --- Fetch all per-day endpoints ---
         rmssd = None
+        sleep_score = None
+        sleep_hours = None
+        resting_hr = None
+        stress = None
+        spo2 = None
+        respiration_rate = None
+        hydration_ml = None
+        intensity_minutes = None
+        body_battery = None
+        body_battery_start = None
+        body_battery_end = None
+        floors = None
+        training_readiness_score = None
+        calories = None
+        active_calories = None
+        distance_m = None
+        min_hr = None
+        max_hr = None
+
+        # HRV
         try:
             _rate_limiter.wait()
             hrv_data = _retry_on_rate_limit(lambda: client.get_hrv_data(target_str))
-            if hrv_data and "hrvSummary" in hrv_data:
-                rmssd = hrv_data["hrvSummary"].get("lastNightAvg")
+            if hrv_data:
+                db.store_raw_wellness(target_str, "hrv", hrv_data)
+                if "hrvSummary" in hrv_data:
+                    rmssd = hrv_data["hrvSummary"].get("lastNightAvg")
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
             logger.warning(f"Rate limited during HRV sync: {e}")
@@ -1215,15 +1296,17 @@ def sync_garmin(
         except Exception as e:
             logger.debug(f"Failed to fetch HRV for {target_str}: {e}")
 
-        # Fetch sleep
-        sleep_score = None
-        sleep_hours = None
+        # Sleep
         try:
             _rate_limiter.wait()
             sleep_data = _retry_on_rate_limit(lambda: client.get_sleep_data(target_str))
             if sleep_data:
-                sleep_score = sleep_data.get("sleepScore")
-                sleep_ms = sleep_data.get("sleepTimeSeconds", 0)
+                db.store_raw_wellness(target_str, "sleep", sleep_data)
+                daily = sleep_data.get("dailySleepDTO", {})
+                scores = daily.get("sleepScores", {})
+                overall = scores.get("overall", {})
+                sleep_score = overall.get("value")
+                sleep_ms = daily.get("sleepTimeSeconds", 0)
                 if sleep_ms:
                     sleep_hours = sleep_ms / 3600.0
         except garminconnect.GarminConnectTooManyRequestsError as e:
@@ -1235,13 +1318,12 @@ def sync_garmin(
         except Exception as e:
             logger.debug(f"Failed to fetch sleep for {target_str}: {e}")
 
-        # Fetch stats for RHR and stress
-        resting_hr = None
-        stress = None
+        # Stats (RHR, stress)
         try:
             _rate_limiter.wait()
             stats = _retry_on_rate_limit(lambda: client.get_stats(target_str))
             if stats:
+                db.store_raw_wellness(target_str, "stats", stats)
                 resting_hr = stats.get("restingHeartRate")
                 if stats.get("allDayStress"):
                     stress = stats["allDayStress"].get("averageStressLevel")
@@ -1254,11 +1336,201 @@ def sync_garmin(
         except Exception as e:
             logger.debug(f"Failed to fetch stats for {target_str}: {e}")
 
-        # Build wellness record from bulk + per-day data
+        # Heart rates (for min/max)
+        try:
+            _rate_limiter.wait()
+            heart_rates = _retry_on_rate_limit(lambda: client.get_heart_rates(target_str))
+            if heart_rates:
+                db.store_raw_wellness(target_str, "heart_rates", heart_rates)
+                resting_hr = resting_hr or heart_rates.get("restingHeartRate")
+                min_hr = heart_rates.get("minHeartRate")
+                max_hr = heart_rates.get("maxHeartRate")
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during heart rates sync: {e}")
+            db.set_last_synced("garmin_wellness", target_str)
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch heart rates for {target_str}: {e}")
+
+        # Respiration
+        try:
+            _rate_limiter.wait()
+            resp_data = _retry_on_rate_limit(lambda: client.get_respiration_data(target_str))
+            if resp_data:
+                db.store_raw_wellness(target_str, "respiration", resp_data)
+                respiration_rate = resp_data.get("avgSleepRespirationValue")
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during respiration sync: {e}")
+            db.set_last_synced("garmin_wellness", target_str)
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch respiration for {target_str}: {e}")
+
+        # SpO2
+        try:
+            _rate_limiter.wait()
+            spo2_data = _retry_on_rate_limit(lambda: client.get_spo2_data(target_str))
+            if spo2_data:
+                db.store_raw_wellness(target_str, "spo2", spo2_data)
+                spo2 = spo2_data.get("averageSpO2")
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during SpO2 sync: {e}")
+            db.set_last_synced("garmin_wellness", target_str)
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch SpO2 for {target_str}: {e}")
+
+        # Hydration
+        try:
+            _rate_limiter.wait()
+            hydr_data = _retry_on_rate_limit(lambda: client.get_hydration_data(target_str))
+            if hydr_data:
+                db.store_raw_wellness(target_str, "hydration", hydr_data)
+                hydration_ml = hydr_data.get("valueInML")
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during hydration sync: {e}")
+            db.set_last_synced("garmin_wellness", target_str)
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch hydration for {target_str}: {e}")
+
+        # Intensity minutes
+        try:
+            _rate_limiter.wait()
+            intensity_data = _retry_on_rate_limit(lambda: client.get_intensity_minutes_data(target_str))
+            if intensity_data:
+                db.store_raw_wellness(target_str, "intensity_minutes", intensity_data)
+                intensity_minutes = intensity_data.get("moderateMinutes", 0) + intensity_data.get("vigorousMinutes", 0)
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during intensity minutes sync: {e}")
+            db.set_last_synced("garmin_wellness", target_str)
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch intensity minutes for {target_str}: {e}")
+
+        # Body battery
+        try:
+            _rate_limiter.wait()
+            bb_data = _retry_on_rate_limit(lambda: client.get_body_battery(target_str))
+            if bb_data:
+                db.store_raw_wellness(target_str, "body_battery", bb_data)
+                if isinstance(bb_data, list) and len(bb_data) > 0:
+                    arr = bb_data[0].get("bodyBatteryValuesArray", [])
+                    if arr:
+                        body_battery_start = arr[0][1]
+                        body_battery_end = arr[-1][1]
+                        body_battery = body_battery_end
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during body battery sync: {e}")
+            db.set_last_synced("garmin_wellness", target_str)
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch body battery for {target_str}: {e}")
+
+        # Floors climbed
+        try:
+            _rate_limiter.wait()
+            floors_data = _retry_on_rate_limit(lambda: client.get_floors(target_str))
+            if floors_data:
+                db.store_raw_wellness(target_str, "floors", floors_data)
+                floors = _extract_floors(floors_data)
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during floors sync: {e}")
+            db.set_last_synced("garmin_wellness", target_str)
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch floors for {target_str}: {e}")
+
+        # Training readiness
+        try:
+            _rate_limiter.wait()
+            readiness_data = _retry_on_rate_limit(lambda: client.get_training_readiness(target_str))
+            if readiness_data:
+                db.store_raw_wellness(target_str, "training_readiness", readiness_data)
+                if isinstance(readiness_data, list) and len(readiness_data) > 0:
+                    training_readiness_score = readiness_data[0].get("score")
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during training readiness sync: {e}")
+            db.set_last_synced("garmin_wellness", target_str)
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch training readiness for {target_str}: {e}")
+
+        # User summary (calories, active_calories, distance)
+        try:
+            _rate_limiter.wait()
+            summary = _retry_on_rate_limit(lambda: client.get_user_summary(target_str))
+            if summary:
+                db.store_raw_wellness(target_str, "user_summary", summary)
+                calories = summary.get("totalKilocalories")
+                active_calories = summary.get("activeKilocalories")
+                dist_m = summary.get("totalDistanceMeters")
+                if dist_m:
+                    distance_m = dist_m
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during user summary sync: {e}")
+            db.set_last_synced("garmin_wellness", target_str)
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch user summary for {target_str}: {e}")
+
+        # Lifestyle logging
+        try:
+            _rate_limiter.wait()
+            lifestyle = _retry_on_rate_limit(lambda: client.get_lifestyle_logging_data(target_str))
+            if lifestyle:
+                db.store_raw_wellness(target_str, "lifestyle", lifestyle)
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during lifestyle sync: {e}")
+            db.set_last_synced("garmin_wellness", target_str)
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch lifestyle for {target_str}: {e}")
+
+        # Morning training readiness
+        try:
+            _rate_limiter.wait()
+            morning_readiness = _retry_on_rate_limit(lambda: client.get_morning_training_readiness(target_str))
+            if morning_readiness:
+                db.store_raw_wellness(target_str, "morning_readiness", morning_readiness)
+        except garminconnect.GarminConnectTooManyRequestsError as e:
+            _rate_limiter.record_429()
+            logger.warning(f"Rate limited during morning readiness sync: {e}")
+            db.set_last_synced("garmin_wellness", target_str)
+            db.close()
+            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+        except Exception as e:
+            logger.debug(f"Failed to fetch morning readiness for {target_str}: {e}")
+
+        # Build wellness record from all sources
         weight = weight_by_date.get(target_str)
         steps = steps_by_date.get(target_str)
+        endurance_score = endurance_by_date.get(target_str)
+        hill_score = hill_by_date.get(target_str)
 
-        if not any([resting_hr, rmssd, stress, steps, weight]):
+        if not any([resting_hr, rmssd, stress, steps, weight, spo2, respiration_rate,
+                     hydration_ml, intensity_minutes, body_battery, floors,
+                     training_readiness_score, sleep_score, calories]):
             logger.info(f"No wellness data for {target_str}")
             db.set_last_synced("garmin_wellness", target_str)
             if progress_callback is not None:
@@ -1276,6 +1548,22 @@ def sync_garmin(
             "sleep_score": sleep_score,
             "sleep_hours": sleep_hours,
             "steps": steps,
+            "spo2": spo2,
+            "respiration_rate": respiration_rate,
+            "floors": floors,
+            "hydration_ml": hydration_ml,
+            "intensity_minutes": intensity_minutes,
+            "body_battery": body_battery,
+            "body_battery_start": body_battery_start,
+            "body_battery_end": body_battery_end,
+            "training_readiness_score": training_readiness_score,
+            "calories": calories,
+            "active_calories": active_calories,
+            "distance_m": distance_m,
+            "min_hr": min_hr,
+            "max_hr": max_hr,
+            "endurance_score": endurance_score,
+            "hill_score": hill_score,
         }
 
         stored = db.store_wellness([record])

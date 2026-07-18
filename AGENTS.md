@@ -55,13 +55,16 @@ docker run -d --name pca -p 8501:8501 \
 **MUST do a force clean rebuild after every commit and push.** Docker layer caching silently serves stale code — `docker build` without `--no-cache` will report success but ship old files. The sequence is:
 
 1. `git commit` + `git push`
-2. `docker image rm pca-test` (remove old image to prevent cache reuse)
-3. `docker build --no-cache -t pca-test .` (clean rebuild)
-4. `docker stop pca && docker rm pca` (remove running container)
-5. `docker run -d --name pca -p 8501:8501 -v /home/joshua/cycling-agent-data:/data -e CYCLING_AGENT_VAULT=/data pca-test`
-6. Verify the container has the new code: `docker exec pca head -5 /app/src/<changed_file>`
+2. `python3 ~/sync_to_ha.py` (sync source and data to HA addon folder via SMB)
+3. `docker image rm pca-test` (remove old image to prevent cache reuse)
+4. `docker build --no-cache -t pca-test .` (clean rebuild)
+5. `docker stop pca && docker rm pca` (remove running container)
+6. `docker run -d --name pca -p 8501:8501 -v /home/joshua/cycling-agent-data:/data -e CYCLING_AGENT_VAULT=/data pca-test`
+7. Verify the container has the new code: `docker exec pca head -5 /app/src/<changed_file>`
 
-**Never skip steps 2 or 6.** Step 2 prevents Docker from reusing cached layers. Step 6 confirms the running container actually has the new code before declaring the commit done.
+**Never skip steps 2, 3, or 7.** Step 2 syncs the latest code to the HA addon share. Step 3 prevents Docker from reusing cached layers. Step 7 confirms the running container actually has the new code before declaring the commit done.
+
+**Note:** `sync_to_ha.py` lives at `~/sync_to_ha.py` (outside the repo). It is gitignored and MUST never be committed.
 
 ## Garmin Authentication (garmin-auth 0.3.0)
 
