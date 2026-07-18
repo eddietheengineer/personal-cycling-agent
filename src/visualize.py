@@ -1838,13 +1838,16 @@ def _render_garmin_setup():
     # credentials AND either a successful auth state or cached tokens
     # (use _check_garmin_connected so Settings tab matches Dashboard)
     has_cached_tokens = _check_garmin_connected()
-    is_connected = auth_state == "connected" or (has_credentials and has_cached_tokens)
+    is_connected = auth_state == "connected" or (has_credentials and has_cached_tokens) or has_cached_tokens
 
     # ── Auth status display ──────────────────────────────────────────
     if is_connected:
         col_status, col_action = st.columns([3, 1])
         with col_status:
-            st.success(f"Connected as: {current_email}")
+            if current_email:
+                st.success(f"Connected as: {current_email}")
+            else:
+                st.success("Connected (cached tokens found)")
         with col_action:
             if st.button("Modify", key="modify_credentials"):
                 st.session_state.show_clear_dialog = True
