@@ -1382,37 +1382,9 @@ def _render_trends():
         return
 
     df_wellness = pd.DataFrame(wellness_data)
-    # ---- Critical Power: bars (per-activity ride CP) + decay line ----
+    # ---- Critical Power: bars (per-activity ride CP) + rolling 90-day CP line ----
     if cp_chart_data:
         df_cp = pd.DataFrame(cp_chart_data)
-
-        # Compute smooth decay line from cp_used (decayed CP per activity)
-        import math as _math
-        from datetime import date as _date, timedelta as _td
-        decay_half_life = 60.0
-        decay_dates = []
-        decay_vals = []
-        dates = [_date.fromisoformat(d["date"]) for d in cp_chart_data]
-        cps = [d["cp_used"] for d in cp_chart_data]
-        if dates:
-            start_d = dates[0]
-            end_d = dates[-1]
-            d = start_d
-            while d <= end_d:
-                prev_cp = None
-                prev_d = None
-                for i in range(len(dates)):
-                    if dates[i] <= d:
-                        prev_cp = cps[i]
-                        prev_d = dates[i]
-                    else:
-                        break
-                if prev_cp is not None:
-                    days_since = (d - prev_d).days
-                    decayed = prev_cp * _math.exp(-_math.log(2) * days_since / decay_half_life)
-                    decay_dates.append(d.isoformat())
-                    decay_vals.append(round(decayed, 1))
-                d += _td(days=1)
 
         # Fetch ride_cp values for bars, aggregated by date (max per day)
         ride_cp_rows = db.conn.execute(
@@ -1424,21 +1396,23 @@ def _render_trends():
         ).fetchall()
 
         fig = go.Figure()
+        # Rolling 90-day CP line from cp_used
+        line_dates = [d["date"] for d in cp_chart_data]
+        line_vals = [d["cp_used"] for d in cp_chart_data]
+        fig.add_trace(go.Scatter(
+            x=line_dates, y=line_vals,
+            mode="lines", name="CP (90d rolling)",
+            line=dict(width=2.5, color="#9467bd"),
+            hovertemplate="Date: %{x}<br>CP: %{y:.0f} W<extra></extra>",
+        ))
+        # Per-activity ride CP bars
         if ride_cp_rows:
             bar_dates = [r[0] for r in ride_cp_rows]
             bar_vals = [r[1] for r in ride_cp_rows]
             fig.add_trace(go.Bar(
                 x=bar_dates, y=bar_vals, name="Ride CP",
-                marker_color="#9467bd", opacity=0.6,
-                hovertemplate="Date: %{x}<br>CP: %{y:.0f} W<extra></extra>",
-            ))
-        if decay_dates:
-            fig.add_trace(go.Scatter(
-                x=decay_dates, y=decay_vals,
-                mode="lines", name="CP Decay",
-                line=dict(width=2, color="#e0e0e0"),
-                opacity=0.5,
-                hovertemplate="Date: %{x}<br>CP: %{y:.0f} W<extra></extra>",
+                marker_color="#e0e0e0", opacity=0.4,
+                hovertemplate="Date: %{x}<br>Ride CP: %{y:.0f} W<extra></extra>",
             ))
         fig.update_layout(
             title="Critical Power",

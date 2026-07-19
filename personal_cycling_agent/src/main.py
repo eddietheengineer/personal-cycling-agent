@@ -194,10 +194,12 @@ def run_analyze() -> dict:
             profile_cp = 200.0
             logger.info("No CP set, bootstrapping with 200W default")
 
-        # Running CP estimate: starts from profile, updated per activity
-        current_cp = profile_cp
-        # Accumulate PDC data across activities for CP regression
-        cp_pdc_data: list[dict] = []
+        # Rolling 90-day PDC window for CP estimation (intervals.icu style).
+        # CP is estimated from all rides in the last 90 days — no arbitrary
+        # decay constant. Old efforts naturally drop out of the window.
+        # Each ride's PDC is stored with its date; before processing a new
+        # activity, the window is filtered and CP re-estimated.
+        rolling_pdc_data: list[dict] = []  # {"date": datetime, "power_duration_curve": dict}
         _profile = {
             "resting_hr": int(os.environ.get("RESTING_HR", 70)),
             "max_hr": int(os.environ.get("MAX_HR", 190)),
@@ -251,45 +253,48 @@ def run_analyze() -> dict:
             except ValueError:
                 act_date = None
 
-            # --- CP decay + bump model (eFTP style) ---
-            # CP decays over time (half-life 60 days). It bumps up only
-            # when a new effort exceeds the decaying estimate.
-            # This matches TrainingPeaks/intervals.icu eFTP behavior.
-            import math as _math
-            if act_date is not None and last_activity_date is not None:
-                days_since = (act_date - last_activity_date).days
-                if days_since > 0:
-                    decay = _math.exp(-_math.log(2) * days_since / 60.0)
-                    current_cp = current_cp * decay
-
+            # Compute PDC for this ride
+            pdc = None
             if power_samples:
                 try:
                     pdc = _compute_power_duration_curve(np.array(power_samples, dtype=np.float64))
-                    # Estimate CP from this ride's PDC using 2-parameter model
-                    # (P = CP + W'/t) at standard durations (3, 5, 8, 20 min).
-                    # A single ride gives one point per duration — not enough for
-                    # regression, so fall back to 3min/1.3 if only one duration.
-                    ride_cp_est = None
+                except Exception as e:
+                    logger.warning(f"PDC computation failed for {activity_id}: {e}")
+
+            # Add this ride's PDC to the rolling window
+            if pdc is not None and act_date is not None:
+                rolling_pdc_data.append({"date": act_date, "power_duration_curve": pdc})
+
+            # Estimate CP from rolling 90-day window
+            current_cp = profile_cp
+            if act_date is not None and rolling_pdc_data:
+                cutoff = act_date - timedelta(days=90)
+                window = [
+                    {"power_duration_curve": d["power_duration_curve"]}
+                    for d in rolling_pdc_data if d["date"] >= cutoff
+                ]
+                if len(window) >= 2:
+                    cp_est, wp_est = estimate_critical_power(window)
+                    if cp_est > 50:
+                        current_cp = cp_est
+                        current_w_prime = wp_est
+
+            # Estimate per-ride CP for bar chart (from this ride only)
+            ride_cp_est = None
+            if pdc is not None:
+                try:
                     ride_data = [{"power_duration_curve": pdc}]
-                    cp_est, wp_est = estimate_critical_power(ride_data)
+                    cp_est, _ = estimate_critical_power(ride_data)
                     if cp_est > 50:
                         ride_cp_est = cp_est
                     else:
-                        # Fallback: 3min best / 1.3
                         ride_3min = pdc.get(180, 0)
                         if ride_3min > 0 and ride_3min < 300:
                             ride_cp_est = ride_3min / 1.3
-                    if ride_cp_est is not None and ride_cp_est > current_cp:
-                        current_cp = ride_cp_est
-                        logger.info(
-                            f"CP bump from {activity_id}: "
-                            f"{current_cp:.0f}W"
-                        )
-                    # Store raw ride CP estimate for charting
-                    if ride_cp_est is not None:
-                        db.store_activity_metrics(activity_id, {"ride_cp": ride_cp_est})
-                except Exception as e:
-                    logger.warning(f"CP estimation failed for {activity_id}: {e}")
+                except Exception:
+                    pass
+            if ride_cp_est is not None:
+                db.store_activity_metrics(activity_id, {"ride_cp": ride_cp_est})
 
             # --- Compute power metrics with current CP ---
             pm_result = None
