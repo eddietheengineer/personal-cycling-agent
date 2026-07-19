@@ -20,6 +20,7 @@ import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
+from dataclasses import dataclass
 
 from src import config
 from src.db.store import CyclingDB
@@ -40,6 +41,184 @@ try:
     import fitdecode
 except ImportError:
     fitdecode = None  # type: ignore
+
+
+@dataclass
+class FitParseResult:
+    """Result of parsing a FIT file's frames."""
+    power_values: list[tuple[float, float]]
+    hr_values: list[tuple[float, float]]
+    cadence_values: list[tuple[float, float]]
+    speed_values: list[tuple[float, float]]
+    altitude_values: list[tuple[float, float]]
+    # Session-level metrics (raw FIT units: duration in 1/1000s)
+    duration_ms: float | None
+    distance_m: float | None
+    sport: str | None
+    avg_hr: float | None
+    max_hr: float | None
+    calories: float | None
+    avg_cadence: float | None
+    max_cadence: float | None
+    avg_power: float | None
+    max_power: float | None
+    # Optional: power meter device info (only set by _fetch_activity_streams)
+    power_meter: str | None = None
+
+
+def _parse_fit_frames(fit_path: "Path", extract_power_meter: bool = False) -> FitParseResult | None:
+    """Parse a FIT file and return session metrics + per-second stream data.
+
+    Shared by _fetch_activity_streams and _parse_fit_file.
+    Returns None if fitdecode is not available or the file cannot be read.
+    """
+    if fitdecode is None:
+        return None
+
+    power_values: list[tuple[float, float]] = []
+    hr_values: list[tuple[float, float]] = []
+    cadence_values: list[tuple[float, float]] = []
+    speed_values: list[tuple[float, float]] = []
+    altitude_values: list[tuple[float, float]] = []
+
+    first_ts: float | None = None
+
+    # Session-level metrics
+    duration_ms: float | None = None
+    distance_m: float | None = None
+    sport: str | None = None
+    avg_hr: float | None = None
+    max_hr: float | None = None
+    calories: float | None = None
+    avg_cadence: float | None = None
+    max_cadence: float | None = None
+    avg_power: float | None = None
+    max_power: float | None = None
+    power_meter: str | None = None
+
+    def _get_field(frame, name):
+        try:
+            return frame.get_field(name)
+        except KeyError:
+            return None
+
+    with fitdecode.FitReader(str(fit_path)) as fit:
+        for frame in fit:
+            if not isinstance(frame, fitdecode.FitDataMessage):
+                continue
+
+            # Extract power meter device info (optional)
+            if extract_power_meter and frame.name == "device_info" and power_meter is None:
+                is_power = False
+                for f in frame.fields:
+                    if f.name in ("antplus_device_type", "device_type", "local_device_type"):
+                        if f.value == "bike_power" or (isinstance(f.value, int) and f.value == 12):
+                            is_power = True
+                if is_power:
+                    mfr = next((f.value for f in frame.fields if f.name == "manufacturer"), None)
+                    prod = next((f.value for f in frame.fields if f.name in ("garmin_product", "product")), None)
+                    power_meter = f"{mfr}:{prod}"
+
+            # Extract session-level metrics
+            if frame.name == "session":
+                ef = _get_field(frame, "total_elapsed_time")
+                if ef is not None and ef.value is not None:
+                    duration_ms = float(ef.value)
+
+                ed = _get_field(frame, "total_distance")
+                if ed is not None and ed.value is not None:
+                    distance_m = float(ed.value)
+
+                es = _get_field(frame, "sport")
+                if es is not None and es.value is not None:
+                    sport = str(es.value)
+
+                eahr = _get_field(frame, "avg_heart_rate")
+                if eahr is not None and eahr.value is not None:
+                    avg_hr = float(eahr.value)
+
+                emhr = _get_field(frame, "max_heart_rate")
+                if emhr is not None and emhr.value is not None:
+                    max_hr = float(emhr.value)
+
+                ecal = _get_field(frame, "total_calories")
+                if ecal is not None and ecal.value is not None:
+                    calories = float(ecal.value)
+
+                eac = _get_field(frame, "avg_cadence")
+                if eac is not None and eac.value is not None:
+                    avg_cadence = float(eac.value)
+
+                emc = _get_field(frame, "max_cadence")
+                if emc is not None and emc.value is not None:
+                    max_cadence = float(emc.value)
+
+                epwr_avg = _get_field(frame, "avg_power")
+                if epwr_avg is not None and epwr_avg.value is not None:
+                    avg_power = float(epwr_avg.value)
+
+                epwr_max = _get_field(frame, "max_power")
+                if epwr_max is not None and epwr_max.value is not None:
+                    max_power = float(epwr_max.value)
+
+            if frame.name != "record":
+                continue
+
+            ts_field = _get_field(frame, "timestamp")
+            if ts_field is None or ts_field.value is None:
+                continue
+            ts = ts_field.value
+
+            if hasattr(ts, "timestamp"):
+                ts = ts.timestamp()
+
+            if first_ts is None:
+                first_ts = float(ts)
+
+            elapsed = float(ts) - first_ts
+
+            pwr_field = _get_field(frame, "power")
+            if pwr_field is not None and pwr_field.value is not None:
+                power_values.append((elapsed, float(pwr_field.value)))
+
+            hr_field = _get_field(frame, "heart_rate")
+            if hr_field is not None and hr_field.value is not None:
+                hr_values.append((elapsed, float(hr_field.value)))
+
+            cad_field = _get_field(frame, "cadence")
+            if cad_field is not None and cad_field.value is not None:
+                cadence_values.append((elapsed, float(cad_field.value)))
+
+            speed_field = _get_field(frame, "enhanced_speed")
+            if speed_field is None:
+                speed_field = _get_field(frame, "speed")
+            if speed_field is not None and speed_field.value is not None:
+                speed_values.append((elapsed, float(speed_field.value)))
+
+            alt_field = _get_field(frame, "enhanced_altitude")
+            if alt_field is None:
+                alt_field = _get_field(frame, "altitude")
+            if alt_field is not None and alt_field.value is not None:
+                altitude_values.append((elapsed, float(alt_field.value)))
+
+    return FitParseResult(
+        power_values=power_values,
+        hr_values=hr_values,
+        cadence_values=cadence_values,
+        speed_values=speed_values,
+        altitude_values=altitude_values,
+        duration_ms=duration_ms,
+        distance_m=distance_m,
+        sport=sport,
+        avg_hr=avg_hr,
+        max_hr=max_hr,
+        calories=calories,
+        avg_cadence=avg_cadence,
+        max_cadence=max_cadence,
+        avg_power=avg_power,
+        max_power=max_power,
+        power_meter=power_meter,
+    )
 
 
 def _safe_timestamp_to_date(ts_ms: float | int | None) -> str | None:
@@ -507,142 +686,18 @@ def _fetch_activity_streams(
             fit_path.write_bytes(fit_data)
             logger.info(f"Downloaded FIT file for activity {activity_id} ({fit_name})")
 
-        # Parse FIT file from disk using fitdecode
-        power_values: list[tuple[float, float]] = []
-        hr_values: list[tuple[float, float]] = []
-        cadence_values: list[tuple[float, float]] = []
-        speed_values: list[tuple[float, float]] = []
-        altitude_values: list[tuple[float, float]] = []
-
-        first_ts: float | None = None
-
-        # Session-level metrics from FIT (ground truth)
-        fit_duration_ms: float | None = None
-        fit_distance_m: float | None = None
-        fit_sport: str | None = None
-        fit_avg_hr: float | None = None
-        fit_max_hr: float | None = None
-        fit_calories: float | None = None
-        fit_avg_cadence: float | None = None
-        fit_max_cadence: float | None = None
-        fit_avg_power: float | None = None
-        fit_max_power: float | None = None
-
-        def _get_field(frame, name):
-            try:
-                return frame.get_field(name)
-            except KeyError:
-                return None
-
-        # Track power meter device info
-        fit_power_meter: str | None = None
-
-        with fitdecode.FitReader(str(fit_path)) as fit:
-            for frame in fit:
-                if not isinstance(frame, fitdecode.FitDataMessage):
-                    continue
-
-                # Extract power meter device info
-                if frame.name == "device_info" and fit_power_meter is None:
-                    is_power = False
-                    for f in frame.fields:
-                        if f.name in ("antplus_device_type", "device_type", "local_device_type"):
-                            if f.value == "bike_power" or (isinstance(f.value, int) and f.value == 12):
-                                is_power = True
-                    if is_power:
-                        mfr = next((f.value for f in frame.fields if f.name == "manufacturer"), None)
-                        prod = next((f.value for f in frame.fields if f.name in ("garmin_product", "product")), None)
-                        fit_power_meter = f"{mfr}:{prod}"
-
-                # Extract session-level metrics
-                if frame.name == "session":
-                    ef = _get_field(frame, "total_elapsed_time")
-                    if ef is not None and ef.value is not None:
-                        fit_duration_ms = float(ef.value)  # raw FIT value in 1/1000s
-
-                    ed = _get_field(frame, "total_distance")
-                    if ed is not None and ed.value is not None:
-                        fit_distance_m = float(ed.value)
-
-                    es = _get_field(frame, "sport")
-                    if es is not None and es.value is not None:
-                        fit_sport = str(es.value)
-
-                    eahr = _get_field(frame, "avg_heart_rate")
-                    if eahr is not None and eahr.value is not None:
-                        fit_avg_hr = float(eahr.value)
-
-                    emhr = _get_field(frame, "max_heart_rate")
-                    if emhr is not None and emhr.value is not None:
-                        fit_max_hr = float(emhr.value)
-
-                    ecal = _get_field(frame, "total_calories")
-                    if ecal is not None and ecal.value is not None:
-                        fit_calories = float(ecal.value)
-
-                    eac = _get_field(frame, "avg_cadence")
-                    if eac is not None and eac.value is not None:
-                        fit_avg_cadence = float(eac.value)
-
-                    emc = _get_field(frame, "max_cadence")
-                    if emc is not None and emc.value is not None:
-                        fit_max_cadence = float(emc.value)
-
-                    epwr_avg = _get_field(frame, "avg_power")
-                    if epwr_avg is not None and epwr_avg.value is not None:
-                        fit_avg_power = float(epwr_avg.value)
-
-                    epwr_max = _get_field(frame, "max_power")
-                    if epwr_max is not None and epwr_max.value is not None:
-                        fit_max_power = float(epwr_max.value)
-
-                if frame.name != "record":
-                    continue
-
-                ts_field = _get_field(frame, "timestamp")
-                if ts_field is None or ts_field.value is None:
-                    continue
-                ts = ts_field.value
-
-                # fitdecode returns datetime.datetime for timestamp
-                if hasattr(ts, "timestamp"):
-                    ts = ts.timestamp()
-
-                if first_ts is None:
-                    first_ts = float(ts)
-
-                elapsed = float(ts) - first_ts
-
-                pwr_field = _get_field(frame, "power")
-                if pwr_field is not None and pwr_field.value is not None:
-                    power_values.append((elapsed, float(pwr_field.value)))
-
-                hr_field = _get_field(frame, "heart_rate")
-                if hr_field is not None and hr_field.value is not None:
-                    hr_values.append((elapsed, float(hr_field.value)))
-
-                cad_field = _get_field(frame, "cadence")
-                if cad_field is not None and cad_field.value is not None:
-                    cadence_values.append((elapsed, float(cad_field.value)))
-
-                speed_field = _get_field(frame, "enhanced_speed")
-                if speed_field is None:
-                    speed_field = _get_field(frame, "speed")
-                if speed_field is not None and speed_field.value is not None:
-                    speed_values.append((elapsed, float(speed_field.value)))
-
-                alt_field = _get_field(frame, "enhanced_altitude")
-                if alt_field is None:
-                    alt_field = _get_field(frame, "altitude")
-                if alt_field is not None and alt_field.value is not None:
-                    altitude_values.append((elapsed, float(alt_field.value)))
+        # Parse FIT file using shared parser
+        result = _parse_fit_frames(fit_path, extract_power_meter=True)
+        if result is None:
+            logger.warning("fitdecode not installed — cannot parse FIT files")
+            return 0
 
         # Store power meter info in activities table
-        if fit_power_meter is not None:
+        if result.power_meter is not None:
             try:
                 db.conn.execute(
                     "UPDATE activities SET power_meter = ? WHERE id = ?",
-                    (fit_power_meter, str(activity_id)),
+                    (result.power_meter, str(activity_id)),
                 )
                 db.conn.commit()
             except Exception as e:
@@ -651,38 +706,33 @@ def _fetch_activity_streams(
         # Store raw FIT session metrics (immutable)
         try:
             db.store_raw_fit_session(activity_id, {
-                "total_elapsed_time_ms": fit_duration_ms,
-                "total_distance_m": fit_distance_m,
-                "sport": fit_sport,
-                "avg_heart_rate": fit_avg_hr,
-                "max_heart_rate": fit_max_hr,
-                "total_calories": fit_calories,
-                "avg_cadence": fit_avg_cadence,
-                "max_cadence": fit_max_cadence,
-                "avg_power": fit_avg_power,
-                "max_power": fit_max_power,
+                "total_elapsed_time_ms": result.duration_ms,
+                "total_distance_m": result.distance_m,
+                "sport": result.sport,
+                "avg_heart_rate": result.avg_hr,
+                "max_heart_rate": result.max_hr,
+                "total_calories": result.calories,
+                "avg_cadence": result.avg_cadence,
+                "max_cadence": result.max_cadence,
+                "avg_power": result.avg_power,
+                "max_power": result.max_power,
             })
         except Exception as e:
             logger.warning(f"Failed to store raw FIT session {activity_id}: {e}")
 
-        if not any([power_values, hr_values, cadence_values, speed_values, altitude_values]):
+        if not any([result.power_values, result.hr_values, result.cadence_values, result.speed_values, result.altitude_values]):
             logger.debug(f"No stream data in FIT file for activity {activity_id}")
             return 0
 
         total_stored = 0
-
         for metric, values in [
-            ("power", power_values),
-            ("heart_rate", hr_values),
-            ("cadence", cadence_values),
-            ("speed", speed_values),
-            ("altitude", altitude_values),
+            ("power", result.power_values),
+            ("heart_rate", result.hr_values),
+            ("cadence", result.cadence_values),
+            ("speed", result.speed_values),
+            ("altitude", result.altitude_values),
         ]:
             if values:
-                # Deduplicate samples with identical elapsed times.
-                # Some power meters report at low frequency (e.g. 3s) and
-                # the FIT file may contain multiple frames with the same
-                # timestamp, inflating averages and NP.
                 if len(values) > 1:
                     seen: set[float] = set()
                     deduped: list[tuple[float, float]] = []
@@ -694,9 +744,9 @@ def _fetch_activity_streams(
                 total_stored += db.store_activity_streams(str(activity_id), metric, values)
         logger.info(
             f"Parsed FIT for activity {activity_id}: "
-            f"{len(power_values)} power, {len(hr_values)} HR, "
-            f"{len(cadence_values)} cadence, {len(speed_values)} speed, "
-            f"{len(altitude_values)} altitude samples"
+            f"{len(result.power_values)} power, {len(result.hr_values)} HR, "
+            f"{len(result.cadence_values)} cadence, {len(result.speed_values)} speed, "
+            f"{len(result.altitude_values)} altitude samples"
         )
         return total_stored
 
@@ -1810,158 +1860,41 @@ def _parse_fit_file(
     raw_fit_sessions (immutable). The activities table is rebuilt by
     refresh_activities() from raw_activities + raw_fit_sessions + activity_metrics.
     """
-    power_values: list[tuple[float, float]] = []
-    hr_values: list[tuple[float, float]] = []
-    cadence_values: list[tuple[float, float]] = []
-    speed_values: list[tuple[float, float]] = []
-    altitude_values: list[tuple[float, float]] = []
-
-    first_ts: float | None = None
-    last_ts: float | None = None
-
-    # Session-level metrics from FIT (ground truth)
-    fit_duration: float | None = None
-    fit_distance: float | None = None
-    fit_sport: str | None = None
-    fit_avg_hr: float | None = None
-    fit_max_hr: float | None = None
-    fit_calories: float | None = None
-    fit_avg_cadence: float | None = None
-    fit_max_cadence: float | None = None
-    fit_avg_power: float | None = None
-    fit_max_power: float | None = None
-
-    def _get_field(frame, name):
-        try:
-            return frame.get_field(name)
-        except KeyError:
-            return None
-
-    with fitdecode.FitReader(str(fit_path)) as fit:
-        for frame in fit:
-            if not isinstance(frame, fitdecode.FitDataMessage):
-                continue
-
-            # Extract session-level metrics
-            if frame.name == "session":
-                ef = _get_field(frame, "total_elapsed_time")
-                if ef is not None and ef.value is not None:
-                    fit_duration = float(ef.value) / 1000.0  # FIT total_elapsed_time is in 1/1000s
-
-                ed = _get_field(frame, "total_distance")
-                if ed is not None and ed.value is not None:
-                    fit_distance = float(ed.value)
-
-                es = _get_field(frame, "sport")
-                if es is not None and es.value is not None:
-                    fit_sport = str(es.value)
-
-                eahr = _get_field(frame, "avg_heart_rate")
-                if eahr is not None and eahr.value is not None:
-                    fit_avg_hr = float(eahr.value)
-
-                emhr = _get_field(frame, "max_heart_rate")
-                if emhr is not None and emhr.value is not None:
-                    fit_max_hr = float(emhr.value)
-
-                ecal = _get_field(frame, "total_calories")
-                if ecal is not None and ecal.value is not None:
-                    fit_calories = float(ecal.value)
-
-                eac = _get_field(frame, "avg_cadence")
-                if eac is not None and eac.value is not None:
-                    fit_avg_cadence = float(eac.value)
-
-                emc = _get_field(frame, "max_cadence")
-                if emc is not None and emc.value is not None:
-                    fit_max_cadence = float(emc.value)
-
-                epwr_avg = _get_field(frame, "avg_power")
-                if epwr_avg is not None and epwr_avg.value is not None:
-                    fit_avg_power = float(epwr_avg.value)
-
-                epwr_max = _get_field(frame, "max_power")
-                if epwr_max is not None and epwr_max.value is not None:
-                    fit_max_power = float(epwr_max.value)
-
-            if frame.name != "record":
-                continue
-
-            ts_field = _get_field(frame, "timestamp")
-            if ts_field is None or ts_field.value is None:
-                continue
-            ts = ts_field.value
-
-            if hasattr(ts, "timestamp"):
-                ts = ts.timestamp()
-
-            if first_ts is None:
-                first_ts = float(ts)
-            last_ts = float(ts)
-
-            elapsed = float(ts) - first_ts
-
-            pwr_field = _get_field(frame, "power")
-            if pwr_field is not None and pwr_field.value is not None:
-                power_values.append((elapsed, float(pwr_field.value)))
-
-            hr_field = _get_field(frame, "heart_rate")
-            if hr_field is not None and hr_field.value is not None:
-                hr_values.append((elapsed, float(hr_field.value)))
-
-            cad_field = _get_field(frame, "cadence")
-            if cad_field is not None and cad_field.value is not None:
-                cadence_values.append((elapsed, float(cad_field.value)))
-
-            speed_field = _get_field(frame, "enhanced_speed")
-            if speed_field is None:
-                speed_field = _get_field(frame, "speed")
-            if speed_field is not None and speed_field.value is not None:
-                speed_values.append((elapsed, float(speed_field.value)))
-
-            alt_field = _get_field(frame, "enhanced_altitude")
-            if alt_field is None:
-                alt_field = _get_field(frame, "altitude")
-            if alt_field is not None and alt_field.value is not None:
-                altitude_values.append((elapsed, float(alt_field.value)))
+    result = _parse_fit_frames(fit_path, extract_power_meter=False)
+    if result is None:
+        logger.warning("fitdecode not installed — cannot parse FIT files")
+        return 0
 
     # Store raw FIT session metrics (immutable, append-only)
-    fit_session_data = {
-        "total_elapsed_time_ms": (fit_duration * 1000) if fit_duration is not None else None,
-        "total_distance_m": fit_distance,
-        "sport": fit_sport,
-        "avg_heart_rate": fit_avg_hr,
-        "max_heart_rate": fit_max_hr,
-        "total_calories": fit_calories,
-        "avg_cadence": fit_avg_cadence,
-        "max_cadence": fit_max_cadence,
-        "avg_power": fit_avg_power,
-        "max_power": fit_max_power,
-    }
     try:
-        db.store_raw_fit_session(activity_id, fit_session_data)
+        db.store_raw_fit_session(activity_id, {
+            "total_elapsed_time_ms": result.duration_ms,
+            "total_distance_m": result.distance_m,
+            "sport": result.sport,
+            "avg_heart_rate": result.avg_hr,
+            "max_heart_rate": result.max_hr,
+            "total_calories": result.calories,
+            "avg_cadence": result.avg_cadence,
+            "max_cadence": result.max_cadence,
+            "avg_power": result.avg_power,
+            "max_power": result.max_power,
+        })
     except Exception as e:
         logger.warning(f"Failed to store raw FIT session {activity_id}: {e}")
 
-    # The activities table is now rebuilt by refresh_activities() from
-    # raw_activities + raw_fit_sessions + activity_metrics.
-    # We no longer directly UPDATE the activities table here.
-
-    if not any([power_values, hr_values, cadence_values, speed_values, altitude_values]):
+    if not any([result.power_values, result.hr_values, result.cadence_values, result.speed_values, result.altitude_values]):
         logger.debug(f"No stream data in FIT file for activity {activity_id}")
         return 0
 
     total_stored = 0
-
     for metric, values in [
-        ("power", power_values),
-        ("heart_rate", hr_values),
-        ("cadence", cadence_values),
-        ("speed", speed_values),
-        ("altitude", altitude_values),
+        ("power", result.power_values),
+        ("heart_rate", result.hr_values),
+        ("cadence", result.cadence_values),
+        ("speed", result.speed_values),
+        ("altitude", result.altitude_values),
     ]:
         if values:
-            # Deduplicate samples with identical elapsed times
             if len(values) > 1:
                 seen: set[float] = set()
                 deduped: list[tuple[float, float]] = []
@@ -1974,9 +1907,9 @@ def _parse_fit_file(
 
     logger.info(
         f"Parsed FIT for activity {activity_id}: "
-        f"{len(power_values)} power, {len(hr_values)} HR, "
-        f"{len(cadence_values)} cadence, {len(speed_values)} speed, "
-        f"{len(altitude_values)} altitude samples"
+        f"{len(result.power_values)} power, {len(result.hr_values)} HR, "
+        f"{len(result.cadence_values)} cadence, {len(result.speed_values)} speed, "
+        f"{len(result.altitude_values)} altitude samples"
     )
     return total_stored
 
