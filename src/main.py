@@ -40,7 +40,7 @@ from src.analytics.durability import compute_durability, durability_to_dict
 from src.analytics.decoupling import compute_decoupling, decoupling_to_dict
 from src.analytics.power_metrics import (
     _compute_power_duration_curve, compute_power_metrics,
-    estimate_critical_power, power_metrics_to_dict
+    estimate_critical_power, estimate_ride_cp, power_metrics_to_dict
 )
 from src.analytics.training_load import (
     compute_training_load, compute_training_load_history, training_load_to_dict
@@ -250,28 +250,7 @@ def run_analyze() -> dict:
 
 
             # Compute per-ride CP first (from this ride's PDC only)
-            ride_cp_est = None
-            if pdc is not None:
-                try:
-                    ride_data = [{"power_duration_curve": pdc}]
-                    cp_est, _ = estimate_critical_power(ride_data)
-                    if cp_est > 50:
-                        ride_cp_est = cp_est
-                    else:
-                        # Fallback: use longest available duration in PDC
-                        # MTB rides often have short contiguous power segments
-                        # due to frequent stops. Try 3min, then 2min, then 1min.
-                        ride_cp_est = None
-                        for dur in [180, 120, 60]:
-                            pwr = pdc.get(dur, 0)
-                            if pwr > 0 and pwr < 600:
-                                # Scale up for shorter durations (CP is asymptote)
-                                # 2min: divide by 1.25, 1min: divide by 1.2
-                                scale = {180: 1.3, 120: 1.25, 60: 1.2}[dur]
-                                ride_cp_est = pwr / scale
-                                break
-                except Exception:
-                    pass
+            ride_cp_est = estimate_ride_cp(pdc) if pdc is not None else None
             if ride_cp_est is not None:
                 db.store_activity_metrics(activity_id, {"ride_cp": ride_cp_est})
 

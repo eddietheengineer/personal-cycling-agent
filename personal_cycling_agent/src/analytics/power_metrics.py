@@ -391,6 +391,31 @@ def estimate_critical_power(
     return round(cp, 2), round(w_prime, 2)
 
 
+def estimate_ride_cp(pdc: dict[int, float]) -> float | None:
+    """
+    Estimate Critical Power for a single ride from its PDC.
+
+    First tries full CP regression across all rides. If that fails (single ride,
+    insufficient data), falls back to scaling shorter-duration efforts:
+    3min/1.3, 2min/1.25, 1min/1.2.
+
+    Returns None if no usable data found.
+    """
+    # Try full CP regression
+    ride_data = [{"power_duration_curve": pdc}]
+    cp_est, _ = estimate_critical_power(ride_data)
+    if cp_est > 50:
+        return cp_est
+
+    # Fallback: scale shorter durations up to estimate CP
+    # MTB rides and interval training often lack 3min+ contiguous power.
+    for dur, scale in [(180, 1.3), (120, 1.25), (60, 1.2)]:
+        pwr = pdc.get(dur, 0)
+        if pwr > 0 and pwr < 600:
+            return pwr / scale
+    return None
+
+
 def power_metrics_to_dict(result: PowerMetricsResult) -> dict[str, Any]:
     """Serialize PowerMetricsResult to a plain dict."""
     return {

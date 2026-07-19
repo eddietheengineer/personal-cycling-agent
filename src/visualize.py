@@ -2282,7 +2282,8 @@ def _render_garmin_setup():
     )
 
     # Get unique power meters from DB
-    pm_rows = db.conn.execute(
+    db_pm = CyclingDB(str(config.db_path("cycling_agent.sqlite")))
+    pm_rows = db_pm.conn.execute(
         "SELECT DISTINCT power_meter FROM activities WHERE power_meter IS NOT NULL ORDER BY power_meter"
     ).fetchall()
 
@@ -2292,7 +2293,7 @@ def _render_garmin_setup():
         # Count activities per power meter
         pm_counts = {}
         for pm in power_meters:
-            cnt = db.conn.execute(
+            cnt = db_pm.conn.execute(
                 "SELECT COUNT(*) FROM activities WHERE power_meter = ?", (pm,)
             ).fetchone()[0]
             pm_counts[pm] = cnt
@@ -2313,7 +2314,7 @@ def _render_garmin_setup():
                     st.session_state.excluded_power_meters.remove(pm)
 
         excluded_count = sum(
-            db.conn.execute(
+            db_pm.conn.execute(
                 "SELECT COUNT(*) FROM activities WHERE power_meter = ?", (pm,)
             ).fetchone()[0]
             for pm in st.session_state.excluded_power_meters
@@ -2325,8 +2326,10 @@ def _render_garmin_setup():
             count = extract_power_meters()
             st.success(f"Extracted power meter info for {count} activities.")
             st.rerun()
+    db_pm.close()
 
-        # Save excluded list to config file for main.py to read
+    # Save excluded list to config file for main.py to read
+    if "excluded_power_meters" in st.session_state:
         config_path = config.vault_path() / "excluded_power_meters.json"
         import json
         json.dump(st.session_state.excluded_power_meters, open(config_path, "w"))

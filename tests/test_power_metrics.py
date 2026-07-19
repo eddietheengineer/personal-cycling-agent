@@ -14,6 +14,7 @@ from analytics.power_metrics import (
     _compute_power_duration_curve,
     compute_power_metrics,
     estimate_critical_power,
+    estimate_ride_cp,
     power_metrics_to_dict,
     PowerMetricsResult,
 )
@@ -148,6 +149,68 @@ class TestComputePowerDurationCurve:
         assert curve[5] == 1000.0
         # 10s window dilutes the 5s burst
         assert curve[10] < 1000.0
+
+    def test_mtb_style_ride_with_stops(self):
+        """MTB ride with frequent zero-power stops still produces PDC values.
+
+        The PDC uses rolling averages over the entire ride, including zeros.
+        A 20-minute window spanning stops should still return a valid average.
+        """
+        # Simulate 100-minute MTB ride: 5min effort, 1min stop, repeat
+        power = np.zeros(6000)  # 100 minutes at 1Hz
+        for i in range(1000, 1300):  # 5min at 250W
+            power[i] = 250.0
+        for i in range(1500, 1800):  # 5min at 300W
+            power[i] = 300.0
+        for i in range(2000, 2300):  # 5min at 280W
+            power[i] = 280.0
+        curve = _compute_power_duration_curve(power)
+        # Short durations should find the best efforts
+        assert curve[1] == 300.0
+        assert curve[60] > 200.0  # 1min window finds good effort
+        # Longer durations span stops but still return valid averages
+        assert curve[300] > 0  # 5min
+        assert curve[600] > 0  # 10min
+        assert curve[1200] > 0  # 20min
+        assert curve[3600] > 0  # 60min
+
+    def test_pdc_includes_zero_power_in_rolling_average(self):
+        """Zero-power segments dilute longer-duration averages.
+
+        A 10-minute window with 5min at 200W and 5min at 0W should average ~100W,
+        not find the 200W segment and ignore the zeros.
+        """
+        power = np.zeros(600)  # 10 minutes
+        power[0:300] = 200.0  # first 5min at 200W
+        # last 5min at 0W (stops)
+        curve = _compute_power_duration_curve(power)
+        # Best 600s window: 300s@200W + 300s@0W = 100W average
+        assert np.isclose(curve[600], 100.0, atol=0.5)
+
+    def test_bad_power_samples_filtered(self):
+        """Power samples > 2000W are treated as 0 (sensor overflow)."""
+        power = np.full(3600, 250.0)
+        power[100:110] = 65505.0  # 16-bit overflow glitch
+        curve = _compute_power_duration_curve(power)
+        # 1s duration should NOT be 65505
+        assert curve[1] == 250.0
+        # Longer durations should be close to 250W
+        assert np.isclose(curve[3600], 250.0, atol=1.0)
+
+    def test_pdc_monotonically_decreasing(self):
+        """PDC values should be monotonically non-increasing with duration."""
+        # Steady effort with some variation
+        np.random.seed(42)
+        power = np.full(7200, 250.0)
+        power[1000:1500] = 350.0  # 5min hard effort
+        curve = _compute_power_duration_curve(power)
+        durations = sorted(curve.keys())
+        for i in range(len(durations) - 1):
+            d1, d2 = durations[i], durations[i + 1]
+            if curve[d1] > 0 and curve[d2] > 0:
+                assert curve[d1] >= curve[d2] - 0.01, (
+                    f"PDC not monotonic: {d1}s={curve[d1]:.1f} > {d2}s={curve[d2]:.1f}"
+                )
 
 
 # ── compute_power_metrics ──────────────────────────────────────────────────────
@@ -387,6 +450,81 @@ class TestEstimateCriticalPower:
         ]
         cp, wp = estimate_critical_power(activities)
         assert wp > 0
+
+
+# ── estimate_ride_cp ───────────────────────────────────────────────────────
+
+
+class TestEstimateRideCp:
+    def test_full_cp_regression(self):
+        """When PDC has enough data for regression, use it."""
+        pdc = {180: 310.0, 300: 280.0, 480: 260.0, 1200: 240.0}
+        cp = estimate_ride_cp(pdc)
+        assert cp is not None
+        assert cp > 200  # CP should be near the asymptote
+
+    def test_fallback_3min(self):
+        """Single 3min effort falls back to 3min/1.3."""
+        pdc = {1: 500.0, 3: 450.0, 180: 260.0}
+        cp = estimate_ride_cp(pdc)
+        assert cp is not None
+        assert np.isclose(cp, 260.0 / 1.3, atol=0.5)
+
+    def test_fallback_2min(self):
+        """When 3min is missing, fall back to 2min/1.25."""
+        pdc = {1: 500.0, 3: 450.0, 60: 300.0, 120: 275.0}
+        cp = estimate_ride_cp(pdc)
+        assert cp is not None
+        assert np.isclose(cp, 275.0 / 1.25, atol=0.5)
+
+    def test_fallback_1min(self):
+        """When 3min and 2min are missing, fall back to 1min/1.2."""
+        pdc = {1: 500.0, 3: 450.0, 30: 350.0, 60: 320.0}
+        cp = estimate_ride_cp(pdc)
+        assert cp is not None
+        assert np.isclose(cp, 320.0 / 1.2, atol=0.5)
+
+    def test_no_usable_data(self):
+        """Returns None when no durations have valid power."""
+        pdc = {1: 0.0, 3: 0.0, 60: 0.0, 120: 0.0, 180: 0.0}
+        cp = estimate_ride_cp(pdc)
+        assert cp is None
+
+    def test_empty_pdc(self):
+        """Returns None for empty PDC."""
+        cp = estimate_ride_cp({})
+        assert cp is None
+
+    def test_high_power_capped(self):
+        """Power >= 600W at short durations is skipped (likely sprint, not CP)."""
+        pdc = {1: 1000.0, 3: 800.0, 60: 700.0, 120: 650.0, 180: 620.0}
+        cp = estimate_ride_cp(pdc)
+        assert cp is None  # all durations >= 600W, all skipped
+
+    def test_partial_high_power(self):
+        """If 3min is high but 2min is valid, use 2min."""
+        pdc = {60: 300.0, 120: 280.0, 180: 700.0}
+        cp = estimate_ride_cp(pdc)
+        assert cp is not None
+        # 180 skipped (>600), falls back to 120/1.25
+        assert np.isclose(cp, 280.0 / 1.25, atol=0.5)
+
+    def test_mtb_ride_pdc(self):
+        """MTB-style PDC with stops: 3min average diluted by stops still works."""
+        # Simulate MTB ride: 100min with 5min efforts separated by 1min stops
+        power = np.zeros(6000)
+        for i in range(1000, 1300):
+            power[i] = 250.0
+        for i in range(1500, 1800):
+            power[i] = 300.0
+        for i in range(2000, 2300):
+            power[i] = 280.0
+        pdc = _compute_power_duration_curve(power)
+        cp = estimate_ride_cp(pdc)
+        assert cp is not None
+        assert cp > 0
+        # CP should be reasonable (not zero, not astronomical)
+        assert 50 < cp < 400
 
 
 # ── power_metrics_to_dict ──────────────────────────────────────────────────
