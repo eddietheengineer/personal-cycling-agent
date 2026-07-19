@@ -16,10 +16,11 @@ NOTE on units from Garmin Connect:
 """
 
 import os
+import sys
+import queue
 import logging
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
-import sys
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -154,6 +155,15 @@ def _wait_for_task(bg, syncing_key="syncing", rearsing_key=None, sync_mode_key="
             snapshot = bg.snapshot()
             pct = snapshot["progress"]
             stage = snapshot["stage"]
+
+            # Drain progress queue from background thread (thread-safe bridge)
+            if hasattr(bg, "_progress_queue"):
+                while not bg._progress_queue.empty():
+                    try:
+                        pct, msg = bg._progress_queue.get_nowait()
+                        _sync_progress_callback(pct, msg)
+                    except queue.Empty:
+                        break
 
             # Update session state for log display
             _sync_progress_callback(pct, stage)

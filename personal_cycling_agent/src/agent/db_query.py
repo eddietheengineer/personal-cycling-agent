@@ -8,8 +8,8 @@ to answer questions about training history, patterns, and causes.
 """
 
 import logging
+import re
 import sqlite3
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +33,17 @@ BLOCKED_KEYWORDS = {
     "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
     "ATTACH", "DETACH", "REPLACE", "PRAGMA", "VACUUM",
     "UNION", "LOAD_EXTENSION", "READFILE", "WRITEFILE",
-    ".EXEC", "OS.", "SUBPROCESS", "SQLite_master",
+    "WITH",
 }
 
-# Dangerous patterns (regex-like substring checks)
+# Dangerous SQLite functions that can leak data or execute arbitrary code
+BLOCKED_FUNCTIONS = {
+    "LOAD_EXTENSION", "READFILE", "WRITEFILE",
+    "HEX", "CHAR", "QUOTE", "PRINTF",
+    "CHANGES", "LAST_INSERT_ROWID", "SQLITE_VERSION",
+}
+
+# Dangerous patterns (substring checks)
 BLOCKED_PATTERNS = [
     "--",       # SQL comment
     "/*",       # Block comment start
@@ -70,6 +77,19 @@ def query_db(sql: str, vault_path: Path, limit: int = DEFAULT_SQL_QUERY_LIMIT) -
             return f"ERROR: Query contains blocked pattern '{pattern}'. Only simple SELECT queries are allowed."
 
     if not sql_upper.startswith("SELECT"):
+        return "ERROR: Only SELECT queries are allowed."
+
+    # Safety: block dangerous SQLite functions
+    for func in BLOCKED_FUNCTIONS:
+        if re.search(r'\b' + func + r'\s*\(', sql_upper):
+            return f"ERROR: Query contains blocked function '{func}'. Only safe queries are allowed."
+
+    # Safety: ensure only a single top-level statement (no chained statements)
+    # Count top-level semicolons — already blocked by BLOCKED_PATTERNS, but double-check
+    # by verifying the stripped SQL starts with SELECT and contains no additional keywords
+    # that would indicate a second statement
+    first_keyword = sql_upper.split()[0] if sql_upper.split() else ""
+    if first_keyword != "SELECT":
         return "ERROR: Only SELECT queries are allowed."
 
     # Inject LIMIT if not present

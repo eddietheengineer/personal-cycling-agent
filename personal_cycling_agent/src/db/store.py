@@ -1249,6 +1249,21 @@ class CyclingDB:
         },
     }
 
+    TRAINING_LOG_COLUMNS = frozenset({
+        "athlete_id", "planned_date", "workout_id", "planned_type",
+        "planned_duration", "planned_tss", "readiness_at_plan",
+        "actual_activity_id", "actual_duration", "actual_tss",
+        "actual_np", "actual_rpe", "completed", "modification_reason",
+        "post_ride_notes", "decoupling_drift", "w_prime_min_balance",
+        "planned_at", "completed_at",
+    })
+
+    EDGE_CASE_COLUMNS = frozenset({
+        "athlete_id", "case_type", "start_date", "end_date",
+        "description", "training_impact", "resolution", "resolved",
+        "created_at",
+    })
+
     def get_trend_data(self, table: str, columns: list[str], oldest: str | None = None, newest: str | None = None) -> list[dict[str, Any]]:
         """Return rows for longitudinal plotting.
 
@@ -1525,6 +1540,9 @@ class CyclingDB:
         """Update fields on an existing training log entry."""
         if not updates:
             return
+        for k in updates:
+            if k not in self.TRAINING_LOG_COLUMNS:
+                raise ValueError(f"Column '{k}' not allowed for training_log")
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values())
         values.append(log_id)
@@ -1602,6 +1620,9 @@ class CyclingDB:
         """Update fields on an edge case record."""
         if not updates:
             return
+        for k in updates:
+            if k not in self.EDGE_CASE_COLUMNS:
+                raise ValueError(f"Column '{k}' not allowed for edge_cases")
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values())
         values.append(case_id)

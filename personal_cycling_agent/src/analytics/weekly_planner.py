@@ -609,7 +609,7 @@ def generate_weekly_plan() -> WeeklyPlan:
             continue
 
         # Project TSB to this point
-        past_tss = [d.target_tss for d in days if not d.rest_day]
+        past_tss = [d.target_tss for d in days]
         _, _, proj_tsb = project_tsb(ctx, past_tss + [0.0])
         proj_tsb_val = proj_tsb[-1] if proj_tsb else ctx.current_tsb
 

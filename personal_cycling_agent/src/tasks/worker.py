@@ -5,6 +5,7 @@ within Streamlit's single-process model. No external dependencies (Redis, Celery
 """
 
 import logging
+import queue
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
@@ -81,11 +82,11 @@ class BackgroundSync:
         # Later, check status:
         status = sync.snapshot()
     """
-
     def __init__(self):
         self._result: TaskResult = TaskResult()
         self._thread: threading.Thread | None = None
         self._progress_callback: Callable[[int, str], None] | None = None
+        self._progress_queue: queue.Queue = queue.Queue()
         self._lock: threading.Lock = threading.Lock()
         self._cancelled: bool = False
 
@@ -215,9 +216,9 @@ class BackgroundSync:
     def _notify(self, progress: int, stage: str) -> None:
         if self._progress_callback is not None:
             try:
-                self._progress_callback(progress, stage)
-            except Exception as e:
-                logger.warning(f"Progress callback error (non-fatal): {e}")
+                self._progress_queue.put((progress, stage))
+            except Exception:
+                pass  # Queue full or closed — non-fatal
 
     def snapshot(self) -> dict[str, Any]:
         """Get a thread-safe snapshot of the current task state."""

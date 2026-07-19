@@ -145,7 +145,7 @@ def get_weekly_forecast(lat: float, lon: float) -> list[dict]:
     def _hour_idx(hour_str: str) -> int:
         """Find index of hour in hourly time list."""
         for i, t in enumerate(h_times):
-            if t.startswith(hour_str[:10]):
+            if t == hour_str:
                 return i
         return -1
 

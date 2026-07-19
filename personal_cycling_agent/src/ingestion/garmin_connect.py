@@ -1472,10 +1472,9 @@ def sync_garmin(
                     rmssd = hrv_data["hrvSummary"].get("lastNightAvg")
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during HRV sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during HRV sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch HRV for {target_str}: {e}")
 
@@ -1494,10 +1493,9 @@ def sync_garmin(
                     sleep_hours = sleep_ms / 3600.0
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during sleep sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during sleep sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch sleep for {target_str}: {e}")
 
@@ -1512,10 +1510,9 @@ def sync_garmin(
                     stress = stats["allDayStress"].get("averageStressLevel")
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during stats sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during stats sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch stats for {target_str}: {e}")
 
@@ -1530,10 +1527,9 @@ def sync_garmin(
                 max_hr = heart_rates.get("maxHeartRate")
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during heart rates sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during heart rates sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch heart rates for {target_str}: {e}")
 
@@ -1546,10 +1542,9 @@ def sync_garmin(
                 respiration_rate = resp_data.get("avgSleepRespirationValue")
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during respiration sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during respiration sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch respiration for {target_str}: {e}")
 
@@ -1562,10 +1557,9 @@ def sync_garmin(
                 spo2 = spo2_data.get("averageSpO2")
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during SpO2 sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during SpO2 sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch SpO2 for {target_str}: {e}")
 
@@ -1578,10 +1572,9 @@ def sync_garmin(
                 hydration_ml = hydr_data.get("valueInML")
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during hydration sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during hydration sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch hydration for {target_str}: {e}")
 
@@ -1594,10 +1587,9 @@ def sync_garmin(
                 intensity_minutes = intensity_data.get("moderateMinutes", 0) + intensity_data.get("vigorousMinutes", 0)
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during intensity minutes sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during intensity minutes sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch intensity minutes for {target_str}: {e}")
 
@@ -1615,10 +1607,9 @@ def sync_garmin(
                         body_battery = body_battery_end
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during body battery sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during body battery sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch body battery for {target_str}: {e}")
 
@@ -1631,10 +1622,9 @@ def sync_garmin(
                 floors = _extract_floors(floors_data)
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during floors sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during floors sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch floors for {target_str}: {e}")
 
@@ -1648,10 +1638,9 @@ def sync_garmin(
                     training_readiness_score = readiness_data[0].get("score")
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during training readiness sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during training readiness sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch training readiness for {target_str}: {e}")
 
@@ -1668,10 +1657,9 @@ def sync_garmin(
                     distance_m = dist_m
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during user summary sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during user summary sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch user summary for {target_str}: {e}")
 
@@ -1683,10 +1671,9 @@ def sync_garmin(
                 db.store_raw_wellness(target_str, "lifestyle", lifestyle)
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during lifestyle sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during lifestyle sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch lifestyle for {target_str}: {e}")
 
@@ -1698,10 +1685,9 @@ def sync_garmin(
                 db.store_raw_wellness(target_str, "morning_readiness", morning_readiness)
         except garminconnect.GarminConnectTooManyRequestsError as e:
             _rate_limiter.record_429()
-            logger.warning(f"Rate limited during morning readiness sync: {e}")
-            db.set_last_synced("garmin_wellness", target_str)
-            db.close()
-            return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
+            logger.warning(f"Rate limited during morning readiness sync for {target_str}: {e}")
+            # Do NOT advance last_synced — this day will be retried on next sync
+            break
         except Exception as e:
             logger.debug(f"Failed to fetch morning readiness for {target_str}: {e}")
 
