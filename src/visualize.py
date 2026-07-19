@@ -1133,6 +1133,35 @@ def _render_activity_detail():
         else:
             computed_cols[idx].metric(label, "—")
 
+    # -- CP per activity bar chart (recent rides) --
+    recent_cp = db.conn.execute(
+        "SELECT a.start_date, m.cp_used "
+        "FROM activity_metrics m JOIN activities a ON a.id = m.activity_id "
+        "WHERE m.cp_used IS NOT NULL AND a.activity_type = ? "
+        "ORDER BY a.start_date DESC LIMIT 30",
+        (combined.get("activity_type", "road_biking"),),
+    ).fetchall()
+    if recent_cp:
+        recent_cp.reverse()  # chronological
+        cp_df = pd.DataFrame(recent_cp, columns=["date", "cp"])
+        cp_df["date"] = cp_df["date"].str[:10]
+        cp_df["is_current"] = cp_df["date"] == combined["start_date"][:10]
+        colors = ["#f44336" if c else "#9467bd" for c in cp_df["is_current"]]
+
+        theme = st.get_option("theme.base")
+        fig = px.bar(
+            cp_df, x="date", y="cp", color="is_current",
+            color_discrete_map={False: "#9467bd", True: "#f44336"},
+            labels={"cp": "CP (W)", "date": ""},
+            title="Critical Power — Recent Activities",
+            template="plotly_white" if theme != "dark" else "plotly_dark",
+            hover_data={"is_current": False},
+        )
+        fig.update_layout(height=220, margin=dict(l=40, r=20, t=35, b=40))
+        fig.update_traces(marker_line_width=0)
+        fig.update_xaxes(tickangle=45)
+        st.plotly_chart(fig, width="stretch", key="cp_bar_chart")
+
     # -- Training Effects --
     st.subheader("Training Effects")
     col1, col2, col3 = st.columns(3)
