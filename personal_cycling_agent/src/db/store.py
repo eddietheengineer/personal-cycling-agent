@@ -565,77 +565,78 @@ class CyclingDB:
 
         Returns the number of records processed.
         """
-        c = self.conn.cursor()
-        n = 0
-        for rec in records:
-            date = rec.get("date") or rec.get("id")
-            if not date:
-                continue
+        with self._lock:
+            c = self.conn.cursor()
+            n = 0
+            for rec in records:
+                date = rec.get("date") or rec.get("id")
+                if not date:
+                    continue
 
-            c.execute(
-                """
-                INSERT INTO wellness
-                    (date, weight, resting_hr, rmssd, stress, sleep_score, sleep_hours, steps,
-                     spo2, body_battery_start, body_battery_end, calories, active_calories,
-                     distance_m, min_hr, max_hr, respiration_rate, floors, hydration_ml,
-                     intensity_minutes, body_battery, training_readiness_score,
-                     endurance_score, hill_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(date) DO UPDATE SET
-                    weight = excluded.weight,
-                    resting_hr = excluded.resting_hr,
-                    rmssd = excluded.rmssd,
-                    stress = excluded.stress,
-                    sleep_score = excluded.sleep_score,
-                    sleep_hours = excluded.sleep_hours,
-                    steps = excluded.steps,
-                    spo2 = excluded.spo2,
-                    body_battery_start = excluded.body_battery_start,
-                    body_battery_end = excluded.body_battery_end,
-                    calories = excluded.calories,
-                    active_calories = excluded.active_calories,
-                    distance_m = excluded.distance_m,
-                    min_hr = excluded.min_hr,
-                    max_hr = excluded.max_hr,
-                    respiration_rate = excluded.respiration_rate,
-                    floors = excluded.floors,
-                    hydration_ml = excluded.hydration_ml,
-                    intensity_minutes = excluded.intensity_minutes,
-                    body_battery = excluded.body_battery,
-                    training_readiness_score = excluded.training_readiness_score,
-                    endurance_score = excluded.endurance_score,
-                    hill_score = excluded.hill_score
-                """,
-                (
-                    date,
-                    rec.get("weight"),
-                    rec.get("resting_hr"),
-                    rec.get("rmssd"),
-                    rec.get("stress"),
-                    rec.get("sleep_score"),
-                    rec.get("sleep_hours"),
-                    rec.get("steps"),
-                    rec.get("spo2"),
-                    rec.get("body_battery_start"),
-                    rec.get("body_battery_end"),
-                    rec.get("calories"),
-                    rec.get("active_calories"),
-                    rec.get("distance_m"),
-                    rec.get("min_hr"),
-                    rec.get("max_hr"),
-                    rec.get("respiration_rate"),
-                    rec.get("floors"),
-                    rec.get("hydration_ml"),
-                    rec.get("intensity_minutes"),
-                    rec.get("body_battery"),
-                    rec.get("training_readiness_score"),
-                    rec.get("endurance_score"),
-                    rec.get("hill_score"),
-                ),
-            )
-            n += 1
+                c.execute(
+                    """
+                    INSERT INTO wellness
+                        (date, weight, resting_hr, rmssd, stress, sleep_score, sleep_hours, steps,
+                         spo2, body_battery_start, body_battery_end, calories, active_calories,
+                         distance_m, min_hr, max_hr, respiration_rate, floors, hydration_ml,
+                         intensity_minutes, body_battery, training_readiness_score,
+                         endurance_score, hill_score)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(date) DO UPDATE SET
+                        weight = excluded.weight,
+                        resting_hr = excluded.resting_hr,
+                        rmssd = excluded.rmssd,
+                        stress = excluded.stress,
+                        sleep_score = excluded.sleep_score,
+                        sleep_hours = excluded.sleep_hours,
+                        steps = excluded.steps,
+                        spo2 = excluded.spo2,
+                        body_battery_start = excluded.body_battery_start,
+                        body_battery_end = excluded.body_battery_end,
+                        calories = excluded.calories,
+                        active_calories = excluded.active_calories,
+                        distance_m = excluded.distance_m,
+                        min_hr = excluded.min_hr,
+                        max_hr = excluded.max_hr,
+                        respiration_rate = excluded.respiration_rate,
+                        floors = excluded.floors,
+                        hydration_ml = excluded.hydration_ml,
+                        intensity_minutes = excluded.intensity_minutes,
+                        body_battery = excluded.body_battery,
+                        training_readiness_score = excluded.training_readiness_score,
+                        endurance_score = excluded.endurance_score,
+                        hill_score = excluded.hill_score
+                    """,
+                    (
+                        date,
+                        rec.get("weight"),
+                        rec.get("resting_hr"),
+                        rec.get("rmssd"),
+                        rec.get("stress"),
+                        rec.get("sleep_score"),
+                        rec.get("sleep_hours"),
+                        rec.get("steps"),
+                        rec.get("spo2"),
+                        rec.get("body_battery_start"),
+                        rec.get("body_battery_end"),
+                        rec.get("calories"),
+                        rec.get("active_calories"),
+                        rec.get("distance_m"),
+                        rec.get("min_hr"),
+                        rec.get("max_hr"),
+                        rec.get("respiration_rate"),
+                        rec.get("floors"),
+                        rec.get("hydration_ml"),
+                        rec.get("intensity_minutes"),
+                        rec.get("body_battery"),
+                        rec.get("training_readiness_score"),
+                        rec.get("endurance_score"),
+                        rec.get("hill_score"),
+                    ),
+                )
+                n += 1
 
-        self._commit()
+            self.conn.commit()
         logger.info(f"Stored {n} wellness records")
         return n
 
@@ -693,72 +694,74 @@ class CyclingDB:
 
         Returns the number of records processed.
         """
-        c = self.conn.cursor()
-        n = 0
-        for rec in records:
-            aid = rec.get("id")
-            if not aid:
-                continue
+        with self._lock:
+            c = self.conn.cursor()
+            n = 0
+            for rec in records:
+                aid = rec.get("id")
+                if not aid:
+                    continue
 
-            c.execute(
-                """
-                INSERT INTO activities
-                    (id, start_date, activity_type, duration, distance,
-                     average_power, max_power, average_hr, max_hr,
-                     calories, tss, ifr, normalized_power, file_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    start_date = excluded.start_date,
-                    activity_type = excluded.activity_type,
-                    duration = excluded.duration,
-                    distance = excluded.distance,
-                    average_power = excluded.average_power,
-                    max_power = excluded.max_power,
-                    average_hr = excluded.average_hr,
-                    max_hr = excluded.max_hr,
-                    calories = excluded.calories,
-                    tss = excluded.tss,
-                    ifr = excluded.ifr,
-                    normalized_power = excluded.normalized_power,
-                    file_type = excluded.file_type
-                """,
-                (
-                    aid,
-                    rec.get("start_date_local"),
-                    rec.get("type"),
-                    rec.get("duration"),
-                    rec.get("distance"),
-                    rec.get("average_power"),
-                    rec.get("max_power"),
-                    rec.get("average_hr"),
-                    rec.get("max_hr"),
-                    rec.get("calories"),
-                    rec.get("tss"),
-                    rec.get("ifr"),
-                    rec.get("normalized_power"),
-                    rec.get("file_type"),
-                ),
-            )
-            n += 1
+                c.execute(
+                    """
+                    INSERT INTO activities
+                        (id, start_date, activity_type, duration, distance,
+                         average_power, max_power, average_hr, max_hr,
+                         calories, tss, ifr, normalized_power, file_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        start_date = excluded.start_date,
+                        activity_type = excluded.activity_type,
+                        duration = excluded.duration,
+                        distance = excluded.distance,
+                        average_power = excluded.average_power,
+                        max_power = excluded.max_power,
+                        average_hr = excluded.average_hr,
+                        max_hr = excluded.max_hr,
+                        calories = excluded.calories,
+                        tss = excluded.tss,
+                        ifr = excluded.ifr,
+                        normalized_power = excluded.normalized_power,
+                        file_type = excluded.file_type
+                    """,
+                    (
+                        aid,
+                        rec.get("start_date_local"),
+                        rec.get("type"),
+                        rec.get("duration"),
+                        rec.get("distance"),
+                        rec.get("average_power"),
+                        rec.get("max_power"),
+                        rec.get("average_hr"),
+                        rec.get("max_hr"),
+                        rec.get("calories"),
+                        rec.get("tss"),
+                        rec.get("ifr"),
+                        rec.get("normalized_power"),
+                        rec.get("file_type"),
+                    ),
+                )
+                n += 1
 
-        self._commit()
+            self.conn.commit()
         logger.info(f"Stored {n} activity records")
         return n
 
     def store_raw_wellness(self, date: str, source: str, data: Any) -> None:
         """Store raw JSON response from a Garmin wellness API call."""
-        c = self.conn.cursor()
-        c.execute(
-            """
-            INSERT INTO raw_wellness (date, source, raw_json)
-            VALUES (?, ?, ?)
-            ON CONFLICT(date, source) DO UPDATE SET
-                raw_json = excluded.raw_json,
-                synced_at = datetime('now')
-            """,
-            (date, source, json.dumps(data) if not isinstance(data, str) else data),
-        )
-        self._commit()
+        with self._lock:
+            c = self.conn.cursor()
+            c.execute(
+                """
+                INSERT INTO raw_wellness (date, source, raw_json)
+                VALUES (?, ?, ?)
+                ON CONFLICT(date, source) DO UPDATE SET
+                    raw_json = excluded.raw_json,
+                    synced_at = datetime('now')
+                """,
+                (date, source, json.dumps(data) if not isinstance(data, str) else data),
+            )
+            self.conn.commit()
 
     def get_activities(
         self,
@@ -1103,13 +1106,13 @@ class CyclingDB:
 
         Returns the number of rows inserted.
         """
-        c = self.conn.cursor()
-        rows = [(activity_id, elapsed, metric, val) for elapsed, val in values]
-        c.executemany(
-            "INSERT INTO activity_streams (activity_id, elapsed, metric, value) VALUES (?, ?, ?, ?)",
-            rows,
-        )
-        self._commit()
+        with self._lock:
+            rows = [(activity_id, elapsed, metric, val) for elapsed, val in values]
+            self.conn.executemany(
+                "INSERT INTO activity_streams (activity_id, elapsed, metric, value) VALUES (?, ?, ?, ?)",
+                rows,
+            )
+            self.conn.commit()
         logger.info(f"Stored {len(rows)} {metric} samples for {activity_id}")
         return len(rows)
 
@@ -1361,20 +1364,21 @@ class CyclingDB:
 
         Returns the number of points inserted. Skips if activity already has routes.
         """
-        existing = self._exec(
-            "SELECT COUNT(*) FROM activity_routes WHERE activity_id = ?",
-            (activity_id,),
-        ).fetchone()[0]
-        if existing > 0:
-            logger.info(f"Activity {activity_id} already has routes; skipping")
-            return 0
+        with self._lock:
+            existing = self.conn.execute(
+                "SELECT COUNT(*) FROM activity_routes WHERE activity_id = ?",
+                (activity_id,),
+            ).fetchone()[0]
+            if existing > 0:
+                self.conn.commit()
+                logger.info(f"Activity {activity_id} already has routes; skipping")
+                return 0
 
-        c = self.conn.cursor()
-        c.executemany(
-            "INSERT INTO activity_routes (activity_id, latitude, longitude, sequence) VALUES (?, ?, ?, ?)",
-            ((activity_id, lat, lon, seq) for seq, (lat, lon) in enumerate(points)),
-        )
-        self._commit()
+            self.conn.executemany(
+                "INSERT INTO activity_routes (activity_id, latitude, longitude, sequence) VALUES (?, ?, ?, ?)",
+                ((activity_id, lat, lon, seq) for seq, (lat, lon) in enumerate(points)),
+            )
+            self.conn.commit()
         logger.info(f"Stored {len(points)} route points for {activity_id}")
         return len(points)
 
@@ -1746,7 +1750,7 @@ class CyclingDB:
         
         values = {
             "athlete_id": athlete_id,
-            "date": data["date"],
+            "date": data.get("date"),
             "soreness": data.get("soreness"),
             "stress": data.get("stress"),
             "sleep_quality": data.get("sleep_quality"),

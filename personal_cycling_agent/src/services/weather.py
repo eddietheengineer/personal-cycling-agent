@@ -145,9 +145,11 @@ def get_weekly_forecast(lat: float, lon: float) -> list[dict]:
     }
 
     def _hour_idx(hour_str: str) -> int:
-        """Find index of hour in hourly time list."""
+        """Find index of hour in hourly time list.
+        Matches on prefix (e.g. '2025-07-19T06:00' matches '2025-07-19T06:00:00').
+        """
         for i, t in enumerate(h_times):
-            if t == hour_str:
+            if t.startswith(hour_str):
                 return i
         return -1
 

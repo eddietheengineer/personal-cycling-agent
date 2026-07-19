@@ -217,8 +217,8 @@ class BackgroundSync:
         if self._progress_callback is not None:
             try:
                 self._progress_queue.put((progress, stage))
-            except Exception:
-                pass  # Queue full or closed — non-fatal
+            except Exception as e:
+                logger.debug(f"Failed to queue progress update: {e}")
 
     def snapshot(self) -> dict[str, Any]:
         """Get a thread-safe snapshot of the current task state."""

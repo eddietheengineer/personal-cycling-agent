@@ -199,7 +199,10 @@ class IndividualRecoveryModel:
         # Predict - handle cold start where model isn't trained
         if hasattr(self.model, 'coef_') and self.model.coef_ is not None:
             predicted = float(self.model.predict(X_scaled)[0])
-            predicted = np.clip(predicted, 0, 10)
+            # Clip to reasonable physiological range for the target variable.
+            # Model may be trained on PRS (0-10) or RHR (30-120).
+            # Use broad bounds that cover both; narrow clipping is a training concern.
+            predicted = np.clip(predicted, 0, 120)
 
             # Feature contributions
             contributions = {}

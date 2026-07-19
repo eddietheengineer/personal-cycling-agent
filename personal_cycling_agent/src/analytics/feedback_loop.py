@@ -103,7 +103,8 @@ def analyze_post_ride_feedback(
 
     # Rule 5: Zone mismatch → adjust targets
     if abs(zone_drift) > 20.0:
-        zone_shift = -1 if zone_drift < 0 else 1
+        # zone_drift > 0 means rider went harder than planned → shift lower
+        zone_shift = min(zone_shift, -1) if zone_drift > 0 else max(zone_shift, 1)
         reasons.append(f"Zone mismatch ({zone_drift:+.0f}%) — adjust zone targets")
 
     # --- Determine mutation type ---

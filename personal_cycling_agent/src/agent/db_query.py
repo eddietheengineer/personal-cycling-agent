@@ -33,7 +33,6 @@ BLOCKED_KEYWORDS = {
     "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
     "ATTACH", "DETACH", "REPLACE", "PRAGMA", "VACUUM",
     "UNION", "LOAD_EXTENSION", "READFILE", "WRITEFILE",
-    "WITH",
 }
 
 # Dangerous SQLite functions that can leak data or execute arbitrary code

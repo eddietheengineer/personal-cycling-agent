@@ -618,8 +618,9 @@ def generate_weekly_plan() -> WeeklyPlan:
         zone, duration, tss = session_map.get(session_type, ("Z2", 60, 50.0))
 
         # Adjust TSS for readiness
-        day_readiness = ctx.readiness_score if day_date == today else max(50, min(90, ctx.readiness_score + (i - 1) * 3))
-        tss *= max(0.5, day_readiness / 100.0)
+        # Future days: use current readiness with slight conservative decay
+        # (no physiological basis for linear improvement; TSB projection guards fatigue)
+        day_readiness = ctx.readiness_score if day_date == today else max(50, min(90, ctx.readiness_score - (i - 1) * 0.5))
 
         # Check TSB floor — downgrade if needed
         _, _, post_tsb = project_tsb(ctx, past_tss + [tss])

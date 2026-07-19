@@ -85,7 +85,8 @@ def estimate_pmax(
         confidence = "low"
     else:
         # All short-duration powers suspicious — use model prediction
-        pmax_est = cp + w_prime
+        # W' is in joules; convert to equivalent watts over 10s burst
+        pmax_est = cp + (w_prime / 10.0)
         method = "model_prediction"
         confidence = "low"
 

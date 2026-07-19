@@ -190,9 +190,8 @@ def _find_recent_pages(
     recent = []
 
     for p in pages:
-        meta = p.get("meta", {})
         for key in ("updated", "created"):
-            date_str = meta.get(key, "")
+            date_str = p.get(key, "")
             if not date_str:
                 continue
             try:
@@ -213,13 +212,12 @@ def list_digests() -> list[dict[str, Any]]:
     pages = list_pages("syntheses")
     digests = []
     for p in pages:
-        meta = p.get("meta", {})
-        if meta.get("category") == "digest":
+        if p.get("category") == "digest":
             digests.append({
                 "slug": p["slug"],
                 "title": p.get("title", p["slug"]),
-                "week": meta.get("week", ""),
-                "created": meta.get("created", ""),
+                "week": p.get("week", ""),
+                "created": p.get("created", ""),
                 "path": p.get("path", ""),
             })
     digests.sort(key=lambda d: d.get("week", ""), reverse=True)

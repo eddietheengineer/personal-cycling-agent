@@ -703,14 +703,14 @@ def _fetch_activity_streams(
             logger.warning("fitdecode not installed — cannot parse FIT files")
             return 0
 
-        # Store power meter info in activities table
+        # Store power meter info in activities table (use garmin_ prefix to match activities table)
         if result.power_meter is not None:
             try:
-                db.conn.execute(
+                db._exec(
                     "UPDATE activities SET power_meter = ? WHERE id = ?",
-                    (result.power_meter, str(activity_id)),
+                    (result.power_meter, f"garmin_{activity_id}"),
                 )
-                db.conn.commit()
+                db._commit()
             except Exception as e:
                 logger.warning(f"Failed to store power meter for {activity_id}: {e}")
 
@@ -752,7 +752,7 @@ def _fetch_activity_streams(
                             seen.add(t)
                             deduped.append((t, v))
                     values = deduped
-                total_stored += db.store_activity_streams(str(activity_id), metric, values)
+                total_stored += db.store_activity_streams(f"garmin_{activity_id}", metric, values)
         logger.info(
             f"Parsed FIT for activity {activity_id}: "
             f"{len(result.power_values)} power, {len(result.hr_values)} HR, "
@@ -1107,7 +1107,7 @@ def sync_activities(
     try:
         if total_processed > 0:
             # Use the actual newest activity date, not today — avoids gaps
-            newest = db.conn.execute("SELECT MAX(start_date) FROM activities").fetchone()[0]
+            newest = db._exec("SELECT MAX(start_date) FROM activities").fetchone()[0]
             sync_date = newest[:10] if newest else today.isoformat()
             db.set_last_synced("garmin_activities", sync_date, resume_offset=0)
     except Exception:
@@ -1157,7 +1157,7 @@ def extract_power_meters(db_path: str | None = None) -> int:
         activity_id = f"garmin_{garmin_id}"
 
         # Check if already has power_meter info
-        row = db.conn.execute(
+        row = db._exec(
             "SELECT power_meter FROM activities WHERE id = ?",
             (activity_id,),
         ).fetchone()
@@ -1181,11 +1181,11 @@ def extract_power_meters(db_path: str | None = None) -> int:
                     mfr = next((f.value for f in frame.fields if f.name == "manufacturer"), None)
                     prod = next((f.value for f in frame.fields if f.name in ("garmin_product", "product")), None)
                     pm = f"{mfr}:{prod}"
-                    db.conn.execute(
+                    db._exec(
                         "UPDATE activities SET power_meter = ? WHERE id = ?",
                         (pm, activity_id),
                     )
-                    db.conn.commit()
+                    db._commit()
                     updated += 1
                     break
         except Exception as e:
@@ -1240,10 +1240,10 @@ def sync_garmin(
     db = CyclingDB(db_path)
     if force_resync:
         logger.info("Force resync: clearing existing wellness data")
-        db.conn.execute("DELETE FROM wellness")
-        db.conn.execute("DELETE FROM raw_wellness")
-        db.conn.execute("DELETE FROM sync_state WHERE source='garmin_wellness'")
-        db.conn.commit()
+        db._exec("DELETE FROM wellness")
+        db._exec("DELETE FROM raw_wellness")
+        db._exec("DELETE FROM sync_state WHERE source='garmin_wellness'")
+        db._commit()
         last_synced = None
     last_synced = db.get_last_synced("garmin_wellness")
 
@@ -1784,8 +1784,8 @@ def reparse_all_fit_files(
 
     # Step 1: Delete all existing activity streams
     logger.info("Deleting all existing activity streams...")
-    db.conn.execute("DELETE FROM activity_streams")
-    db.conn.commit()
+    db._exec("DELETE FROM activity_streams")
+    db._commit()
 
     # Step 2: Find all local FIT files
     vault = config.vault_path()

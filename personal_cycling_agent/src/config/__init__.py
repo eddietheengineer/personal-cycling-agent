@@ -83,19 +83,23 @@ def _resolve_hashed_passwords() -> None:
         if hashed.startswith("pbkdf2:"):
             parts = hashed[9:].split(":", 1)
             if len(parts) != 2:
+                logger.warning(f"Malformed pbkdf2 hash for {var}, skipping resolution")
                 continue
             salt_hex, hash_hex = parts
             raw_value = os.environ.get(raw_var, "")
             if not raw_value:
                 continue
-            salt = bytes.fromhex(salt_hex)
+            try:
+                salt = bytes.fromhex(salt_hex)
+            except ValueError:
+                logger.warning(f"Invalid salt hex for {var}, skipping resolution")
+                continue
             computed = hashlib.pbkdf2_hmac('sha256', raw_value.encode(), salt, 600000).hex()
             if computed == hash_hex:
                 _resolved_credentials[var] = raw_value
-                # Clear hashed value from env — no longer needed
                 os.environ[var] = ""
             else:
-                os.environ[var] = ""
+                logger.warning(f"Hash mismatch for {var}, credential not resolved")
         elif hashed.startswith("hash:"):
             # Legacy SHA-256 format — resolve for backward compatibility
             digest = hashed[5:]
@@ -107,7 +111,7 @@ def _resolve_hashed_passwords() -> None:
                 _resolved_credentials[var] = raw_value
                 os.environ[var] = ""
             else:
-                os.environ[var] = ""
+                logger.warning(f"Legacy hash mismatch for {var}, credential not resolved")
         # If value doesn't start with 'pbkdf2:' or 'hash:', it's plaintext — leave as-is
 
         # Clear _RAW env var after resolution (success or failure)

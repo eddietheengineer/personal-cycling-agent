@@ -269,6 +269,10 @@ def run_analyze() -> dict:
             else:
                 prefix_max.append(prefix_max[-1])
 
+        current_cp: float = 0.0
+        wp_result = None
+        dc_result = None
+
         for act in activity_dicts:
             activity_id = act.get("id", "")
             if not activity_id:
