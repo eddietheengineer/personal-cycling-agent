@@ -1225,6 +1225,28 @@ class CyclingDB:
 
     ALLOWED_TABLES = {"wellness", "activity_metrics", "activity_streams"}
 
+    ALLOWED_COLUMNS = {
+        "wellness": {
+            "date", "weight", "resting_hr", "rmssd", "stress",
+            "sleep_score", "sleep_hours", "steps", "spo2",
+            "body_battery_start", "body_battery_end", "calories",
+            "active_calories", "distance_m", "min_hr", "max_hr",
+            "respiration_rate", "floors", "hydration_ml",
+            "intensity_minutes", "body_battery",
+            "training_readiness_score", "endurance_score", "hill_score",
+            "updated_at",
+        },
+        "activity_metrics": {
+            "activity_id", "ftp_used", "normalized_power", "intensity_factor",
+            "tss", "variability_index", "w_prime_capacity",
+            "w_prime_min_balance", "decoupling_drift", "duration_sec",
+            "computed_at",
+        },
+        "activity_streams": {
+            "id", "activity_id", "elapsed", "metric", "value",
+        },
+    }
+
     def get_trend_data(self, table: str, columns: list[str], oldest: str | None = None, newest: str | None = None) -> list[dict[str, Any]]:
         """Return rows for longitudinal plotting.
 
@@ -1236,6 +1258,10 @@ class CyclingDB:
         """
         if table not in self.ALLOWED_TABLES:
             raise ValueError(f"Table '{table}' is not allowed. Allowed: {self.ALLOWED_TABLES}")
+        allowed_cols = self.ALLOWED_COLUMNS.get(table, set())
+        for col in columns:
+            if col not in allowed_cols:
+                raise ValueError(f"Column '{col}' is not allowed for table '{table}'. Allowed: {allowed_cols}")
         cols = ", ".join(columns)
         query = f"SELECT {cols} FROM {table}"
         params: list = []
@@ -1669,6 +1695,7 @@ class CyclingDB:
             cursor = self.conn.execute("PRAGMA table_info(morning_checkin)")
             columns = [row[1] for row in cursor.fetchall()]
         except Exception:
+            logger.debug("Failed to introspect morning_checkin schema", exc_info=True)
             columns = []
         
         # Map our simple fields to the actual schema

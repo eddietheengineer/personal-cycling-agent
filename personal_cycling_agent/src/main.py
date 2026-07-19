@@ -6,7 +6,6 @@ Runs the full daily pipeline:
 2. Run analytics (readiness, thresholds, W', durability, decoupling)
 3. Build LLM prompt from analytics + user profile
 4. Generate training prescription via local LLM
-5. Publish prescription via MQTT
 
 Usage:
     python -m src.main              # run full pipeline
@@ -61,7 +60,6 @@ from src.analytics.prescription_engine import (
 )
 from src.agent.prompt_builder import build_system_prompt
 from src.agent.llm_client import generate_with_retries
-from src.agent.mqtt_publisher import publish as mqtt_publish
 
 VAULT = config.vault_path()
 DB_PATH = str(config.db_path("cycling_agent.sqlite"))
@@ -174,7 +172,7 @@ def run_analyze() -> dict:
             try:
                 excluded_pm = set(json.loads(pm_config.read_text()))
             except Exception:
-                pass
+                logger.debug("Failed to parse excluded_power_meters.json", exc_info=True)
         if excluded_pm:
             activity_dicts = [
                 dict(a) for a in activities
@@ -198,7 +196,7 @@ def run_analyze() -> dict:
                 from src.ui_helpers import _parse_profile_text
                 _parse_profile_text(profile_path.read_text(), _profile)
         except Exception:
-            pass
+            logger.debug("Failed to parse user profile", exc_info=True)
         last_activity_date: datetime | None = None
         current_w_prime = 0.0
 
@@ -669,9 +667,6 @@ def run_prescribe(analysis: dict | None = None) -> str:
     with open(presc_path, "w") as f:
         f.write(prescription)
 
-    # Publish via MQTT
-    mqtt_publish(prescription, metadata=analysis.get("readiness"))
-
     return prescription
 
 
@@ -711,7 +706,7 @@ def main():
                 except ValueError:
                     pass
         except Exception:
-            pass
+            logger.debug("Failed to detect LAN IP address", exc_info=True)
         subprocess.run([
             sys.executable, "-m", "streamlit", "run",
             str(PROJECT_ROOT / "src" / "visualize.py"),

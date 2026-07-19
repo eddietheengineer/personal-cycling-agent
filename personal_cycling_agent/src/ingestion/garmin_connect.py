@@ -378,6 +378,7 @@ def fetch_wellness_for_date(
             rl.wait()
             body = _retry_on_rate_limit(lambda: client.get_body_composition(date_str))
         except Exception:
+            logger.debug("Failed to fetch body composition", exc_info=True)
             body = None
 
         # Get weigh-ins (more reliable for weight)
@@ -387,6 +388,7 @@ def fetch_wellness_for_date(
                 lambda: client.get_daily_weigh_ins(date_str)
             )
         except Exception:
+            logger.debug("Failed to fetch weigh-ins", exc_info=True)
             weigh_ins = None
 
         # Extract RHR
@@ -434,7 +436,7 @@ def fetch_wellness_for_date(
                 if sleep_ms:
                     sleep_hours = sleep_ms / 3600.0
         except Exception:
-            pass
+            logger.debug("Failed to fetch sleep data", exc_info=True)
 
 
         if not any([resting_hr, rmssd, stress, steps, weight]):
@@ -788,6 +790,7 @@ def _sync_activities_batch(
     try:
         total_count = client.count_activities()
     except Exception:
+        logger.debug("Failed to count activities", exc_info=True)
         total_count = None
 
     total_batches = None
@@ -1047,12 +1050,12 @@ def sync_activities(
             sync_date = newest[:10] if newest else today.isoformat()
             db.set_last_synced("garmin_activities", sync_date, resume_offset=0)
     except Exception:
-        pass  # DB may already be closed
+        logger.debug("Failed to update last synced date", exc_info=True)
 
     try:
         db.close()
     except Exception:
-        pass
+        logger.debug("Failed to close database connection", exc_info=True)
 
     if progress_callback is not None:
         progress_callback(100, f"Sync complete: {total_processed} activities, {total_stored} records")

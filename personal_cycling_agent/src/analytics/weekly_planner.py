@@ -127,6 +127,7 @@ def _load_analysis() -> dict[str, Any]:
         with open(path) as f:
             return json.load(f)
     except Exception:
+        logger.debug("Failed to load latest_analysis.json", exc_info=True)
         return {}
 
 
@@ -147,7 +148,7 @@ def _load_profile() -> dict[str, Any]:
                     val = parts[1].strip()
                     profile[key] = val
     except Exception:
-        pass
+        logger.debug("Failed to parse user_profile.md", exc_info=True)
     return profile
 
 
@@ -709,7 +710,7 @@ def generate_ai_plan() -> WeeklyPlan:
         from src.memory.journal import load_recent
         journal_context = load_recent(30)
     except Exception:
-        pass
+        logger.debug("Failed to load memory journal context", exc_info=True)
 
     def _fmt_hours(block: list[int]) -> str:
         if not block:
@@ -898,4 +899,5 @@ def load_weekly_plan() -> WeeklyPlan | None:
             tsb_series=data.get("tsb_series", []),
         )
     except Exception:
+        logger.debug("Failed to load weekly plan", exc_info=True)
         return None

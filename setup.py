@@ -274,28 +274,6 @@ def setup_env() -> None:
         "  Weight (kg)", env.get("RIDER_WEIGHT_KG", "")
     )
 
-    banner("MQTT (Optional — press Enter to skip)")
-
-    env["MQTT_BROKER"] = prompt(
-        "  MQTT Broker", env.get("MQTT_BROKER", "localhost")
-    )
-    env["MQTT_PORT"] = prompt(
-        "  MQTT Port", env.get("MQTT_PORT", "1883")
-    )
-    env["MQTT_TOPIC"] = prompt(
-        "  MQTT Topic", env.get("MQTT_TOPIC", "cycling/agent/prescription")
-    )
-    env["MQTT_USERNAME"] = prompt(
-        "  MQTT Username (blank if none)", env.get("MQTT_USERNAME", "")
-    )
-    h, raw = prompt_password(
-        "  MQTT Password", env.get("MQTT_PASSWORD", "")
-    )
-    env["MQTT_PASSWORD"] = h
-    # MQTT needs runtime access to the password; the _RAW variant is stored
-    # alongside the hash. Ensure the vault directory has restrictive permissions:
-    #   chmod 700 ~/cycling-agent-data && chmod 600 ~/cycling-agent-data/config.env
-    env["MQTT_PASSWORD_RAW"] = raw
 
     write_env(env)
     print(f"\n  ✓  Written to {ENV_PATH}")
@@ -403,7 +381,7 @@ def main() -> None:
     banner("Setup Complete!")
     print()
     print(f"  Secrets stored in: {VAULT}")
-    print(f"  - {ENV_PATH}       (API keys, LLM, MQTT)")
+    print(f"  - {ENV_PATH}       (API keys, LLM, credentials)")
     print(f"  - {PROFILE_PATH}  (training profile)")
     print(f"  - {VAULT}/data/   (SQLite DB, logs)")
     print()

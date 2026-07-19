@@ -10,8 +10,8 @@ Vault location (first match wins):
   2. ~/cycling-agent-data/  (default — non-hidden)
 
 The vault contains:
-  - config.env          # API keys, LLM endpoint, MQTT, biometrics
-                         # Passwords are stored as SHA-256 hashes (see hash_password())
+  - config.env          # API keys, LLM endpoint, credentials, biometrics
+                         # Passwords are stored as PBKDF2 hashes (see hash_password())
   - user_profile.md     # Training goals, constraints, equipment
   - data/               # SQLite database and pipeline logs
   - raw/                # Raw FIT/TCX/GPX files downloaded from Intervals.icu
@@ -26,7 +26,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Environment variable names whose values are stored as pbkdf2 hashes
-_HASHED_VARS = {"GARMIN_PASSWORD", "MQTT_PASSWORD"}
+_HASHED_VARS = {"GARMIN_PASSWORD"}
 
 
 def _vault_dir() -> Path:
@@ -74,17 +74,21 @@ def _resolve_hashed_passwords() -> None:
         GARMIN_PASSWORD_RAW=actual_secret_value
 
     For garminconnect, the _RAW value is only needed for initial auth;
-    tokens are cached thereafter. For MQTT/API secrets that need runtime
-    access, the vault must have restrictive permissions (chmod 600).
+    tokens are cached thereafter.
+
+
+    After resolution, the _RAW env vars are cleared — they are redundant
+    once the plaintext is in the target var.
     """
     for var in _HASHED_VARS:
         hashed = os.environ.get(var, "")
+        raw_var = var + "_RAW"
+        raw_value = ""
         if hashed.startswith("pbkdf2:"):
             parts = hashed[9:].split(":", 1)
             if len(parts) != 2:
                 continue
             salt_hex, hash_hex = parts
-            raw_var = var + "_RAW"
             raw_value = os.environ.get(raw_var, "")
             if not raw_value:
                 continue
@@ -97,7 +101,6 @@ def _resolve_hashed_passwords() -> None:
         elif hashed.startswith("hash:"):
             # Legacy SHA-256 format — resolve for backward compatibility
             digest = hashed[5:]
-            raw_var = var + "_RAW"
             raw_value = os.environ.get(raw_var, "")
             if not raw_value:
                 continue
@@ -107,10 +110,9 @@ def _resolve_hashed_passwords() -> None:
             else:
                 os.environ[var] = ""
         # If value doesn't start with 'pbkdf2:' or 'hash:', it's plaintext — leave as-is
-        # SECURITY NOTE: Once resolved, the plaintext password lives in os.environ for
-        # the lifetime of the process. This is a tradeoff: garminconnect needs the raw
-        # value for initial auth, but tokens are cached thereafter. The config.env file
-        # itself stores only the hash, so the plaintext is only in memory at runtime.
+
+        # Clear the _RAW variant — redundant once resolved, reduces exposure surface
+        os.environ.pop(raw_var, None)
 
 
 def hash_password(plaintext: str) -> tuple[str, str]:
@@ -120,8 +122,6 @@ def hash_password(plaintext: str) -> tuple[str, str]:
     Returns 'pbkdf2:<salt_hex>:<hash_hex>' for the hash line.
     No _RAW line is needed — garminconnect caches auth tokens,
     so passwords are only used for initial authentication.
-    For MQTT and API secrets that need runtime access, the vault
-    must have restrictive permissions (chmod 600).
 
     Returns (hash_line, plaintext) for compatibility with callers
     that still need the raw value at runtime.

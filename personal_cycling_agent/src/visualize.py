@@ -17,6 +17,8 @@ NOTE on units from Garmin Connect:
 
 import os
 import logging
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger(__name__)
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -233,7 +235,7 @@ def _render_sync_progress(origin: str) -> None:
                         _save_readiness_explanation(readiness_explanation, analyze_result)
                         result["analysis"]["readiness_explanation"] = readiness_explanation
                     except Exception:
-                        pass
+                        logger.debug("Failed to generate readiness explanation", exc_info=True)
                 st.session_state.sync_result = result
             _clear_sync_flags()
             st.rerun()
@@ -251,7 +253,7 @@ def _render_sync_progress(origin: str) -> None:
                         _save_readiness_explanation(readiness_explanation, analyze_result)
                         result["analysis"]["readiness_explanation"] = readiness_explanation
                     except Exception:
-                        pass
+                        logger.debug("Failed to generate readiness explanation", exc_info=True)
                 st.session_state.sync_result = result
             _clear_sync_flags()
             st.rerun()
@@ -314,7 +316,7 @@ if "scheduler_started" not in st.session_state:
         from src.tasks.scheduler import get_scheduler
         get_scheduler().start()
     except Exception:
-        pass  # Non-critical: scheduler fails silently if Garmin not configured
+        logger.debug("Auto-sync scheduler failed to start", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +378,7 @@ def _render_dashboard():
         else:
             st.caption("⚪ Auto-sync off (enable in Settings)")
     except Exception:
-        pass
+        logger.debug("Failed to read auto-sync scheduler status", exc_info=True)
 
     # ── 7-Day Training Calendar ─────────────────────────────────────────
     _render_week_strip()
@@ -580,6 +582,7 @@ def _render_readiness_card():
         with open(result_path) as f:
             analysis = json.load(f)
     except Exception:
+        logger.debug("Failed to load latest_analysis.json", exc_info=True)
         return
 
     readiness = analysis.get("readiness", {})
@@ -855,7 +858,7 @@ def _render_dashboard_coach():
                 with open(result_path) as f:
                     analysis = json.load(f)
             except Exception:
-                pass
+                logger.debug("Failed to load latest_analysis.json for coach context", exc_info=True)
 
         system_prompt = prompt_builder.build_system_prompt(
             readiness=analysis.get("readiness") if analysis else None,
@@ -877,7 +880,7 @@ def _render_dashboard_coach():
             if wiki_context:
                 system_prompt = f"## Wiki Knowledge Base\n{wiki_context}\n\n{system_prompt}"
         except Exception:
-            pass
+            logger.debug("Failed to load wiki context for coach", exc_info=True)
 
         conv_text = "\n".join(
             f"{m['role'].upper()}: {m['content']}"
@@ -911,7 +914,7 @@ def _render_dashboard_coach():
                 from src.memory.journal import append_conversation
                 append_conversation(user_input.strip(), response)
             except Exception:
-                pass
+                logger.debug("Failed to save coach conversation to journal", exc_info=True)
 
             # Extract key facts in background (non-blocking)
             def _extract_and_save():
@@ -921,7 +924,7 @@ def _render_dashboard_coach():
                     for bullet in bullets:
                         append_entry(bullet)
                 except Exception:
-                    pass
+                    logger.debug("Failed to extract memories from coach conversation", exc_info=True)
             import threading
             threading.Thread(target=_extract_and_save, daemon=True).start()
         except Exception as e:
@@ -2269,7 +2272,7 @@ def _render_garmin_setup():
         c_la.write(f"Last synced activities: **{_relative_time(last_act)}**")
         c_lw.write(f"Last synced wellness: **{_relative_time(last_wel)}**")
     except Exception:
-        pass
+        logger.debug("Failed to read last sync timestamps", exc_info=True)
     if stats.get("last_error"):
         st.error(f"Last error: {stats['last_error']} ({stats.get('last_error_time', '')})")
 
@@ -2540,7 +2543,7 @@ def _save_readiness_explanation(explanation: str, analyze_result: dict) -> None:
         with open(result_path, "w") as f:
             json.dump(data, f, indent=2)
     except Exception:
-        pass
+        logger.debug("Failed to save readiness explanation", exc_info=True)
 # ---------------------------------------------------------------------------
 # LLM Settings
 # ---------------------------------------------------------------------------
@@ -3157,7 +3160,7 @@ def _render_coach():
             with open(result_path) as f:
                 analysis = json.load(f)
         except Exception:
-            pass
+            logger.debug("Failed to load latest_analysis.json for wiki", exc_info=True)
 
     # Show persistent status card
     if analysis:
@@ -3285,7 +3288,7 @@ def _render_coach():
                         for bullet in bullets:
                             append_entry(bullet)
                     except Exception:
-                        pass  # Silently skip if extraction fails
+                        logger.debug("Failed to extract memories from coach conversation", exc_info=True)
 
                 threading.Thread(target=_extract_and_save, daemon=True).start()
             except Exception as e:

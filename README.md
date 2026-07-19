@@ -64,7 +64,7 @@ For users who prefer direct control or don't run Home Assistant.
 python setup.py
 ```
 
-This interactively configures your credentials, LLM endpoint, and MQTT settings. All secrets are stored in `~/cycling-agent-data/` — **outside the git repository** — so they can never be accidentally committed. Passwords are stored as SHA-256 hashes. Raw FIT files from activities are archived in `~/cycling-agent-data/raw/`. Re-run anytime to update settings.
+This interactively configures your credentials, LLM endpoint, and biometrics. All secrets are stored in `~/cycling-agent-data/` — **outside the git repository** — so they can never be accidentally committed. Passwords are stored as PBKDF2 hashes. Raw FIT files from activities are archived in `~/cycling-agent-data/raw/`. Re-run anytime to update settings.
 
 ### 2. Install Dependencies
 
@@ -128,11 +128,6 @@ Runs the pipeline at 05:00 each morning. Log output goes to `~/cycling-agent-dat
 
 To remove: `bash setup_cron.sh --remove`.
 
-### 7. MQTT Dashboard (Optional)
-
-Install Mosquitto locally (`sudo apt install mosquitto`) or use any MQTT broker. Configure `MQTT_BROKER` and `MQTT_PORT` by re-running `python setup.py`.
-
-Subscribe to `cycling/agent/prescription` from Home Assistant or another MQTT client.
 
 ## Security
 
@@ -140,12 +135,12 @@ All sensitive data lives in a **vault directory** outside the repository (`~/cyc
 
 | Path | Contents |
 |---|---|
-| `~/cycling-agent-data/config.env` | API keys, LLM endpoint, MQTT, biometrics. Passwords stored as SHA-256 hashes. |
+| `~/cycling-agent-data/config.env` | API keys, LLM endpoint, biometrics. Passwords stored as PBKDF2 hashes. |
 | `~/cycling-agent-data/user_profile.md` | Training goals, constraints, equipment |
 | `~/cycling-agent-data/data/` | SQLite database, pipeline logs, prescriptions |
 | `~/cycling-agent-data/raw/` | Raw FIT/TCX/GPX files downloaded from Garmin Connect |
 
-**Password hashing:** API secrets and MQTT passwords are stored as `hash:<sha256>` with the plaintext kept in a `_RAW` companion variable. At runtime, the hash is verified before the plaintext is loaded into the process environment. If the hash doesn't match, the credential is rejected.
+**Password hashing:** API secrets are stored as `pbkdf2:<salt>:<hash>` with the plaintext kept in a `_RAW` companion variable. At runtime, the hash is verified before the plaintext is loaded into the process environment, and the `_RAW` variable is cleared immediately after resolution. If the hash doesn't match, the credential is rejected.
 
 **Raw data archival:** Every activity file downloaded from Garmin Connect is saved to `~/cycling-agent-data/raw/` alongside the processed database, so you always have the original telemetry.
 
@@ -189,7 +184,6 @@ src/
 ├── agent/
 │   ├── prompt_builder.py    # LLM prompt construction
 │   ├── llm_client.py        # Ollama client
-│   └── mqtt_publisher.py    # MQTT dashboard output
 └── db/
     └── store.py             # SQLite persistence
 ```
@@ -200,7 +194,6 @@ src/
 - Garmin Connect account
 - Home Assistant (for add-on mode) or local Python environment (for standalone)
 - Optional: OpenAI / Anthropic API key for AI insights
-- Optional: MQTT broker (Mosquitto) for dashboard integration
 
 ## References
 

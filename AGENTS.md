@@ -15,20 +15,14 @@ Home Assistant's add-on store requires valid JSON. Never rename it to `.yaml`
 or write YAML content into it — HA will reject the add-on entirely.
 ## Development Workflow
 
-For local development without pushing to GitHub after every change:
-
-### Option A: Local `/addons` directory (quickest)
-1. Copy the `personal_cycling_agent/` folder to `/addons/personal_cycling-agent/` on your HA host (via Samba or SSH).
-2. In HA Add-on Store → ⋮ → **Check for updates** → install from **Local add-ons** section.
-3. Edit files locally, then click **Rebuild** in the add-on UI. No git push needed.
-
-### Option B: VS Code Devcontainer (isolated, official HA approach)
+### Option A: VS Code Devcontainer (isolated, official HA approach)
 1. Open this repo in VS Code with the Dev Containers extension.
 2. VS Code will prompt to reopen in container — accept.
 3. Run **Terminal → Run Task → Start Home Assistant**.
 4. Open `http://localhost:7123` — your add-on is available as a local add-on.
 5. Edit files in VS Code and click **Rebuild** in the local HA UI.
-### Option C: Docker container (active deployment)
+
+### Option B: Docker container (active deployment)
 
 The app runs in a Docker container named `pca` (image `pca-test`) on port 8501. The source code is baked into the image — it does **not** volume-mount the source directory.
 
@@ -55,16 +49,17 @@ docker run -d --name pca -p 8501:8501 \
 **MUST do a force clean rebuild after every commit and push.** Docker layer caching silently serves stale code — `docker build` without `--no-cache` will report success but ship old files. The sequence is:
 
 1. `git commit` + `git push`
-2. `python3 ~/sync_to_ha.py` (sync source and data to HA addon folder via SMB)
-3. `docker image rm pca-test` (remove old image to prevent cache reuse)
-4. `docker build --no-cache -t pca-test .` (clean rebuild)
-5. `docker stop pca && docker rm pca` (remove running container)
-6. `docker run -d --name pca -p 8501:8501 -v /home/joshua/cycling-agent-data:/data -e CYCLING_AGENT_VAULT=/data pca-test`
-7. Verify the container has the new code: `docker exec pca head -5 /app/src/<changed_file>`
+2. `docker image rm pca-test` (remove old image to prevent cache reuse)
+3. `cd personal_cycling_agent && docker build --no-cache -t pca-test .` (clean rebuild)
+4. `docker stop pca && docker rm pca` (remove running container)
+5. `docker run -d --name pca -p 8501:8501 -v /home/joshua/cycling-agent-data:/data -e CYCLING_AGENT_VAULT=/data pca-test`
+6. Verify the container has the new code: `docker exec pca head -5 /app/src/<changed_file>`
 
-**Never skip steps 2, 3, or 7.** Step 2 syncs the latest code to the HA addon share. Step 3 prevents Docker from reusing cached layers. Step 7 confirms the running container actually has the new code before declaring the commit done.
+**Never skip steps 2 or 6.** Step 2 prevents Docker from reusing cached layers. Step 6 confirms the running container actually has the new code before declaring the commit done.
 
-**Note:** `sync_to_ha.py` lives at `~/sync_to_ha.py` (outside the repo). It is gitignored and MUST never be committed.
+**HA Add-on deployment:** Add the GitHub repo as a custom addon store in HA (**Settings → Add-ons → Add-on Store → Repositories →** `https://github.com/eddietheengineer/personal-cycling-agent`). After pushing, click **Check for updates** in the Add-on Store, then **Rebuild** in the add-on UI. No local sync needed.
+
+**Source layout:** `personal_cycling_agent/src/` is the single source of truth. Root `src/` is a symlink to `personal_cycling_agent/src/`. All edits go to `src/` (follows the symlink). Docker builds from `personal_cycling_agent/` where real files live.
 
 ## Garmin Authentication (garmin-auth 0.3.0)
 
@@ -166,12 +161,6 @@ def _create_client(tokenstore: str | None = None) -> "garminconnect.Garmin":
 
 This ensures both UI login and background sync use the same token directory.
 
-### Files to Update
-
-When modifying Garmin authentication code, update BOTH versions:
-- `personal_cycling_agent/src/ingestion/garmin_connect.py` (Home Assistant add-on)
-- `src/ingestion/garmin_connect.py` (standalone/development)
-
 ## Page Specs — Layout & Invariants
 
 Sidebar navigation order: Dashboard, Activities, Trends, Map, Profile, Settings.
@@ -246,6 +235,3 @@ The compact coach chat is a section within Dashboard (`_render_dashboard_coach`)
 
 **NEVER** move `_render_sync_progress` to run before page routing. It belongs where the sync buttons are.
 
-### File Sync Rule
-
-Changes to `src/visualize.py` MUST be copied to `personal_cycling_agent/src/visualize.py` before Docker rebuild. The Dockerfile copies from `personal_cycling_agent/`.

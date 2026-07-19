@@ -64,7 +64,7 @@ def _discover_models() -> list[str]:
             data = resp.json()
             return [m.get("id", "") for m in data.get("data", [])]
     except Exception:
-        pass
+        logger.debug("Failed to discover LLM models", exc_info=True)
     return []
 
 
