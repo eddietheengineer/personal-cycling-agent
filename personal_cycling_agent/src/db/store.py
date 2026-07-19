@@ -11,6 +11,7 @@ import logging
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime
 from typing import Any
 
@@ -28,13 +29,31 @@ class CyclingDB:
         os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
         self._apply_pragmas()
         self._create_tables()
+
+    def _exec(self, sql: str, params: tuple | list | None = None):
+        """Thread-safe wrapper around conn.execute."""
+        with self._lock:
+            if params is not None:
+                return self.conn.execute(sql, params)
+            return self.conn.execute(sql)
+
+    def _execmany(self, sql: str, params_list: list):
+        """Thread-safe wrapper around conn.executemany."""
+        with self._lock:
+            return self.conn.executemany(sql, params_list)
+
+    def _commit(self):
+        """Thread-safe wrapper around conn.commit."""
+        with self._lock:
+            self.conn.commit()
     def _apply_pragmas(self):
         """Apply performance pragmas to the connection."""
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA synchronous=NORMAL")
-        self.conn.execute("PRAGMA cache_size=-64000")
+        self._exec("PRAGMA journal_mode=WAL")
+        self._exec("PRAGMA synchronous=NORMAL")
+        self._exec("PRAGMA cache_size=-64000")
 
     def _migrate_wellness(self):
         """Add missing columns to the wellness table."""
@@ -69,7 +88,7 @@ class CyclingDB:
                 c.execute(f"ALTER TABLE wellness ADD COLUMN {col} {typ}")
                 logger.info(f"Migrated: added column {col} to wellness")
 
-        self.conn.commit()
+        self._commit()
 
     def _migrate_activity_metrics(self):
         """Add missing columns to the activity_metrics table."""
@@ -92,7 +111,7 @@ class CyclingDB:
                 c.execute(f"ALTER TABLE activity_metrics ADD COLUMN {col} {typ}")
                 logger.info(f"Migrated: added column {col} to activity_metrics")
 
-        self.conn.commit()
+        self._commit()
 
     def _migrate_sync_state(self):
         """Add missing columns to the sync_state table."""
@@ -112,7 +131,7 @@ class CyclingDB:
                 c.execute(f"ALTER TABLE sync_state ADD COLUMN {col} {typ}")
                 logger.info(f"Migrated: added column {col} to sync_state")
 
-        self.conn.commit()
+        self._commit()
 
     def _migrate_activity_api_fields(self):
         """Add API-only fields to activities table if they don't exist."""
@@ -177,7 +196,7 @@ class CyclingDB:
                 c.execute(f"ALTER TABLE activities ADD COLUMN {col} {col_type}")
                 logger.info(f"Migrated: added column {col} to activities")
 
-        self.conn.commit()
+        self._commit()
 
     def _migrate_raw_tables(self):
         """Backfill raw_activities from existing activities table data."""
@@ -244,7 +263,7 @@ class CyclingDB:
         if backfilled:
             logger.info(f"Backfilled {backfilled} rows into raw_activities from existing activities")
 
-        self.conn.commit()
+        self._commit()
 
     def _create_tables(self):
         self._migrate_wellness()
@@ -532,7 +551,7 @@ class CyclingDB:
         c.execute("CREATE INDEX IF NOT EXISTS idx_validation_log_athlete ON validation_log(athlete_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_validation_log_date ON validation_log(target_date)")
 
-        self.conn.commit()
+        self._commit()
         # Run raw tables migration after all tables exist
         self._migrate_raw_tables()
         self._migrate_activity_api_fields()
@@ -616,7 +635,7 @@ class CyclingDB:
             )
             n += 1
 
-        self.conn.commit()
+        self._commit()
         logger.info(f"Stored {n} wellness records")
         return n
 
@@ -640,11 +659,11 @@ class CyclingDB:
             params = [newest]
 
         query += " ORDER BY date DESC"
-        return self.conn.execute(query, params).fetchall()
+        return self._exec(query, params).fetchall()
 
     def get_latest_wellness(self) -> sqlite3.Row | None:
         """Get the most recent wellness record."""
-        return self.conn.execute(
+        return self._exec(
             "SELECT * FROM wellness ORDER BY date DESC LIMIT 1"
         ).fetchone()
 
@@ -663,7 +682,7 @@ class CyclingDB:
             query += " WHERE date <= ?"
             params = [newest]
 
-        rows = self.conn.execute(query, params).fetchall()
+        rows = self._exec(query, params).fetchall()
         return {row["date"] for row in rows}
 
     # -- Activities --
@@ -722,7 +741,7 @@ class CyclingDB:
             )
             n += 1
 
-        self.conn.commit()
+        self._commit()
         logger.info(f"Stored {n} activity records")
         return n
 
@@ -739,7 +758,7 @@ class CyclingDB:
             """,
             (date, source, json.dumps(data) if not isinstance(data, str) else data),
         )
-        self.conn.commit()
+        self._commit()
 
     def get_activities(
         self,
@@ -766,14 +785,14 @@ class CyclingDB:
             query += " WHERE " + " AND ".join(conditions)
 
         query += " ORDER BY start_date DESC"
-        return self.conn.execute(query, params).fetchall()
+        return self._exec(query, params).fetchall()
 
     # -- Raw Data Store (immutable, append-only) --
 
     def store_raw_activity(self, garmin_id: int, data: dict[str, Any]) -> None:
         """Store a raw Garmin API activity summary. UPSERT on garmin_id."""
         import json
-        self.conn.execute(
+        self._exec(
             """INSERT OR REPLACE INTO raw_activities
                 (garmin_id, start_time_local, activity_type_key,
                  duration_ms, distance_cm, avg_power, max_power,
@@ -804,11 +823,11 @@ class CyclingDB:
                 json.dumps(data),
             ),
         )
-        self.conn.commit()
+        self._commit()
 
     def store_raw_fit_session(self, garmin_id: int, data: dict[str, Any]) -> None:
         """Store raw FIT session metrics. UPSERT on garmin_id."""
-        self.conn.execute(
+        self._exec(
             """INSERT OR REPLACE INTO raw_fit_sessions
                 (garmin_id, total_elapsed_time_ms, total_distance_m,
                  sport, avg_heart_rate, max_heart_rate, total_calories,
@@ -828,7 +847,7 @@ class CyclingDB:
                 data.get("max_power"),
             ),
         )
-        self.conn.commit()
+        self._commit()
 
     def refresh_activities(self) -> int:
         """Rebuild the activities table from raw data.
@@ -843,12 +862,12 @@ class CyclingDB:
 
         Returns the number of activities refreshed.
         """
-        rows = self.conn.execute(
+        rows = self._exec(
             "SELECT * FROM raw_activities ORDER BY garmin_id"
         ).fetchall()
 
         # Pre-fetch all FIT session data
-        fit_rows = self.conn.execute(
+        fit_rows = self._exec(
             "SELECT * FROM raw_fit_sessions"
         ).fetchall()
         fit_by_id: dict[int, dict] = {}
@@ -856,7 +875,7 @@ class CyclingDB:
             fit_by_id[fr["garmin_id"]] = dict(fr)
 
         # Pre-fetch all activity metrics for duration_sec
-        metrics_rows = self.conn.execute(
+        metrics_rows = self._exec(
             "SELECT activity_id, duration_sec FROM activity_metrics"
         ).fetchall()
         metrics_by_id: dict[str, dict] = {}
@@ -985,7 +1004,7 @@ class CyclingDB:
             source_hr = "FIT" if fit and fit["avg_heart_rate"] else "API"
             source_calories = "FIT" if fit and fit["total_calories"] else "API"
 
-            self.conn.execute(
+            self._exec(
                 """INSERT OR REPLACE INTO activities
                     (id, start_date, activity_type, activity_name, duration, distance,
                      average_power, max_power, average_hr, max_hr,
@@ -1065,7 +1084,7 @@ class CyclingDB:
             )
             refreshed += 1
 
-        self.conn.commit()
+        self._commit()
         logger.info(f"Refreshed {refreshed} activities from raw data")
         return refreshed
 
@@ -1090,7 +1109,7 @@ class CyclingDB:
             "INSERT INTO activity_streams (activity_id, elapsed, metric, value) VALUES (?, ?, ?, ?)",
             rows,
         )
-        self.conn.commit()
+        self._commit()
         logger.info(f"Stored {len(rows)} {metric} samples for {activity_id}")
         return len(rows)
 
@@ -1098,7 +1117,7 @@ class CyclingDB:
         self, activity_id: str, metric: str
     ) -> list[sqlite3.Row]:
         """Get all samples for a specific metric of an activity."""
-        return self.conn.execute(
+        return self._exec(
             "SELECT elapsed, value FROM activity_streams "
             "WHERE activity_id = ? AND metric = ? ORDER BY elapsed",
             (activity_id, metric),
@@ -1108,7 +1127,7 @@ class CyclingDB:
 
     def get_last_synced(self, source: str) -> str | None:
         """Return the last_synced_at timestamp for a source, or None."""
-        row = self.conn.execute(
+        row = self._exec(
             "SELECT last_synced_at FROM sync_state WHERE source = ?",
             (source,),
         ).fetchone()
@@ -1116,7 +1135,7 @@ class CyclingDB:
 
     def get_resume_offset(self, source: str) -> int:
         """Return the resume_offset for a source, or 0."""
-        row = self.conn.execute(
+        row = self._exec(
             "SELECT resume_offset FROM sync_state WHERE source = ?",
             (source,),
         ).fetchone()
@@ -1127,12 +1146,12 @@ class CyclingDB:
 
     def set_last_synced(self, source: str, ts: str, details: str | None = None, resume_offset: int = 0):
         """Record the last sync timestamp for a source."""
-        self.conn.execute(
+        self._exec(
             "INSERT OR REPLACE INTO sync_state (source, last_synced_at, details, resume_offset) "
             "VALUES (?, ?, ?, ?)",
             (source, ts, details, resume_offset),
         )
-        self.conn.commit()
+        self._commit()
 
     # -- Activity Metrics (computed, separate from raw data) --
 
@@ -1143,7 +1162,7 @@ class CyclingDB:
         their previous values, preventing data loss on partial updates.
         """
         # Read existing row to preserve columns not in this update
-        existing = self.conn.execute(
+        existing = self._exec(
             "SELECT ftp_used, cp_used, ride_cp, normalized_power, intensity_factor, tss, "
             "variability_index, w_prime_capacity, w_prime_min_balance, "
             "decoupling_drift, duration_sec, hr_tss, hr_trimp "
@@ -1169,7 +1188,7 @@ class CyclingDB:
             existing_dict.update(metrics)
             metrics = existing_dict
 
-        self.conn.execute(
+        self._exec(
             "INSERT OR REPLACE INTO activity_metrics "
             "(activity_id, ftp_used, cp_used, ride_cp, normalized_power, intensity_factor, tss, "
             "variability_index, w_prime_capacity, w_prime_min_balance, "
@@ -1192,11 +1211,11 @@ class CyclingDB:
                 metrics.get("hr_trimp"),
             ),
         )
-        self.conn.commit()
+        self._commit()
 
     def get_activity_metrics(self, activity_id: str) -> dict[str, Any] | None:
         """Get computed metrics for an activity, or None if not computed."""
-        row = self.conn.execute(
+        row = self._exec(
             "SELECT * FROM activity_metrics WHERE activity_id = ?",
             (activity_id,),
         ).fetchone()
@@ -1205,7 +1224,7 @@ class CyclingDB:
         return dict(row)
     def get_hr_calibration(self) -> dict[str, Any] | None:
         """Get stored HR calibration factor."""
-        row = self.conn.execute(
+        row = self._exec(
             "SELECT calibration_factor, num_calibration_rides, last_updated "
             "FROM hr_calibration WHERE id = 1"
         ).fetchone()
@@ -1215,13 +1234,13 @@ class CyclingDB:
 
     def store_hr_calibration(self, factor: float, num_rides: int) -> None:
         """Store or update HR calibration factor."""
-        self.conn.execute(
+        self._exec(
             "INSERT OR REPLACE INTO hr_calibration "
             "(id, calibration_factor, num_calibration_rides, last_updated) "
             "VALUES (1, ?, ?, datetime('now'))",
             (factor, num_rides),
         )
-        self.conn.commit()
+        self._commit()
 
     # -- Trend Queries --
 
@@ -1292,7 +1311,7 @@ class CyclingDB:
             query += " WHERE date <= ?"
             params = [newest]
         query += " ORDER BY date"
-        rows = self.conn.execute(query, params).fetchall()
+        rows = self._exec(query, params).fetchall()
         return [dict(r) for r in rows]
 
     def get_activity_metrics_by_date(
@@ -1315,12 +1334,12 @@ class CyclingDB:
             query += " WHERE a.start_date <= ?"
             params = [newest]
         query += " ORDER BY a.start_date"
-        rows = self.conn.execute(query, params).fetchall()
+        rows = self._exec(query, params).fetchall()
         return [dict(r) for r in rows]
 
     def get_activity_with_metrics(self, activity_id: str) -> dict[str, Any] | None:
         """Join activities and activity_metrics for a single activity."""
-        act = self.conn.execute(
+        act = self._exec(
             "SELECT * FROM activities WHERE id = ?", (activity_id,)
         ).fetchone()
         if act is None:
@@ -1342,7 +1361,7 @@ class CyclingDB:
 
         Returns the number of points inserted. Skips if activity already has routes.
         """
-        existing = self.conn.execute(
+        existing = self._exec(
             "SELECT COUNT(*) FROM activity_routes WHERE activity_id = ?",
             (activity_id,),
         ).fetchone()[0]
@@ -1355,20 +1374,20 @@ class CyclingDB:
             "INSERT INTO activity_routes (activity_id, latitude, longitude, sequence) VALUES (?, ?, ?, ?)",
             ((activity_id, lat, lon, seq) for seq, (lat, lon) in enumerate(points)),
         )
-        self.conn.commit()
+        self._commit()
         logger.info(f"Stored {len(points)} route points for {activity_id}")
         return len(points)
 
     def get_all_routes(self) -> list[dict[str, Any]]:
         """Return all route points ordered by activity_id and sequence."""
-        rows = self.conn.execute(
+        rows = self._exec(
             "SELECT * FROM activity_routes ORDER BY activity_id, sequence"
         ).fetchall()
         return [dict(r) for r in rows]
 
     def get_routes_for_activity(self, activity_id: str) -> list[dict[str, Any]]:
         """Return route points for a specific activity, ordered by sequence."""
-        rows = self.conn.execute(
+        rows = self._exec(
             "SELECT * FROM activity_routes WHERE activity_id = ? ORDER BY sequence",
             (activity_id,),
         ).fetchall()
@@ -1376,13 +1395,13 @@ class CyclingDB:
 
     def get_route_count(self) -> int:
         """Return the number of distinct activities with route data."""
-        row = self.conn.execute(
+        row = self._exec(
             "SELECT COUNT(DISTINCT activity_id) FROM activity_routes"
         ).fetchone()
         return row[0]
     def get_route_count_for_activity(self, activity_id: str) -> int:
         """Return the number of route points for a specific activity."""
-        row = self.conn.execute(
+        row = self._exec(
             "SELECT COUNT(*) FROM activity_routes WHERE activity_id = ?",
             (activity_id,),
         ).fetchone()
@@ -1393,7 +1412,7 @@ class CyclingDB:
 
     def insert_daily_readiness(self, record: dict[str, Any]) -> int:
         """Insert or replace a daily readiness record. Returns the row id."""
-        self.conn.execute(
+        self._exec(
             "INSERT INTO daily_readiness "
             "(athlete_id, date, rmssd, resting_hr, rmssd_mean_30d, rmssd_std_30d, "
             " rhr_mean_30d, rhr_std_30d, sleep_hours, sleep_score, "
@@ -1446,15 +1465,15 @@ class CyclingDB:
                 record.get("acwr"),
             ),
         )
-        self.conn.commit()
-        return int(self.conn.execute(
+        self._commit()
+        return int(self._exec(
             "SELECT id FROM daily_readiness WHERE athlete_id = ? AND date = ?",
             (record.get("athlete_id"), record.get("date")),
         ).fetchone()[0])
 
     def get_daily_readiness_by_date(self, athlete_id: str, date: str) -> dict[str, Any] | None:
         """Get daily readiness for a specific athlete and date."""
-        row = self.conn.execute(
+        row = self._exec(
             "SELECT * FROM daily_readiness WHERE athlete_id = ? AND date = ?",
             (athlete_id, date),
         ).fetchone()
@@ -1464,7 +1483,7 @@ class CyclingDB:
         self, athlete_id: str, days: int = DEFAULT_ANALYSIS_WINDOW_DAYS
     ) -> list[dict[str, Any]]:
         """Get recent daily readiness records for an athlete."""
-        rows = self.conn.execute(
+        rows = self._exec(
             "SELECT * FROM daily_readiness "
             "WHERE athlete_id = ? AND date >= date('now', ?) "
             "ORDER BY date DESC",
@@ -1476,7 +1495,7 @@ class CyclingDB:
         self, athlete_id: str, readiness_state: str
     ) -> list[dict[str, Any]]:
         """Get readiness records filtered by readiness state."""
-        rows = self.conn.execute(
+        rows = self._exec(
             "SELECT * FROM daily_readiness "
             "WHERE athlete_id = ? AND readiness_state = ? "
             "ORDER BY date DESC",
@@ -1499,14 +1518,14 @@ class CyclingDB:
             params.append(newest)
 
         query += " ORDER BY date DESC"
-        rows = self.conn.execute(query, params).fetchall()
+        rows = self._exec(query, params).fetchall()
         return [dict(r) for r in rows]
 
     # -- Training Log --
 
     def insert_training_log(self, record: dict[str, Any]) -> int:
         """Insert a training log entry. Returns the row id."""
-        self.conn.execute(
+        self._exec(
             "INSERT INTO training_log "
             "(athlete_id, planned_date, workout_id, planned_type, planned_duration, "
             " planned_tss, readiness_at_plan, actual_activity_id, actual_duration, "
@@ -1533,8 +1552,8 @@ class CyclingDB:
                 record.get("w_prime_min_balance"),
             ),
         )
-        self.conn.commit()
-        return int(self.conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        self._commit()
+        return int(self._exec("SELECT last_insert_rowid()").fetchone()[0])
 
     def update_training_log(self, log_id: int, updates: dict[str, Any]) -> None:
         """Update fields on an existing training log entry."""
@@ -1546,11 +1565,11 @@ class CyclingDB:
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values())
         values.append(log_id)
-        self.conn.execute(
+        self._exec(
             f"UPDATE training_log SET {set_clause} WHERE id = ?",
             values,
         )
-        self.conn.commit()
+        self._commit()
 
     def get_training_log(
         self, athlete_id: str, oldest: str | None = None, newest: str | None = None
@@ -1567,14 +1586,14 @@ class CyclingDB:
             params.append(newest)
 
         query += " ORDER BY planned_date DESC"
-        rows = self.conn.execute(query, params).fetchall()
+        rows = self._exec(query, params).fetchall()
         return [dict(r) for r in rows]
 
     def get_planned_workouts(
         self, athlete_id: str, date: str
     ) -> list[dict[str, Any]]:
         """Get planned workouts for a specific date."""
-        rows = self.conn.execute(
+        rows = self._exec(
             "SELECT * FROM training_log WHERE athlete_id = ? AND planned_date = ?",
             (athlete_id, date),
         ).fetchall()
@@ -1584,7 +1603,7 @@ class CyclingDB:
         self, athlete_id: str, days: int = 7
     ) -> list[dict[str, Any]]:
         """Get completed training entries for recent days."""
-        rows = self.conn.execute(
+        rows = self._exec(
             "SELECT * FROM training_log "
             "WHERE athlete_id = ? AND completed = 1 "
             "AND planned_date >= date('now', ?) "
@@ -1597,7 +1616,7 @@ class CyclingDB:
 
     def insert_edge_case(self, record: dict[str, Any]) -> int:
         """Insert an edge case record. Returns the row id."""
-        self.conn.execute(
+        self._exec(
             "INSERT INTO edge_cases "
             "(athlete_id, case_type, start_date, end_date, description, "
             " training_impact, resolution, resolved) "
@@ -1613,8 +1632,8 @@ class CyclingDB:
                 record.get("resolved", 0),
             ),
         )
-        self.conn.commit()
-        return int(self.conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        self._commit()
+        return int(self._exec("SELECT last_insert_rowid()").fetchone()[0])
 
     def update_edge_case(self, case_id: int, updates: dict[str, Any]) -> None:
         """Update fields on an edge case record."""
@@ -1626,11 +1645,11 @@ class CyclingDB:
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values())
         values.append(case_id)
-        self.conn.execute(
+        self._exec(
             f"UPDATE edge_cases SET {set_clause} WHERE id = ?",
             values,
         )
-        self.conn.commit()
+        self._commit()
 
     def get_edge_cases(
         self, athlete_id: str, resolved: int | None = None
@@ -1644,7 +1663,7 @@ class CyclingDB:
             params.append(resolved)
 
         query += " ORDER BY start_date DESC"
-        rows = self.conn.execute(query, params).fetchall()
+        rows = self._exec(query, params).fetchall()
         return [dict(r) for r in rows]
 
     def get_active_edge_cases(self, athlete_id: str) -> list[dict[str, Any]]:
@@ -1655,7 +1674,7 @@ class CyclingDB:
 
     def insert_validation_log(self, record: dict[str, Any]) -> int:
         """Insert a validation log entry. Returns the row id."""
-        self.conn.execute(
+        self._exec(
             "INSERT INTO validation_log "
             "(athlete_id, check_name, target_date, severity, message, "
             " raw_value, expected_min, expected_max, action_taken) "
@@ -1672,8 +1691,8 @@ class CyclingDB:
                 record.get("action_taken"),
             ),
         )
-        self.conn.commit()
-        return int(self.conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+        self._commit()
+        return int(self._exec("SELECT last_insert_rowid()").fetchone()[0])
 
     def get_validation_logs(
         self, athlete_id: str, oldest: str | None = None, newest: str | None = None,
@@ -1694,14 +1713,14 @@ class CyclingDB:
             params.append(severity)
 
         query += " ORDER BY target_date DESC"
-        rows = self.conn.execute(query, params).fetchall()
+        rows = self._exec(query, params).fetchall()
         return [dict(r) for r in rows]
 
     def get_validation_errors(
         self, athlete_id: str, date: str
     ) -> list[dict[str, Any]]:
         """Get error-level validation entries for a specific date."""
-        rows = self.conn.execute(
+        rows = self._exec(
             "SELECT * FROM validation_log "
             "WHERE athlete_id = ? AND target_date = ? AND severity = 'error' "
             "ORDER BY created_at DESC",
@@ -1715,7 +1734,7 @@ class CyclingDB:
         """Store or update a morning check-in record."""
         # Check if table exists and get columns
         try:
-            cursor = self.conn.execute("PRAGMA table_info(morning_checkin)")
+            cursor = self._exec("PRAGMA table_info(morning_checkin)")
             columns = [row[1] for row in cursor.fetchall()]
         except Exception:
             logger.debug("Failed to introspect morning_checkin schema", exc_info=True)
@@ -1750,22 +1769,22 @@ class CyclingDB:
         col_list = ", ".join(insert_cols)
         param_list = [values[col] for col in insert_cols]
         
-        self.conn.execute(
+        self._exec(
             f"INSERT OR REPLACE INTO morning_checkin ({col_list}) VALUES ({placeholders})",
             param_list,
         )
-        self.conn.commit()
+        self._commit()
 
     def get_morning_checkin(self, date: str) -> dict[str, Any] | None:
         """Get a single morning check-in by date."""
-        row = self.conn.execute(
+        row = self._exec(
             "SELECT * FROM morning_checkin WHERE date = ?", (date,)
         ).fetchone()
         return dict(row) if row else None
 
     def get_morning_checkins(self, limit: int = DEFAULT_ANALYSIS_WINDOW_DAYS) -> list[dict[str, Any]]:
         """Get recent morning check-ins."""
-        rows = self.conn.execute(
+        rows = self._exec(
             "SELECT * FROM morning_checkin ORDER BY date DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]

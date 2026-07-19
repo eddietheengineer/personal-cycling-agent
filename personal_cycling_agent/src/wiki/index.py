@@ -110,7 +110,8 @@ def append_log_entry(operation: str, description: str, details: str = "") -> Non
     if details:
         entry += details + "\n\n"
 
-    log_path.write_text(log_path.read_text(encoding="utf-8") + entry, encoding="utf-8")
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(entry)
     logger.info(f"Log entry: [{now}] {operation} | {description}")
 
 

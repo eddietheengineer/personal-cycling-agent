@@ -2248,7 +2248,8 @@ def _render_garmin_setup():
     if "excluded_power_meters" in st.session_state:
         config_path = config.vault_path() / "excluded_power_meters.json"
         import json
-        json.dump(st.session_state.excluded_power_meters, open(config_path, "w"))
+        with open(config_path, "w") as f:
+            json.dump(st.session_state.excluded_power_meters, f)
 
 # ---------------------------------------------------------------------------
 # Garmin connection check (session state or cached tokens)

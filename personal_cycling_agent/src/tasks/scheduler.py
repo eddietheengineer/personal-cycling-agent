@@ -31,19 +31,24 @@ from src.config.constants import DEFAULT_ACTIVITY_SYNC_MINUTES, DEFAULT_WELLNESS
 from src.tasks.worker import get_default_sync
 
 
+# Module-level lock for config.env writes (prevents TOCTOU between threads)
+_env_lock = threading.Lock()
+
+
 def _write_env(key: str, value: str) -> None:
     """Write a KEY=VALUE pair to config.env, updating existing key if present."""
     env_path = config.config_env_path()
     env_path.parent.mkdir(parents=True, exist_ok=True)
-    if env_path.exists():
-        lines = env_path.read_text().splitlines()
-    else:
-        lines = []
-    if any(l.startswith(f"{key}=") for l in lines):
-        lines = [f'{key}="{value}"' if l.startswith(f"{key}=") else l for l in lines]
-    else:
-        lines.append(f'{key}="{value}"')
-    env_path.write_text("\n".join(lines) + "\n")
+    with _env_lock:
+        if env_path.exists():
+            lines = env_path.read_text().splitlines()
+        else:
+            lines = []
+        if any(l.startswith(f"{key}=") for l in lines):
+            lines = [f'{key}="{value}"' if l.startswith(f"{key}=") else l for l in lines]
+        else:
+            lines.append(f'{key}="{value}"')
+        env_path.write_text("\n".join(lines) + "\n")
 
 logger = logging.getLogger(__name__)
 
