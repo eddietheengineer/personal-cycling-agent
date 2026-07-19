@@ -2273,6 +2273,64 @@ def _render_garmin_setup():
     if stats.get("last_error"):
         st.error(f"Last error: {stats['last_error']} ({stats.get('last_error_time', '')})")
 
+    # Power meter filter
+    st.markdown("---")
+    st.subheader("Power Meter Filter")
+    st.caption(
+        "Exclude activities from specific power meters. "
+        "Old power meters (e.g., Garmin Vector) can produce bad data."
+    )
+
+    # Get unique power meters from DB
+    pm_rows = db.conn.execute(
+        "SELECT DISTINCT power_meter FROM activities WHERE power_meter IS NOT NULL ORDER BY power_meter"
+    ).fetchall()
+
+    if pm_rows:
+        power_meters = [r[0] for r in pm_rows]
+
+        # Count activities per power meter
+        pm_counts = {}
+        for pm in power_meters:
+            cnt = db.conn.execute(
+                "SELECT COUNT(*) FROM activities WHERE power_meter = ?", (pm,)
+            ).fetchone()[0]
+            pm_counts[pm] = cnt
+
+        # Load excluded list from session state
+        if "excluded_power_meters" not in st.session_state:
+            st.session_state.excluded_power_meters = []
+
+        st.write("**Detected power meters:**")
+        for pm in power_meters:
+            excluded = pm in st.session_state.excluded_power_meters
+            label = f"{pm} ({pm_counts[pm]} activities)"
+            if st.toggle(label, value=not excluded, key=f"pm_toggle_{pm}"):
+                if pm not in st.session_state.excluded_power_meters:
+                    st.session_state.excluded_power_meters.append(pm)
+            else:
+                if pm in st.session_state.excluded_power_meters:
+                    st.session_state.excluded_power_meters.remove(pm)
+
+        excluded_count = sum(
+            db.conn.execute(
+                "SELECT COUNT(*) FROM activities WHERE power_meter = ?", (pm,)
+            ).fetchone()[0]
+            for pm in st.session_state.excluded_power_meters
+        )
+        st.info(f"Excluding {excluded_count} activities from {len(st.session_state.excluded_power_meters)} power meter(s). Run 'Rebuild Analysis' to apply.")
+    else:
+        st.info("No power meter data found. Click 'Extract Power Meter Info' to scan FIT files.")
+        if st.button("Extract Power Meter Info", type="primary", use_container_width=True, key="extract_pm"):
+            count = extract_power_meters()
+            st.success(f"Extracted power meter info for {count} activities.")
+            st.rerun()
+
+        # Save excluded list to config file for main.py to read
+        config_path = config.vault_path() / "excluded_power_meters.json"
+        import json
+        json.dump(st.session_state.excluded_power_meters, open(config_path, "w"))
+
 # ---------------------------------------------------------------------------
 # Garmin connection check (session state or cached tokens)
 # ---------------------------------------------------------------------------

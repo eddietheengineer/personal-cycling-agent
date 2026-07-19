@@ -170,6 +170,11 @@ def _compute_power_duration_curve(power: np.ndarray) -> dict[int, float]:
             curve[dur] = 0.0
         return curve
 
+    # Filter out obviously bad power samples (>2000W = sensor glitch/overflow)
+    # Old power meters (e.g., early SRM, 16-bit unsigned overflow) can produce
+    # values like 65505W. Replace with 0 to exclude from segments.
+    power = np.where(power > 2000, 0.0, power)
+
     # Find contiguous segments of positive power
     segments: list[tuple[int, int]] = []  # (start, end) exclusive
     in_segment = False

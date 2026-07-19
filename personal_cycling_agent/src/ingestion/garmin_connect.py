@@ -532,10 +532,25 @@ def _fetch_activity_streams(
             except KeyError:
                 return None
 
+        # Track power meter device info
+        fit_power_meter: str | None = None
+
         with fitdecode.FitReader(str(fit_path)) as fit:
             for frame in fit:
                 if not isinstance(frame, fitdecode.FitDataMessage):
                     continue
+
+                # Extract power meter device info
+                if frame.name == "device_info" and fit_power_meter is None:
+                    is_power = False
+                    for f in frame.fields:
+                        if f.name in ("antplus_device_type", "device_type", "local_device_type"):
+                            if f.value == "bike_power" or (isinstance(f.value, int) and f.value == 12):
+                                is_power = True
+                    if is_power:
+                        mfr = next((f.value for f in frame.fields if f.name == "manufacturer"), None)
+                        prod = next((f.value for f in frame.fields if f.name in ("garmin_product", "product")), None)
+                        fit_power_meter = f"{mfr}:{prod}"
 
                 # Extract session-level metrics
                 if frame.name == "session":
@@ -619,6 +634,17 @@ def _fetch_activity_streams(
                     alt_field = _get_field(frame, "altitude")
                 if alt_field is not None and alt_field.value is not None:
                     altitude_values.append((elapsed, float(alt_field.value)))
+
+        # Store power meter info in activities table
+        if fit_power_meter is not None:
+            try:
+                db.conn.execute(
+                    "UPDATE activities SET power_meter = ? WHERE id = ?",
+                    (fit_power_meter, str(activity_id)),
+                )
+                db.conn.commit()
+            except Exception as e:
+                logger.warning(f"Failed to store power meter for {activity_id}: {e}")
 
         # Store raw FIT session metrics (immutable)
         try:
@@ -1035,6 +1061,75 @@ def sync_activities(
         "activities_processed": total_processed,
         "stream_records": total_stored,
     }
+
+
+def extract_power_meters(db_path: str | None = None) -> int:
+    """Extract power meter info from existing FIT files and store in activities table.
+
+    Scans /data/raw/fit/ for FIT files, extracts device_info messages for
+    power meters, and updates the activities table with the power_meter column.
+
+    Returns count of activities updated.
+    """
+    import fitdecode
+    from pathlib import Path
+
+    if db_path is None:
+        db_path = str(config.db_path("cycling_agent.sqlite"))
+
+    db = CyclingDB(db_path)
+    fit_dir = Path(config.vault_path()) / "raw" / "fit"
+    if not fit_dir.exists():
+        logger.warning(f"FIT directory not found: {fit_dir}")
+        db.close()
+        return 0
+
+    updated = 0
+    fit_files = sorted(fit_dir.glob("*.fit"))
+    logger.info(f"Scanning {len(fit_files)} FIT files for power meter info...")
+
+    for fit_path in fit_files:
+        garmin_id = fit_path.stem
+        activity_id = f"garmin_{garmin_id}"
+
+        # Check if already has power_meter info
+        row = db.conn.execute(
+            "SELECT power_meter FROM activities WHERE id = ?",
+            (activity_id,),
+        ).fetchone()
+        if row and row[0] is not None:
+            continue
+
+        try:
+            with fitdecode.FitReader(str(fit_path)) as fit:
+                for frame in fit:
+                    if not isinstance(frame, fitdecode.FitDataMessage):
+                        continue
+                    if frame.name != "device_info":
+                        continue
+                    is_power = False
+                    for f in frame.fields:
+                        if f.name in ("antplus_device_type", "device_type", "local_device_type"):
+                            if f.value == "bike_power" or (isinstance(f.value, int) and f.value == 12):
+                                is_power = True
+                    if not is_power:
+                        continue
+                    mfr = next((f.value for f in frame.fields if f.name == "manufacturer"), None)
+                    prod = next((f.value for f in frame.fields if f.name in ("garmin_product", "product")), None)
+                    pm = f"{mfr}:{prod}"
+                    db.conn.execute(
+                        "UPDATE activities SET power_meter = ? WHERE id = ?",
+                        (pm, activity_id),
+                    )
+                    db.conn.commit()
+                    updated += 1
+                    break
+        except Exception as e:
+            logger.debug(f"Failed to parse {fit_path}: {e}")
+
+    db.close()
+    logger.info(f"Extracted power meter info for {updated} activities")
+    return updated
 
 
 def sync_garmin(

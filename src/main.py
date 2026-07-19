@@ -166,10 +166,25 @@ def run_analyze() -> dict:
 
         # --- All activities, sorted chronologically ---
         activities = db.get_activities()
-        activity_dicts = sorted(
-            [dict(a) for a in activities],
-            key=lambda a: a.get("start_date", ""),
-        )
+
+        # Filter out excluded power meters
+        excluded_pm = set()
+        pm_config = config.vault_path() / "excluded_power_meters.json"
+        if pm_config.exists():
+            try:
+                import json
+                excluded_pm = set(json.loads(pm_config.read_text()))
+            except Exception:
+                pass
+        if excluded_pm:
+            activity_dicts = [
+                dict(a) for a in activities
+                if a.get("power_meter") not in excluded_pm
+            ]
+            logger.info(f"Filtered out {len(activities) - len(activity_dicts)} activities from excluded power meters")
+        else:
+            activity_dicts = [dict(a) for a in activities]
+        activity_dicts = sorted(activity_dicts, key=lambda a: a.get("start_date", ""))
         # Walk chronologically, building CP over time.
         # CP = max ride_cp from last 90 days (intervals.icu style).
         # Starts at 0 until the first ride with power data.
@@ -245,7 +260,7 @@ def run_analyze() -> dict:
                         ride_cp_est = cp_est
                     else:
                         ride_3min = pdc.get(180, 0)
-                        if ride_3min > 0 and ride_3min < 300:
+                        if ride_3min > 0 and ride_3min < 600:
                             ride_cp_est = ride_3min / 1.3
                 except Exception:
                     pass
@@ -253,7 +268,8 @@ def run_analyze() -> dict:
                 db.store_activity_metrics(activity_id, {"ride_cp": ride_cp_est})
 
             # Rolling 90-day CP: max ride_cp from last 90 days (including this ride).
-            # Stored as cp_used for this activity. Starts at 0 until first ride.
+            # Stored as cp_used for this activity. Falls back to ride_cp_est
+            # when the window is empty (first rides with power data).
             current_cp = 0.0
             if act_date is not None:
                 cutoff = (act_date - timedelta(days=90)).strftime("%Y-%m-%d")
@@ -268,6 +284,9 @@ def run_analyze() -> dict:
                 ).fetchone()
                 if max_row and max_row[0] is not None:
                     current_cp = max_row[0]
+            # Fallback: use this ride's own CP estimate if window is empty
+            if current_cp <= 0 and ride_cp_est is not None:
+                current_cp = ride_cp_est
             # --- Compute power metrics with current CP ---
             pm_result = None
             if power_samples and current_cp > 0:

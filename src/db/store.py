@@ -167,6 +167,7 @@ class CyclingDB:
             "source_power": "TEXT",
             "source_hr": "TEXT",
             "source_calories": "TEXT",
+            "power_meter": "TEXT",
         }
 
         for col, col_type in new_cols.items():
