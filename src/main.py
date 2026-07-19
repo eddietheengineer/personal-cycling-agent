@@ -265,16 +265,26 @@ def run_analyze() -> dict:
             if power_samples:
                 try:
                     pdc = _compute_power_duration_curve(np.array(power_samples, dtype=np.float64))
-                    ride_3min = pdc.get(180, 0)
+                    # Estimate CP from this ride's PDC using 2-parameter model
+                    # (P = CP + W'/t) at standard durations (3, 5, 8, 20 min).
+                    # A single ride gives one point per duration — not enough for
+                    # regression, so fall back to 3min/1.3 if only one duration.
                     ride_cp_est = None
-                    if ride_3min > 0 and ride_3min < 300:
-                        ride_cp_est = ride_3min / 1.3
-                        if ride_cp_est > current_cp:
-                            current_cp = ride_cp_est
-                            logger.info(
-                                f"CP bump from {activity_id}: "
-                                f"{current_cp:.0f}W (3min={ride_3min:.0f}W)"
-                            )
+                    ride_data = [{"power_duration_curve": pdc}]
+                    cp_est, wp_est = estimate_critical_power(ride_data)
+                    if cp_est > 50:
+                        ride_cp_est = cp_est
+                    else:
+                        # Fallback: 3min best / 1.3
+                        ride_3min = pdc.get(180, 0)
+                        if ride_3min > 0 and ride_3min < 300:
+                            ride_cp_est = ride_3min / 1.3
+                    if ride_cp_est is not None and ride_cp_est > current_cp:
+                        current_cp = ride_cp_est
+                        logger.info(
+                            f"CP bump from {activity_id}: "
+                            f"{current_cp:.0f}W"
+                        )
                     # Store raw ride CP estimate for charting
                     if ride_cp_est is not None:
                         db.store_activity_metrics(activity_id, {"ride_cp": ride_cp_est})

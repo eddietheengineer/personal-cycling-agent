@@ -1369,21 +1369,6 @@ def _render_trends():
 
             st.plotly_chart(fig, width="stretch")
 
-    # ---- Critical Power ----
-    if cp_chart_data:
-        df_cp = pd.DataFrame(cp_chart_data)
-        fig = px.line(
-            df_cp, x="date", y="cp_used",
-            labels={"cp_used": "CP (W)"},
-            title="Critical Power",
-            template=trend_template,
-        )
-        fig.update_traces(
-            line=dict(width=2.5, color="#9467bd"),
-            mode="lines+markers",
-        )
-        fig.update_layout(height=280)
-        st.plotly_chart(fig, width="stretch")
 
     # ---- Wellness trends ----
     wellness_data = db.get_trend_data(
