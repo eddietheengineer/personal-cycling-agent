@@ -251,13 +251,25 @@ def run_analyze() -> dict:
             except ValueError:
                 act_date = None
 
-            # --- Update CP from accumulated PDC data ---
+            # --- Update CP from recent PDC data (rolling window) ---
+            # CP reflects current fitness, not all-time best. Use a rolling
+            # window of recent activities so CP tracks changes as training varies.
             if power_samples:
                 try:
                     pdc = _compute_power_duration_curve(np.array(power_samples, dtype=np.float64))
-                    cp_pdc_data.append({"power_duration_curve": pdc})
+                    cp_pdc_data.append({
+                        "power_duration_curve": pdc,
+                        "date": act_date_str,
+                    })
+                    # Prune to last 90 days of activity data
+                    if act_date is not None:
+                        cutoff = (act_date - timedelta(days=90)).isoformat()
+                        cp_pdc_data = [
+                            d for d in cp_pdc_data
+                            if d.get("date", "") >= cutoff
+                        ]
                     cp_est, wp_est = estimate_critical_power(cp_pdc_data)
-                    if cp_est > 0:
+                    if cp_est > 50:  # sanity floor: CP below 50W is noise
                         current_cp = cp_est
                 except Exception as e:
                     logger.warning(f"CP estimation failed for {activity_id}: {e}")

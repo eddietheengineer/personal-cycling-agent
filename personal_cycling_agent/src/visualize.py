@@ -1292,15 +1292,23 @@ def _render_trends():
 
     # ---- Gather activity data ----
     # CP chart: only show data within selected range
-    metrics_rows = db.get_activity_metrics_by_date(oldest, newest)
+    metrics_rows = db.get_activity_metrics_by_date()
     cp_chart_data = []
 
+    # Aggregate CP by month: take the latest CP estimate per month.
+    # This avoids a flat line when many activities share the same CP.
+    cp_by_month: dict[str, float] = {}
     for row in metrics_rows:
         sd = row.get("start_date")
-        if not sd:
+        cp_val = row.get("cp_used")
+        if not sd or cp_val is None:
             continue
-        if row.get("cp_used") is not None:
-            cp_chart_data.append({"date": sd, "cp_used": row["cp_used"]})
+        month_key = sd[:7]  # "YYYY-MM"
+        if month_key not in cp_by_month or sd > cp_by_month.get(month_key + "_date", ""):
+            cp_by_month[month_key] = cp_val
+            cp_by_month[month_key + "_date"] = sd
+    for month_key in sorted(k for k in cp_by_month if not k.endswith("_date")):
+        cp_chart_data.append({"date": month_key + "-01", "cp_used": cp_by_month[month_key]})
 
     # CTL/ATL/TSB: always compute from full history, then filter to range.
     # This ensures CTL/ATL reflect the true accumulated training load
@@ -1376,7 +1384,10 @@ def _render_trends():
             title="Critical Power",
             template=trend_template,
         )
-        fig.update_traces(line=dict(width=2.5, color="#9467bd"))
+        fig.update_traces(
+            line=dict(width=2.5, color="#9467bd"),
+            mode="lines+markers",
+        )
         fig.update_layout(height=280)
         st.plotly_chart(fig, width="stretch")
 
