@@ -40,7 +40,7 @@ from src.analytics.durability import compute_durability, durability_to_dict
 from src.analytics.decoupling import compute_decoupling, decoupling_to_dict
 from src.analytics.power_metrics import (
     _compute_power_duration_curve, compute_power_metrics,
-    power_metrics_to_dict
+    estimate_critical_power, power_metrics_to_dict
 )
 from src.analytics.training_load import (
     compute_training_load, compute_training_load_history, training_load_to_dict
@@ -171,12 +171,12 @@ def run_analyze() -> dict:
             key=lambda a: a.get("start_date", ""),
         )
         # --- Walk chronologically, building CP over time ---
-        # CP starts from the profile FTP and only increases when a ride
-        # has a 3-minute effort exceeding the current CP. No decay.
-        # This matches intervals.icu's eFTP behavior: flat unless you
-        # put in a new maximal effort.
-        current_cp = float(os.environ.get("CP_WATTS", 0))
-        if current_cp <= 0:
+        # CP starts from the profile FTP. We maintain a running estimate
+        # by accumulating PDC data across all activities and re-fitting
+        # the 2-parameter CP model after each activity. This produces a
+        # per-activity CP estimate suitable for trending over time.
+        profile_cp = float(os.environ.get("CP_WATTS", 0))
+        if profile_cp <= 0:
             try:
                 profile_path = config.user_profile_path()
                 if profile_path.exists():
@@ -186,15 +186,18 @@ def run_analyze() -> dict:
                             val = line.split(":")[1].strip()
                             m = re.search(r"(\d+)", val)
                             if m:
-                                current_cp = float(m.group(1))
+                                profile_cp = float(m.group(1))
                                 break
             except Exception:
                 pass
-        if current_cp <= 0:
-            current_cp = 200.0
+        if profile_cp <= 0:
+            profile_cp = 200.0
             logger.info("No CP set, bootstrapping with 200W default")
 
-        # Build profile dict for HR-based training load
+        # Running CP estimate: starts from profile, updated per activity
+        current_cp = profile_cp
+        # Accumulate PDC data across activities for CP regression
+        cp_pdc_data: list[dict] = []
         _profile = {
             "resting_hr": int(os.environ.get("RESTING_HR", 70)),
             "max_hr": int(os.environ.get("MAX_HR", 190)),
@@ -220,7 +223,7 @@ def run_analyze() -> dict:
         pmax_results = []
         three_dim_model = ThreeDIMModel()
         last_three_dim_date: date | None = None
-        hr_calibration_pairs: list[dict] = []  # (tss_power, hr_tss, date, distance)
+        hr_calibration_pairs: list[dict] = []
 
         for act in activity_dicts:
             activity_id = act.get("id", "")
@@ -248,26 +251,17 @@ def run_analyze() -> dict:
             except ValueError:
                 act_date = None
 
-
-            # --- Update CP from this ride ---
-            # Derive CP from the best 3-minute effort. A 3min max is
-            # typically ~130% of CP, so scale down. CP only increases.
-            # Skip corrupted rides (3min power > 300W = suspicious).
+            # --- Update CP from accumulated PDC data ---
             if power_samples:
                 try:
                     pdc = _compute_power_duration_curve(np.array(power_samples, dtype=np.float64))
-                    ride_3min = pdc.get(180, 0)
-                    if ride_3min > 0 and ride_3min < 300:
-                        ride_cp = ride_3min / 1.3
-                        if ride_cp > current_cp:
-                            current_cp = ride_cp
-                            logger.info(
-                                f"CP updated from {activity_id}: "
-                                f"prev={current_cp:.0f}W -> ride_3min={ride_3min:.0f}W "
-                                f"(cp={ride_cp:.0f}W)"
-                            )
+                    cp_pdc_data.append({"power_duration_curve": pdc})
+                    cp_est, wp_est = estimate_critical_power(cp_pdc_data)
+                    if cp_est > 0:
+                        current_cp = cp_est
                 except Exception as e:
-                    logger.warning(f"PDC computation failed for {activity_id}: {e}")
+                    logger.warning(f"CP estimation failed for {activity_id}: {e}")
+
             # --- Compute power metrics with current CP ---
             pm_result = None
             if power_samples and current_cp > 0:
