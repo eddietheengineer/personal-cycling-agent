@@ -524,7 +524,6 @@ def _render_week_strip():
 
     # Projected fitness/fatigue/load chart
     if plan:
-        import plotly.graph_objects as go
 
         # Use plan series if available, otherwise compute from current analysis
         if plan.ctl_series:
@@ -1354,7 +1353,6 @@ def _render_trends():
                 colors = {"ctl": ctl_color, "atl": atl_color, "tsb": tsb_color}
                 series_map = {"ctl": plan.ctl_series, "atl": plan.atl_series, "tsb": plan.tsb_series}
                 for metric in ["ctl", "atl", "tsb"]:
-                    import plotly.graph_objects as go
                     fig.add_trace(go.Scatter(
                         x=plan_dates, y=series_map[metric],
                         mode="lines", name=f"{metric} (projected)",
@@ -3316,9 +3314,7 @@ def _render_weekly_calendar():
 
     st.divider()
 
-    # Projected fitness/fatigue/load chart
     if plan and plan.ctl_series:
-        import plotly.graph_objects as go
 
         labels = [f"{d.date.split('-')[1]}/{d.date.split('-')[2]}" for d in plan.days]
 
