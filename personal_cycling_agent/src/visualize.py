@@ -1133,34 +1133,6 @@ def _render_activity_detail():
         else:
             computed_cols[idx].metric(label, "—")
 
-    # -- CP per activity bar chart (recent rides) --
-    recent_cp = db.conn.execute(
-        "SELECT a.start_date, m.cp_used "
-        "FROM activity_metrics m JOIN activities a ON a.id = m.activity_id "
-        "WHERE m.cp_used IS NOT NULL AND a.activity_type = ? "
-        "ORDER BY a.start_date DESC LIMIT 30",
-        (combined.get("activity_type", "road_biking"),),
-    ).fetchall()
-    if recent_cp:
-        recent_cp.reverse()  # chronological
-        cp_df = pd.DataFrame(recent_cp, columns=["date", "cp"])
-        cp_df["date"] = cp_df["date"].str[:10]
-        cp_df["is_current"] = cp_df["date"] == combined["start_date"][:10]
-        colors = ["#f44336" if c else "#9467bd" for c in cp_df["is_current"]]
-
-        theme = st.get_option("theme.base")
-        fig = px.bar(
-            cp_df, x="date", y="cp", color="is_current",
-            color_discrete_map={False: "#9467bd", True: "#f44336"},
-            labels={"cp": "CP (W)", "date": ""},
-            title="Critical Power — Recent Activities",
-            template="plotly_white" if theme != "dark" else "plotly_dark",
-            hover_data={"is_current": False},
-        )
-        fig.update_layout(height=220, margin=dict(l=40, r=20, t=35, b=40))
-        fig.update_traces(marker_line_width=0)
-        fig.update_xaxes(tickangle=45)
-        st.plotly_chart(fig, width="stretch", key="cp_bar_chart")
 
     # -- Training Effects --
     st.subheader("Training Effects")
@@ -1425,20 +1397,57 @@ def _render_trends():
         return
 
     df_wellness = pd.DataFrame(wellness_data)
+    # ---- Critical Power: bars (per-activity) + decay line ----
+    if cp_chart_data:
+        df_cp = pd.DataFrame(cp_chart_data)
 
-    # HRV (RMSSD)
-    rmssd_rows = df_wellness[df_wellness["rmssd"].notna()]
-    if not rmssd_rows.empty:
-        fig = px.line(
-            rmssd_rows, x="date", y="rmssd",
-            labels={"rmssd": "RMSSD (ms)"},
-            title="HRV (RMSSD)",
+        # Compute smooth decay line: for each date in range, decay from
+        # the most recent CP value backward using half-life 42 days.
+        import math as _math
+        from datetime import date as _date, timedelta as _td
+        decay_half_life = 42.0
+        # Build decay line by interpolating between activity CP values
+        dates = [_date.fromisoformat(d["date"]) for d in cp_chart_data]
+        cps = [d["cp_used"] for d in cp_chart_data]
+        decay_dates = []
+        decay_vals = []
+        if dates:
+            start_d = dates[0]
+            end_d = dates[-1]
+            d = start_d
+            while d <= end_d:
+                # Find the latest activity on or before this date
+                prev_cp = None
+                prev_d = None
+                for i in range(len(dates)):
+                    if dates[i] <= d:
+                        prev_cp = cps[i]
+                        prev_d = dates[i]
+                    else:
+                        break
+                if prev_cp is not None:
+                    days_since = (d - prev_d).days
+                    decayed = prev_cp * _math.exp(-_math.log(2) * days_since / decay_half_life)
+                    decay_dates.append(d.isoformat())
+                    decay_vals.append(round(decayed, 1))
+                d += _td(days=1)
+
+        fig = px.bar(
+            df_cp, x="date", y="cp_used", opacity=0.6,
+            labels={"cp_used": "CP (W)", "date": ""},
+            title="Critical Power",
             template=trend_template,
         )
-        mean_rmssd = rmssd_rows["rmssd"].mean()
-        fig.add_hline(y=mean_rmssd, line_dash="dash", annotation_text=f"Mean: {mean_rmssd:.0f}")
-        fig.update_traces(line=dict(width=2.5))
-        fig.update_layout(height=280)
+        fig.update_traces(marker_color="#9467bd", marker_line_width=0, name="Activity CP")
+        if decay_dates:
+            fig.add_trace(go.Scatter(
+                x=decay_dates, y=decay_vals,
+                mode="lines", name="CP Decay",
+                line=dict(width=2, color="#e0e0e0"),
+                opacity=0.5,
+            ))
+        fig.update_layout(height=280, margin=dict(l=40, r=20, t=35, b=40))
+        fig.update_xaxes(tickangle=45)
         st.plotly_chart(fig, width="stretch")
 
     # Resting HR
