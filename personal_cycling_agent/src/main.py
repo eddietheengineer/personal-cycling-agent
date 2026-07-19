@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import sys
+import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta, date
 import numpy as np
@@ -212,6 +213,61 @@ def run_analyze() -> dict:
         last_three_dim_date: date | None = None
         hr_calibration_pairs: list[dict] = []
 
+        # --- Batch-fetch all streams for all activities (single query) ---
+        stream_ids = []
+        for act in activity_dicts:
+            aid = act.get("id", "")
+            if not aid:
+                continue
+            sid = aid
+            if sid.startswith("garmin_"):
+                sid = sid[len("garmin_"):]
+            stream_ids.append(sid)
+
+        if stream_ids:
+            placeholders = ",".join("?" for _ in stream_ids)
+            all_streams = db.conn.execute(
+                f"SELECT activity_id, metric, elapsed, value FROM activity_streams "
+                f"WHERE activity_id IN ({placeholders}) ORDER BY activity_id, metric, elapsed",
+                stream_ids,
+            ).fetchall()
+
+            # Group by (activity_id, metric)
+            streams_by_id_metric: dict[tuple[str, str], list[sqlite3.Row]] = {}
+            for row in all_streams:
+                key = (row["activity_id"], row["metric"])
+                if key not in streams_by_id_metric:
+                    streams_by_id_metric[key] = []
+                streams_by_id_metric[key].append(row)
+        else:
+            streams_by_id_metric = {}
+
+        # --- Batch-fetch all ride_cp values for rolling CP computation ---
+        ride_cp_rows = db.conn.execute(
+            "SELECT m.ride_cp, substr(a.start_date, 1, 10) as date "
+            "FROM activity_metrics m "
+            "JOIN activities a ON a.id = m.activity_id "
+            "WHERE m.ride_cp IS NOT NULL "
+            "ORDER BY a.start_date"
+        ).fetchall()
+        ride_cp_by_date: dict[str, float] = {}
+        for row in ride_cp_rows:
+            d = row["date"]
+            cp = row["ride_cp"]
+            if d not in ride_cp_by_date or cp > ride_cp_by_date[d]:
+                ride_cp_by_date[d] = cp
+
+        # Pre-compute sorted dates + prefix max for O(log n) rolling CP lookup
+        import bisect
+        sorted_cp_dates = sorted(ride_cp_by_date.keys())
+        prefix_max: list[float] = []
+        for d in sorted_cp_dates:
+            v = ride_cp_by_date[d]
+            if not prefix_max or v > prefix_max[-1]:
+                prefix_max.append(v)
+            else:
+                prefix_max.append(prefix_max[-1])
+
         for act in activity_dicts:
             activity_id = act.get("id", "")
             if not activity_id:
@@ -221,13 +277,16 @@ def run_analyze() -> dict:
             if stream_id.startswith("garmin_"):
                 stream_id = stream_id[len("garmin_"):]
 
-            power_rows = db.get_activity_streams(stream_id, "power")
+            def _get_streams(sid: str, metric: str):
+                return streams_by_id_metric.get((sid, metric), [])
+
+            power_rows = _get_streams(stream_id, "power")
             power_samples = _deduplicate_samples(power_rows) if power_rows else []
 
-            hr_rows = db.get_activity_streams(stream_id, "heart_rate")
+            hr_rows = _get_streams(stream_id, "heart_rate")
             hr_samples = _deduplicate_samples(hr_rows) if hr_rows else []
 
-            dfa_rows = db.get_activity_streams(stream_id, "dfa_a1")
+            dfa_rows = _get_streams(stream_id, "dfa_a1")
             dfa_samples = [float(r["value"]) for r in dfa_rows] if dfa_rows else []
             duration = len(power_samples) if power_samples else 0
 
@@ -253,22 +312,15 @@ def run_analyze() -> dict:
                 db.store_activity_metrics(activity_id, {"ride_cp": ride_cp_est})
 
             # Rolling 90-day CP: max ride_cp from last 90 days (including this ride).
-            # Stored as cp_used for this activity. Falls back to ride_cp_est
-            # when the window is empty (first rides with power data).
+            # Computed from pre-fetched sorted dates + prefix max (O(log n) per activity).
             current_cp = 0.0
             if act_date is not None:
                 cutoff = (act_date - timedelta(days=90)).strftime("%Y-%m-%d")
-                act_date_str = act_date.strftime("%Y-%m-%d")
-                max_row = db.conn.execute(
-                    "SELECT MAX(m.ride_cp) FROM activity_metrics m "
-                    "JOIN activities a ON a.id = m.activity_id "
-                    "WHERE m.ride_cp IS NOT NULL "
-                    "AND substr(a.start_date, 1, 10) >= ? "
-                    "AND substr(a.start_date, 1, 10) <= ?",
-                    (cutoff, act_date_str),
-                ).fetchone()
-                if max_row and max_row[0] is not None:
-                    current_cp = max_row[0]
+                act_date_str_fmt = act_date.strftime("%Y-%m-%d")
+                lo = bisect.bisect_left(sorted_cp_dates, cutoff)
+                hi = bisect.bisect_right(sorted_cp_dates, act_date_str_fmt)
+                if lo < hi and hi - 1 < len(prefix_max):
+                    current_cp = prefix_max[hi - 1]
             # Fallback: use this ride's own CP estimate if window is empty
             if current_cp <= 0 and ride_cp_est is not None:
                 current_cp = ride_cp_est
