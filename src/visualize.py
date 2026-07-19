@@ -1397,26 +1397,23 @@ def _render_trends():
         return
 
     df_wellness = pd.DataFrame(wellness_data)
-    # ---- Critical Power: bars (per-activity) + decay line ----
+    # ---- Critical Power: bars (per-activity ride CP) + decay line ----
     if cp_chart_data:
         df_cp = pd.DataFrame(cp_chart_data)
 
-        # Compute smooth decay line: for each date in range, decay from
-        # the most recent CP value backward using half-life 42 days.
+        # Compute smooth decay line from cp_used (decayed CP per activity)
         import math as _math
         from datetime import date as _date, timedelta as _td
         decay_half_life = 42.0
-        # Build decay line by interpolating between activity CP values
-        dates = [_date.fromisoformat(d["date"]) for d in cp_chart_data]
-        cps = [d["cp_used"] for d in cp_chart_data]
         decay_dates = []
         decay_vals = []
+        dates = [_date.fromisoformat(d["date"]) for d in cp_chart_data]
+        cps = [d["cp_used"] for d in cp_chart_data]
         if dates:
             start_d = dates[0]
             end_d = dates[-1]
             d = start_d
             while d <= end_d:
-                # Find the latest activity on or before this date
                 prev_cp = None
                 prev_d = None
                 for i in range(len(dates)):
@@ -1432,21 +1429,38 @@ def _render_trends():
                     decay_vals.append(round(decayed, 1))
                 d += _td(days=1)
 
-        fig = px.bar(
-            df_cp, x="date", y="cp_used", opacity=0.6,
-            labels={"cp_used": "CP (W)", "date": ""},
-            title="Critical Power",
-            template=trend_template,
-        )
-        fig.update_traces(marker_color="#9467bd", marker_line_width=0, name="Activity CP")
+        # Fetch ride_cp values for bars
+        ride_cp_rows = db.conn.execute(
+            "SELECT a.start_date, m.ride_cp "
+            "FROM activity_metrics m JOIN activities a ON a.id = m.activity_id "
+            "WHERE m.ride_cp IS NOT NULL AND a.start_date >= ? AND a.start_date <= ?",
+            (oldest, newest),
+        ).fetchall()
+
+        fig = go.Figure()
+        if ride_cp_rows:
+            bar_dates = [r[0][:10] for r in ride_cp_rows]
+            bar_vals = [r[1] for r in ride_cp_rows]
+            fig.add_trace(go.Bar(
+                x=bar_dates, y=bar_vals, name="Ride CP",
+                marker_color="#9467bd", opacity=0.6,
+                hovertemplate="Date: %{x}<br>CP: %{y:.0f} W<extra></extra>",
+            ))
         if decay_dates:
             fig.add_trace(go.Scatter(
                 x=decay_dates, y=decay_vals,
                 mode="lines", name="CP Decay",
                 line=dict(width=2, color="#e0e0e0"),
                 opacity=0.5,
+                hovertemplate="Date: %{x}<br>CP: %{y:.0f} W<extra></extra>",
             ))
-        fig.update_layout(height=280, margin=dict(l=40, r=20, t=35, b=40))
+        fig.update_layout(
+            title="Critical Power",
+            height=280, margin=dict(l=40, r=20, t=35, b=40),
+            template=trend_template,
+            yaxis_title="CP (W)",
+            legend=dict(title=""),
+        )
         fig.update_xaxes(tickangle=45)
         st.plotly_chart(fig, width="stretch")
 

@@ -80,6 +80,7 @@ class CyclingDB:
 
         columns = {
             "cp_used": "REAL",
+            "ride_cp": "REAL",
             "hr_tss": "REAL",
             "hr_trimp": "REAL",
         }
@@ -1140,7 +1141,7 @@ class CyclingDB:
         """
         # Read existing row to preserve columns not in this update
         existing = self.conn.execute(
-            "SELECT ftp_used, cp_used, normalized_power, intensity_factor, tss, "
+            "SELECT ftp_used, cp_used, ride_cp, normalized_power, intensity_factor, tss, "
             "variability_index, w_prime_capacity, w_prime_min_balance, "
             "decoupling_drift, duration_sec, hr_tss, hr_trimp "
             "FROM activity_metrics WHERE activity_id = ?",
@@ -1150,30 +1151,32 @@ class CyclingDB:
         if existing is not None:
             existing_dict = {
                 "cp_used": existing[1],
-                "normalized_power": existing[2],
-                "intensity_factor": existing[3],
-                "tss": existing[4],
-                "variability_index": existing[5],
-                "w_prime_capacity": existing[6],
-                "w_prime_min_balance": existing[7],
-                "decoupling_drift": existing[8],
-                "duration_sec": existing[9],
-                "hr_tss": existing[10],
-                "hr_trimp": existing[11],
+                "ride_cp": existing[2],
+                "normalized_power": existing[3],
+                "intensity_factor": existing[4],
+                "tss": existing[5],
+                "variability_index": existing[6],
+                "w_prime_capacity": existing[7],
+                "w_prime_min_balance": existing[8],
+                "decoupling_drift": existing[9],
+                "duration_sec": existing[10],
+                "hr_tss": existing[11],
+                "hr_trimp": existing[12],
             }
             existing_dict.update(metrics)
             metrics = existing_dict
 
         self.conn.execute(
             "INSERT OR REPLACE INTO activity_metrics "
-            "(activity_id, ftp_used, cp_used, normalized_power, intensity_factor, tss, "
+            "(activity_id, ftp_used, cp_used, ride_cp, normalized_power, intensity_factor, tss, "
             "variability_index, w_prime_capacity, w_prime_min_balance, "
             "decoupling_drift, duration_sec, hr_tss, hr_trimp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 activity_id,
                 metrics.get("ftp_used"),
                 metrics.get("cp_used"),
+                metrics.get("ride_cp"),
                 metrics.get("normalized_power"),
                 metrics.get("intensity_factor"),
                 metrics.get("tss"),
