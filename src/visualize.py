@@ -1290,25 +1290,18 @@ def _render_trends():
     oldest = preset_start.isoformat()
     newest = preset_end.isoformat()
 
-    # ---- Gather activity data ----
-    # CP chart: only show data within selected range
-    metrics_rows = db.get_activity_metrics_by_date()
+    # ---- Critical Power trend ----
+    # CP is estimated per-activity using a rolling 90-day PDC window
+    # in main.py. The chart plots these values filtered to the selected range.
+    all_metrics_for_cp = db.get_activity_metrics_by_date()
     cp_chart_data = []
-
-    # Aggregate CP by month: take the latest CP estimate per month.
-    # This avoids a flat line when many activities share the same CP.
-    cp_by_month: dict[str, float] = {}
-    for row in metrics_rows:
+    for row in all_metrics_for_cp:
         sd = row.get("start_date")
         cp_val = row.get("cp_used")
         if not sd or cp_val is None:
             continue
-        month_key = sd[:7]  # "YYYY-MM"
-        if month_key not in cp_by_month or sd > cp_by_month.get(month_key + "_date", ""):
-            cp_by_month[month_key] = cp_val
-            cp_by_month[month_key + "_date"] = sd
-    for month_key in sorted(k for k in cp_by_month if not k.endswith("_date")):
-        cp_chart_data.append({"date": month_key + "-01", "cp_used": cp_by_month[month_key]})
+        if oldest <= sd[:10] <= newest:
+            cp_chart_data.append({"date": sd[:10], "cp_used": cp_val})
 
     # CTL/ATL/TSB: always compute from full history, then filter to range.
     # This ensures CTL/ATL reflect the true accumulated training load

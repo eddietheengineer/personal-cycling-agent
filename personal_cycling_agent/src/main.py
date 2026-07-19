@@ -251,26 +251,29 @@ def run_analyze() -> dict:
             except ValueError:
                 act_date = None
 
-            # --- Update CP from recent PDC data (rolling window) ---
-            # CP reflects current fitness, not all-time best. Use a rolling
-            # window of recent activities so CP tracks changes as training varies.
+            # --- CP decay + bump model (eFTP style) ---
+            # CP decays over time (half-life 42 days). It bumps up only
+            # when a new effort (3-min best) exceeds the decaying estimate.
+            # This matches TrainingPeaks/intervals.icu eFTP behavior.
+            import math as _math
+            if act_date is not None and last_activity_date is not None:
+                days_since = (act_date - last_activity_date).days
+                if days_since > 0:
+                    decay = _math.exp(-_math.log(2) * days_since / 42.0)
+                    current_cp = current_cp * decay
+
             if power_samples:
                 try:
                     pdc = _compute_power_duration_curve(np.array(power_samples, dtype=np.float64))
-                    cp_pdc_data.append({
-                        "power_duration_curve": pdc,
-                        "date": act_date_str,
-                    })
-                    # Prune to last 90 days of activity data
-                    if act_date is not None:
-                        cutoff = (act_date - timedelta(days=90)).isoformat()
-                        cp_pdc_data = [
-                            d for d in cp_pdc_data
-                            if d.get("date", "") >= cutoff
-                        ]
-                    cp_est, wp_est = estimate_critical_power(cp_pdc_data)
-                    if cp_est > 50:  # sanity floor: CP below 50W is noise
-                        current_cp = cp_est
+                    ride_3min = pdc.get(180, 0)
+                    if ride_3min > 0 and ride_3min < 300:
+                        ride_cp = ride_3min / 1.3
+                        if ride_cp > current_cp:
+                            current_cp = ride_cp
+                            logger.info(
+                                f"CP bump from {activity_id}: "
+                                f"{current_cp:.0f}W (3min={ride_3min:.0f}W)"
+                            )
                 except Exception as e:
                     logger.warning(f"CP estimation failed for {activity_id}: {e}")
 
