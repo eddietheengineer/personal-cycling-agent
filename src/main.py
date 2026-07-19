@@ -170,32 +170,9 @@ def run_analyze() -> dict:
             [dict(a) for a in activities],
             key=lambda a: a.get("start_date", ""),
         )
-        # --- Walk chronologically, building CP over time ---
-        # CP starts from the profile FTP. We maintain a running estimate
-        # by accumulating PDC data across all activities and re-fitting
-        # the 2-parameter CP model after each activity. This produces a
-        # per-activity CP estimate suitable for trending over time.
-        profile_cp = float(os.environ.get("CP_WATTS", 0))
-        if profile_cp <= 0:
-            try:
-                profile_path = config.user_profile_path()
-                if profile_path.exists():
-                    for line in profile_path.read_text().splitlines():
-                        line = line.strip()
-                        if line.startswith("- FTP (watts):") or line.startswith("- Critical Power (watts):"):
-                            val = line.split(":")[1].strip()
-                            m = re.search(r"(\d+)", val)
-                            if m:
-                                profile_cp = float(m.group(1))
-                                break
-            except Exception:
-                pass
-        if profile_cp <= 0:
-            profile_cp = 200.0
-            logger.info("No CP set, bootstrapping with 200W default")
-
-        # Rolling 90-day CP: max ride_cp from last 90 days (intervals.icu style).
-        # Old efforts naturally drop out after 90 days.
+        # Walk chronologically, building CP over time.
+        # CP = max ride_cp from last 90 days (intervals.icu style).
+        # Starts at 0 until the first ride with power data.
         _profile = {
             "resting_hr": int(os.environ.get("RESTING_HR", 70)),
             "max_hr": int(os.environ.get("MAX_HR", 190)),
@@ -258,23 +235,7 @@ def run_analyze() -> dict:
                     logger.warning(f"PDC computation failed for {activity_id}: {e}")
 
 
-            # Estimate CP from rolling 90-day window.
-            # CP = max ride_cp from all rides in the last 90 days.
-            # This matches intervals.icu: the best effort in the window
-            # defines CP. Old efforts naturally drop out after 90 days.
-            current_cp = profile_cp
-            if act_date is not None:
-                cutoff = (act_date - timedelta(days=90)).strftime("%Y-%m-%d")
-                max_row = db.conn.execute(
-                    "SELECT MAX(m.ride_cp) FROM activity_metrics m "
-                    "JOIN activities a ON a.id = m.activity_id "
-                    "WHERE m.ride_cp IS NOT NULL AND a.start_date >= ? AND a.start_date <= ?",
-                    (cutoff, act_date.strftime("%Y-%m-%d")),
-                ).fetchone()
-                if max_row and max_row[0] is not None and max_row[0] > profile_cp:
-                    current_cp = max_row[0]
-
-            # Estimate per-ride CP for bar chart (from this ride only)
+            # Compute per-ride CP first (from this ride's PDC only)
             ride_cp_est = None
             if pdc is not None:
                 try:
@@ -291,6 +252,19 @@ def run_analyze() -> dict:
             if ride_cp_est is not None:
                 db.store_activity_metrics(activity_id, {"ride_cp": ride_cp_est})
 
+            # Rolling 90-day CP: max ride_cp from last 90 days (including this ride).
+            # Stored as cp_used for this activity. Starts at 0 until first ride.
+            current_cp = 0.0
+            if act_date is not None:
+                cutoff = (act_date - timedelta(days=90)).strftime("%Y-%m-%d")
+                max_row = db.conn.execute(
+                    "SELECT MAX(m.ride_cp) FROM activity_metrics m "
+                    "JOIN activities a ON a.id = m.activity_id "
+                    "WHERE m.ride_cp IS NOT NULL AND a.start_date >= ? AND a.start_date <= ?",
+                    (cutoff, act_date.strftime("%Y-%m-%d")),
+                ).fetchone()
+                if max_row and max_row[0] is not None:
+                    current_cp = max_row[0]
             # --- Compute power metrics with current CP ---
             pm_result = None
             if power_samples and current_cp > 0:
