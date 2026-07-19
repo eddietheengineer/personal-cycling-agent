@@ -257,11 +257,14 @@ def run_analyze() -> dict:
             current_cp = 0.0
             if act_date is not None:
                 cutoff = (act_date - timedelta(days=90)).strftime("%Y-%m-%d")
+                act_date_str = act_date.strftime("%Y-%m-%d")
                 max_row = db.conn.execute(
                     "SELECT MAX(m.ride_cp) FROM activity_metrics m "
                     "JOIN activities a ON a.id = m.activity_id "
-                    "WHERE m.ride_cp IS NOT NULL AND a.start_date >= ? AND a.start_date <= ?",
-                    (cutoff, act_date.strftime("%Y-%m-%d")),
+                    "WHERE m.ride_cp IS NOT NULL "
+                    "AND substr(a.start_date, 1, 10) >= ? "
+                    "AND substr(a.start_date, 1, 10) <= ?",
+                    (cutoff, act_date_str),
                 ).fetchone()
                 if max_row and max_row[0] is not None:
                     current_cp = max_row[0]
