@@ -1414,17 +1414,18 @@ def _render_trends():
                     decay_vals.append(round(decayed, 1))
                 d += _td(days=1)
 
-        # Fetch ride_cp values for bars
+        # Fetch ride_cp values for bars, aggregated by date (max per day)
         ride_cp_rows = db.conn.execute(
-            "SELECT a.start_date, m.ride_cp "
+            "SELECT substr(a.start_date, 1, 10) AS dt, MAX(m.ride_cp) AS max_ride_cp "
             "FROM activity_metrics m JOIN activities a ON a.id = m.activity_id "
-            "WHERE m.ride_cp IS NOT NULL AND a.start_date >= ? AND a.start_date <= ?",
+            "WHERE m.ride_cp IS NOT NULL AND a.start_date >= ? AND a.start_date <= ? "
+            "GROUP BY substr(a.start_date, 1, 10)",
             (oldest, newest),
         ).fetchall()
 
         fig = go.Figure()
         if ride_cp_rows:
-            bar_dates = [r[0][:10] for r in ride_cp_rows]
+            bar_dates = [r[0] for r in ride_cp_rows]
             bar_vals = [r[1] for r in ride_cp_rows]
             fig.add_trace(go.Bar(
                 x=bar_dates, y=bar_vals, name="Ride CP",
