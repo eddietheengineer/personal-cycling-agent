@@ -172,7 +172,6 @@ def run_analyze() -> dict:
         pm_config = config.vault_path() / "excluded_power_meters.json"
         if pm_config.exists():
             try:
-                import json
                 excluded_pm = set(json.loads(pm_config.read_text()))
             except Exception:
                 pass
@@ -259,9 +258,18 @@ def run_analyze() -> dict:
                     if cp_est > 50:
                         ride_cp_est = cp_est
                     else:
-                        ride_3min = pdc.get(180, 0)
-                        if ride_3min > 0 and ride_3min < 600:
-                            ride_cp_est = ride_3min / 1.3
+                        # Fallback: use longest available duration in PDC
+                        # MTB rides often have short contiguous power segments
+                        # due to frequent stops. Try 3min, then 2min, then 1min.
+                        ride_cp_est = None
+                        for dur in [180, 120, 60]:
+                            pwr = pdc.get(dur, 0)
+                            if pwr > 0 and pwr < 600:
+                                # Scale up for shorter durations (CP is asymptote)
+                                # 2min: divide by 1.25, 1min: divide by 1.2
+                                scale = {180: 1.3, 120: 1.25, 60: 1.2}[dur]
+                                ride_cp_est = pwr / scale
+                                break
                 except Exception:
                     pass
             if ride_cp_est is not None:

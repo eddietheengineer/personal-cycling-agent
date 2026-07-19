@@ -158,9 +158,9 @@ def _compute_power_duration_curve(power: np.ndarray) -> dict[int, float]:
     """
     Compute the best N-second average power for a set of standard durations.
 
-    Finds contiguous segments of positive power (>0W), then computes the best
-    rolling average within each segment. This prevents zero-power gaps (stops,
-    rest) from being stitched together into artificially high averages.
+    Uses rolling averages over the entire ride (including zero-power segments).
+    A 20-minute average that includes stops is still a valid effort — it tells
+    us about sustained capacity over that time period.
     """
     n = len(power)
     curve: dict[int, float] = {}
@@ -171,38 +171,18 @@ def _compute_power_duration_curve(power: np.ndarray) -> dict[int, float]:
         return curve
 
     # Filter out obviously bad power samples (>2000W = sensor glitch/overflow)
-    # Old power meters (e.g., early SRM, 16-bit unsigned overflow) can produce
-    # values like 65505W. Replace with 0 to exclude from segments.
     power = np.where(power > 2000, 0.0, power)
 
-    # Find contiguous segments of positive power
-    segments: list[tuple[int, int]] = []  # (start, end) exclusive
-    in_segment = False
-    seg_start = 0
-    for i in range(n):
-        if power[i] > 0 and not in_segment:
-            in_segment = True
-            seg_start = i
-        elif power[i] == 0 and in_segment:
-            in_segment = False
-            segments.append((seg_start, i))
-    if in_segment:
-        segments.append((seg_start, n))
+    # Cumulative sum for efficient rolling window computation
+    cumsum = np.cumsum(power)
+    cumsum = np.insert(cumsum, 0, 0.0)
 
     for dur in _PDC_DURATIONS:
-        best = 0.0
-        for seg_start, seg_end in segments:
-            seg_len = seg_end - seg_start
-            if seg_len < dur:
-                continue
-            seg = power[seg_start:seg_end]
-            cumsum = np.cumsum(seg)
-            cumsum = np.insert(cumsum, 0, 0.0)
-            window_sums = cumsum[dur:] - cumsum[:-dur]
-            seg_best = float(np.max(window_sums) / dur)
-            if seg_best > best:
-                best = seg_best
-        curve[dur] = best
+        if n < dur:
+            curve[dur] = 0.0
+            continue
+        window_sums = cumsum[dur:] - cumsum[:-dur]
+        curve[dur] = float(np.max(window_sums) / dur)
 
     return curve
 
