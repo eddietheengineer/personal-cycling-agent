@@ -412,3 +412,109 @@ class TestSyncState:
         instance.set_last_synced("garmin_wellness", "2025-01-14")
         instance.set_last_synced("garmin_wellness", "2025-01-15")
         assert instance.get_last_synced("garmin_wellness") == "2025-01-15"
+
+
+class TestRefreshActivitiesDistance:
+    """Test that refresh_activities handles distance correctly.
+
+    Garmin API returns distance in meters (not cm).
+    FIT session total_distance is in meters.
+    FIT distance should override API distance when available.
+    """
+
+    def _setup_raw_data(self, db_inst):
+        """Insert raw_activities and raw_fit_sessions for testing."""
+        db_inst.store_raw_activity(12345, {
+            "startTimeLocal": "2026-01-01T10:00:00",
+            "activityTypeKey": "cycling",
+            "duration": 3600000,  # 1 hour in ms
+            "distance": 30000,  # 30km in meters (API returns meters!)
+            "avgPower": 200,
+            "maxPower": 400,
+            "avgHeartRate": 140,
+            "maxHeartRate": 170,
+            "calories": 600,
+            "raw_json": "{}",
+        })
+
+    def test_api_distance_not_divided_by_100(self, db):
+        """API distance is in meters and should NOT be divided by 100."""
+        inst, _ = db
+        self._setup_raw_data(inst)
+
+        # No FIT data — API distance should be used as-is
+        count = inst.refresh_activities()
+        assert count == 1
+
+        rows = inst.conn.execute("SELECT distance FROM activities WHERE id = 'garmin_12345'").fetchall()
+        assert len(rows) == 1
+        # API distance is 30000 meters — should NOT be divided by 100
+        assert rows[0]["distance"] == 30000.0
+
+    def test_fit_distance_overrides_api(self, db):
+        """FIT distance overrides API distance when available."""
+        inst, _ = db
+        self._setup_raw_data(inst)
+
+        # FIT says 30500m (slightly different from API 30000m)
+        inst.store_raw_fit_session(12345, {
+            "total_elapsed_time_ms": 3600000,
+            "total_distance_m": 30500.0,
+            "sport": "cycling",
+            "avg_heart_rate": 141.0,
+            "max_heart_rate": 171.0,
+            "total_calories": 610,
+        })
+
+        count = inst.refresh_activities()
+        assert count == 1
+
+        rows = inst.conn.execute("SELECT distance FROM activities WHERE id = 'garmin_12345'").fetchall()
+        assert rows[0]["distance"] == 30500.0
+
+    def test_fit_distance_zero_does_not_override(self, db):
+        """FIT distance of 0 should not override a valid API distance."""
+        inst, _ = db
+        self._setup_raw_data(inst)
+
+        inst.store_raw_fit_session(12345, {
+            "total_elapsed_time_ms": 3600000,
+            "total_distance_m": 0,  # zero distance
+            "sport": "cycling",
+        })
+
+        count = inst.refresh_activities()
+        assert count == 1
+
+        rows = inst.conn.execute("SELECT distance FROM activities WHERE id = 'garmin_12345'").fetchall()
+        # API distance (30000m) should be kept since FIT is 0
+        assert rows[0]["distance"] == 30000.0
+
+    def test_no_fit_data_uses_api_distance(self, db):
+        """Activities without FIT data use API distance correctly."""
+        inst, _ = db
+        self._setup_raw_data(inst)
+        # Don't store any FIT session
+
+        count = inst.refresh_activities()
+        assert count == 1
+
+        rows = inst.conn.execute("SELECT distance FROM activities WHERE id = 'garmin_12345'").fetchall()
+        assert rows[0]["distance"] == 30000.0
+
+    def test_api_distance_short_ride(self, db):
+        """Short ride: API distance in meters is correct."""
+        inst, _ = db
+        inst.store_raw_activity(99999, {
+            "startTimeLocal": "2026-01-01T10:00:00",
+            "activityTypeKey": "walking",
+            "duration": 600000,  # 10 min
+            "distance": 1500,  # 1.5km in meters
+            "raw_json": "{}",
+        })
+
+        count = inst.refresh_activities()
+        assert count == 1
+
+        rows = inst.conn.execute("SELECT distance FROM activities WHERE id = 'garmin_99999'").fetchall()
+        assert rows[0]["distance"] == 1500.0

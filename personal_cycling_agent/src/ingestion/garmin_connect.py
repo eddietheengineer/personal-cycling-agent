@@ -732,17 +732,17 @@ def _garmin_activity_to_store_format(activity: dict[str, Any]) -> dict[str, Any]
         activity_type_key.title() if activity_type_key else "Activity",
     )
 
-    # Garmin API: duration is milliseconds, distance is centimeters
-    # Convert to seconds and meters for storage
+    # Garmin API: duration is milliseconds, distance is meters
+    # Convert duration to seconds for storage
     duration_ms = activity.get("duration") or 0
-    distance_cm = activity.get("distance") or 0
+    distance_m = activity.get("distance") or 0
 
     return {
         "id": f"garmin_{activity_id}",
         "start_date_local": start_time_local,
         "type": activity_type,
         "duration": duration_ms / 1000.0,
-        "distance": distance_cm / 100.0,
+        "distance": distance_m,
         "average_power": activity.get("avgPower"),
         "max_power": activity.get("maxPower"),
         "average_hr": activity.get("avgHeartRate"),

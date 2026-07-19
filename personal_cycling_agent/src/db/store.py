@@ -832,7 +832,7 @@ class CyclingDB:
         """Rebuild the activities table from raw data.
 
         For each garmin_id in raw_activities:
-        - Start with API values (duration_ms/1000, distance_cm/100)
+        - Start with API values (duration_ms/1000, distance_m as-is)
         - Override with FIT session values if available and reasonable
         - Override duration with stream-derived duration_sec from activity_metrics
         - Extract API-only fields from raw_json
@@ -868,7 +868,7 @@ class CyclingDB:
 
             # Start with API values
             duration = (row["duration_ms"] or 0) / 1000.0
-            distance = (row["distance_cm"] or 0) / 100.0
+            distance = (row["distance_cm"] or 0)  # Column named cm but stores meters
             avg_power = row["avg_power"]
             max_power = row["max_power"]
             avg_hr = row["avg_heart_rate"]
