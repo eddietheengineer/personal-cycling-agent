@@ -35,6 +35,24 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from src import config
+from src.config.constants import (
+    SYNC_LOG_CAP,
+    DEFAULT_CTL_FALLBACK,
+    DEFAULT_ATL_FALLBACK,
+    READINESS_GOOD_THRESHOLD,
+    READINESS_MODERATE_THRESHOLD,
+    CTL_VERY_HIGH,
+    CTL_HIGH,
+    CTL_MODERATE,
+    TSB_FRESH,
+    TSB_NEUTRAL_FLOOR,
+    TSB_TIRED,
+    MAX_SYNC_DAYS,
+    MS_TO_KMH,
+    MILES_TO_KM,
+    EARTH_RADIUS_KM,
+    HTTP_TIMEOUT_SEC,
+)
 from src.db.store import CyclingDB
 from src.analytics.training_load import compute_training_load_history
 from src.ui_helpers import (
@@ -75,8 +93,8 @@ def _sync_progress_callback(pct: int, msg: str) -> None:
             return
     log.append(entry)
     # Cap log to avoid websocket frame overflow on long historical syncs
-    if len(log) > 500:
-        st.session_state.sync_log = log[-500:]
+    if len(log) > SYNC_LOG_CAP:
+        st.session_state.sync_log = log[-SYNC_LOG_CAP:]
     st.session_state.sync_progress = pct
 
 
@@ -534,14 +552,14 @@ def _render_week_strip():
             from src.analytics.weekly_planner import _project_ctl_atl
             from src import config as cfg
             result_path = cfg.vault_path() / "data" / "latest_analysis.json"
-            ctl_val, atl_val = 80.0, 60.0
+            ctl_val, atl_val = DEFAULT_CTL_FALLBACK, DEFAULT_ATL_FALLBACK
             if result_path.exists():
                 import json
                 with open(result_path) as f:
                     analysis = json.load(f)
                 tl = analysis.get("training_load", {})
-                ctl_val = tl.get("ctl", 80.0)
-                atl_val = tl.get("atl", 60.0)
+                ctl_val = tl.get("ctl", DEFAULT_CTL_FALLBACK)
+                atl_val = tl.get("atl", DEFAULT_ATL_FALLBACK)
             daily_tss = [d.target_tss for d in plan.days]
             ctl_s, atl_s = _project_ctl_atl(ctl_val, atl_val, daily_tss)
             tsb_s = [c - a for c, a in zip(ctl_s, atl_s)]
@@ -591,9 +609,9 @@ def _render_readiness_card():
 
     state = readiness.get("state", "unknown").replace("_", " ").title()
     score = readiness.get("composite_score", 0)
-    if score >= 70:
+    if score >= READINESS_GOOD_THRESHOLD:
         color = "#4caf50"
-    elif score >= 50:
+    elif score >= READINESS_MODERATE_THRESHOLD:
         color = "#ff9800"
     else:
         color = "#f44336"
@@ -626,11 +644,11 @@ def _render_readiness_card():
         c_cols = st.columns(3)
         # CTL thresholds per Coggan (TrainingPeaks Performance Manager):
         # <100 undertraining, 100-150 optimal, >150 unsustainable
-        if ctl > 150:
+        if ctl > CTL_VERY_HIGH:
             ctl_status = "🟠 Very high (unsustainable long-term)"
-        elif ctl > 100:
+        elif ctl > CTL_HIGH:
             ctl_status = "🟢 Optimal fitness base"
-        elif ctl > 50:
+        elif ctl > CTL_MODERATE:
             ctl_status = "🟡 Building (room to add volume)"
         else:
             ctl_status = "🔴 Low (undertraining)"
@@ -641,16 +659,16 @@ def _render_readiness_card():
             atl_status = "🔴 Very high (heavy fatigue)"
         elif tsb < 0:
             atl_status = "🟠 Elevated (fatigued)"
-        elif tsb < 10:
+        elif tsb < TSB_FRESH:
             atl_status = "🟡 Moderate (normal training)"
         else:
             atl_status = "🟢 Low (recovered)"
         c_cols[1].markdown(f"**ATL {atl:.0f}** {atl_status}")
 
         # TSB thresholds per Coggan: <−10 not fresh, −10 to +10 neutral, >+10 fresh
-        if tsb > 10:
+        if tsb > TSB_FRESH:
             tsb_status = "🟢 Fresh"
-        elif tsb > -10:
+        elif tsb > TSB_NEUTRAL_FLOOR:
             tsb_status = "🟡 Neutral"
         else:
             tsb_status = "🔴 Fatigued"
@@ -1113,7 +1131,7 @@ def _render_activity_detail():
 
         # Garmin speed is in m/s; convert to km/h for display
         if metric == "speed":
-            values = [v * 3.6 for v in values]
+            values = [v * MS_TO_KMH for v in values]
 
         y_label = metric_labels.get(metric, metric)
         title = y_label
@@ -1281,9 +1299,9 @@ def _render_trends():
                     ))
 
             # Add zone bands for TSB
-            fig.add_hline(y=10, line_dash="dot", line_color=tsb_color, opacity=0.4, annotation_text="Fresh")
-            fig.add_hline(y=-10, line_dash="dot", line_color="#dc3545", opacity=0.4, annotation_text="Tired")
-            fig.add_hrect(y0=-10, y1=10, fillcolor="grey", opacity=0.12, layer="below")
+            fig.add_hline(y=TSB_FRESH, line_dash="dot", line_color=tsb_color, opacity=0.4, annotation_text="Fresh")
+            fig.add_hline(y=TSB_TIRED, line_dash="dot", line_color="#dc3545", opacity=0.4, annotation_text="Tired")
+            fig.add_hrect(y0=TSB_NEUTRAL_FLOOR, y1=TSB_FRESH, fillcolor="grey", opacity=0.12, layer="below")
 
             st.plotly_chart(fig, width="stretch")
 
@@ -1468,10 +1486,10 @@ def _render_map():
         return
 
     # Filter matching activities using haversine approximation
-    radius_km = radius_miles * 1.60934
+    radius_km = radius_miles * MILES_TO_KM
     center_lat_rad = math.radians(center_lat)
     center_lon_rad = math.radians(center_lon)
-    R = 6371.0  # Earth radius in km
+    R = EARTH_RADIUS_KM  # Earth radius in km
 
     matching_ids = []
     for activity_id, c_lat, c_lon in centroids:
@@ -1636,9 +1654,9 @@ def _render_profile():
 
         # Color-coded reference bar matching slider range (-30 to +10)
         # -10 is at 50% of the range
-        if tsb_floor < -10:
+        if tsb_floor < TSB_TIRED:
             zone_color, zone = "#dc3545", "Red (Tired)"
-        elif tsb_floor <= 10:
+        elif tsb_floor <= TSB_FRESH:
             zone_color, zone = "#868e96", "Grey (Zero Form)"
         else:
             zone_color, zone = "#28a745", "Green (Fresh)"
@@ -1972,14 +1990,14 @@ def _render_garmin_setup():
         if not st.session_state.get("syncing") and not st.session_state.get("rearsing"):
             from src.tasks.worker import background_sync
             background_sync(
-                days=3650,
+                days=MAX_SYNC_DAYS,
                 unbounded=True,
                 run_analyze_after=True,
             )
             st.session_state.syncing = True
             st.session_state.sync_origin = "settings"
             st.session_state.sync_mode = "all"
-            st.session_state.sync_days = 3650
+            st.session_state.sync_days = MAX_SYNC_DAYS
             st.session_state.sync_result = None
             st.session_state.sync_error = None
             st.session_state.sync_log = []
@@ -1997,14 +2015,14 @@ def _render_garmin_setup():
 
             from src.tasks.worker import background_sync
             background_sync(
-                days=3650,
+                days=MAX_SYNC_DAYS,
                 unbounded=True,
                 run_analyze_after=True,
             )
             st.session_state.syncing = True
             st.session_state.sync_origin = "settings"
             st.session_state.sync_mode = "all"
-            st.session_state.sync_days = 3650
+            st.session_state.sync_days = MAX_SYNC_DAYS
             st.session_state.sync_result = None
             st.session_state.sync_error = None
             st.session_state.sync_log = []
@@ -2290,9 +2308,9 @@ def _display_sync_results(result: dict) -> None:
             state = readiness.get("state", "unknown")
 
             # Color-coded score
-            if score >= 70:
+            if score >= READINESS_GOOD_THRESHOLD:
                 emoji = "🟢"
-            elif score >= 50:
+            elif score >= READINESS_MODERATE_THRESHOLD:
                 emoji = "🟡"
             else:
                 emoji = "🔴"
@@ -2384,9 +2402,9 @@ def _generate_readiness_explanation(analyze_result: dict) -> str:
 
     # Training load context
     if ctl and atl:
-        if ctl > 100:
+        if ctl > CTL_HIGH:
             load_note = "Your chronic training load (CTL) is high, meaning you've built a solid fitness base."
-        elif ctl > 50:
+        elif ctl > CTL_MODERATE:
             load_note = f"Your chronic training load (CTL {ctl:.0f}) is moderate — you're building fitness steadily."
         else:
             load_note = f"Your chronic training load (CTL {ctl:.0f}) is low — there's room to build volume."
@@ -2396,13 +2414,13 @@ def _generate_readiness_explanation(analyze_result: dict) -> str:
             parts.append("Your training stress balance is deeply negative — you're in a fatigue phase. Recovery sessions only.")
         elif tsb < 0:
             parts.append("Your training stress balance is slightly negative — you're accumulating some fatigue. Keep today moderate.")
-        elif tsb > 20:
+        elif tsb > TSB_FRESH:
             parts.append("Your training stress balance is positive — you're in a recovery phase. Good day for a harder effort.")
 
     # Recommendation
-    if score >= 70:
+    if score >= READINESS_GOOD_THRESHOLD:
         parts.append("Overall: you're in good shape to train today as planned.")
-    elif score >= 50:
+    elif score >= READINESS_MODERATE_THRESHOLD:
         parts.append("Overall: keep today moderate. If you feel off, err on the side of lighter effort.")
     else:
         parts.append("Overall: today should be easy — recovery ride, walk, or rest. Don't push it.")
@@ -2471,7 +2489,7 @@ def _render_llm_settings():
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         try:
-            resp = requests.get(test_url, headers=headers, timeout=10)
+            resp = requests.get(test_url, headers=headers, timeout=HTTP_TIMEOUT_SEC)
             if resp.status_code == 200:
                 data = resp.json()
                 models = [m.get("id", "") for m in data.get("data", [])]

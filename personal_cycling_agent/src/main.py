@@ -27,6 +27,7 @@ PROJECT_ROOT = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 VENV_DIR = PROJECT_ROOT / ".venv"
 
 from src import config
+from src.config.constants import ROLLING_CP_WINDOW_DAYS
 
 config.setup()
 
@@ -315,7 +316,7 @@ def run_analyze() -> dict:
             # Computed from pre-fetched sorted dates + prefix max (O(log n) per activity).
             current_cp = 0.0
             if act_date is not None:
-                cutoff = (act_date - timedelta(days=90)).strftime("%Y-%m-%d")
+                cutoff = (act_date - timedelta(days=ROLLING_CP_WINDOW_DAYS)).strftime("%Y-%m-%d")
                 act_date_str_fmt = act_date.strftime("%Y-%m-%d")
                 lo = bisect.bisect_left(sorted_cp_dates, cutoff)
                 hi = bisect.bisect_right(sorted_cp_dates, act_date_str_fmt)

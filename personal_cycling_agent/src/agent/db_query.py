@@ -1,3 +1,5 @@
+from src.config.constants import DEFAULT_SQL_QUERY_LIMIT
+
 """
 Safe database query tool for the coach AI.
 
@@ -43,7 +45,7 @@ BLOCKED_PATTERNS = [
 ]
 
 
-def query_db(sql: str, vault_path: Path, limit: int = 100) -> str:
+def query_db(sql: str, vault_path: Path, limit: int = DEFAULT_SQL_QUERY_LIMIT) -> str:
     """
     Execute a read-only SQL query against the cycling database.
 

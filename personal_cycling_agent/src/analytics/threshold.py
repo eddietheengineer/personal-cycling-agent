@@ -13,6 +13,20 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+try:
+    from src.config.constants import (
+        DFA_LT1_TARGET,
+        DFA_LT2_TARGET,
+        DFA_ZONE2_AUDIT_PASS_THRESHOLD,
+        DFA_ZONE2_VIOLATION_THRESHOLD,
+    )
+except ImportError:
+    from ..config.constants import (
+        DFA_LT1_TARGET,
+        DFA_LT2_TARGET,
+        DFA_ZONE2_AUDIT_PASS_THRESHOLD,
+        DFA_ZONE2_VIOLATION_THRESHOLD,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +80,9 @@ def analyze_thresholds(
     activity_id: str,
     power_samples: list[float],
     dfa_samples: list[float],
-    lt1_target: float = 0.75,
-    lt2_target: float = 0.50,
-    zone2_violation_threshold: float = 0.10,
+    lt1_target: float = DFA_LT1_TARGET,
+    lt2_target: float = DFA_LT2_TARGET,
+    zone2_violation_threshold: float = DFA_ZONE2_AUDIT_PASS_THRESHOLD,
 ) -> ThresholdResult:
     """
     Analyze DFA-a1 vs power to find metabolic thresholds.

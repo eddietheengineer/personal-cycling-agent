@@ -18,6 +18,7 @@ import os
 import requests
 
 from src import config
+from src.config.constants import HTTP_TIMEOUT_SEC
 
 _initialized = False
 
@@ -59,7 +60,7 @@ def _discover_models() -> list[str]:
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        resp = requests.get(url, headers=headers, timeout=HTTP_TIMEOUT_SEC)
         if resp.status_code == 200:
             data = resp.json()
             return [m.get("id", "") for m in data.get("data", [])]

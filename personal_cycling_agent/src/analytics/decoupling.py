@@ -13,6 +13,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+try:
+    from src.config.constants import DECOUPLING_DRIFT_THRESHOLD_PCT, DECOUPLING_MIN_SAMPLES
+except ImportError:
+    from ..config.constants import DECOUPLING_DRIFT_THRESHOLD_PCT, DECOUPLING_MIN_SAMPLES
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +36,7 @@ def compute_decoupling(
     activity_id: str,
     power_samples: list[float],
     hr_samples: list[float],
-    drift_threshold: float = 5.0,
+    drift_threshold: float = DECOUPLING_DRIFT_THRESHOLD_PCT,
 ) -> DecouplingResult:
     """
     Compute aerobic decoupling from power and heart rate time series.
@@ -51,7 +55,7 @@ def compute_decoupling(
     """
     # Trim to the shorter array length (FIT files may have slightly different sample counts)
     min_len = min(len(power_samples), len(hr_samples))
-    if min_len < 10:
+    if min_len < DECOUPLING_MIN_SAMPLES:
         return DecouplingResult(
             activity_id=activity_id,
             first_half_pw_hr=0.0,

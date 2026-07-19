@@ -30,28 +30,50 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.ui_helpers import _HR_RANGES, _zone_for_value
+try:
+    from src.config.constants import (
+        BANISTER_B_FEMALE,
+        BANISTER_B_MALE,
+        BANISTER_TRIMP_SCALING,
+        CALIBRATION_FACTOR_MAX,
+        CALIBRATION_FACTOR_MIN,
+        MIN_DUAL_SENSOR_RIDES,
+        MIN_VALID_HR_SAMPLES,
+        THRESHOLD_HR_FRACTION,
+    )
+except ImportError:
+    from ..config.constants import (
+        BANISTER_B_FEMALE,
+        BANISTER_B_MALE,
+        BANISTER_TRIMP_SCALING,
+        CALIBRATION_FACTOR_MAX,
+        CALIBRATION_FACTOR_MIN,
+        MIN_DUAL_SENSOR_RIDES,
+        MIN_VALID_HR_SAMPLES,
+        THRESHOLD_HR_FRACTION,
+    )
 
 logger = logging.getLogger(__name__)
 
 # Banister dTRIMP gender constants (derived from population lactate-HR curves)
 # Male: b=1.92, Female: b=1.67
 # Source: Banister, E.W. (1991) Modeling Elite Athletic Performance
-_BANISTER_B: dict[str, float] = {"male": 1.92, "female": 1.67}
+_BANISTER_B: dict[str, float] = {"male": BANISTER_B_MALE, "female": BANISTER_B_FEMALE}
 
 # Threshold HR fraction of HR reserve for TSS normalization.
 # 0.9 = 90% of HR reserve ≈ lactate threshold for most athletes.
 # A 60-min session at this intensity should produce ~100 TSS.
-_THRESHOLD_HR_FRACTION = 0.9
+_THRESHOLD_HR_FRACTION = THRESHOLD_HR_FRACTION
 
 # Minimum valid HR samples (seconds) to compute a meaningful TRIMP.
-_MIN_HR_SAMPLES = 60
+_MIN_HR_SAMPLES = MIN_VALID_HR_SAMPLES
 
 # Calibration factor bounds — prevent outlier rides from producing extreme factors.
-_CAL_MIN = 0.5
-_CAL_MAX = 3.0
+_CAL_MIN = CALIBRATION_FACTOR_MIN
+_CAL_MAX = CALIBRATION_FACTOR_MAX
 
 # Minimum number of dual-sensor rides for a stable calibration factor.
-_MIN_CAL_RIDES = 3
+_MIN_CAL_RIDES = MIN_DUAL_SENSOR_RIDES
 
 
 @dataclass
@@ -94,7 +116,7 @@ def _banister_trimp(
         hr_r = (hr - resting_hr) / hr_reserve
         hr_r = max(0.0, min(1.0, hr_r))  # clip to [0, 1]
         if hr_r > 0:
-            trimp += (1.0 / 60.0) * hr_r * 0.64 * math.exp(b * hr_r)
+            trimp += (1.0 / 60.0) * hr_r * BANISTER_TRIMP_SCALING * math.exp(b * hr_r)
 
     return round(trimp, 2)
 
@@ -117,7 +139,7 @@ def _trimp_at_threshold_1hr(
         TRIMP score for 60 minutes at threshold.
     """
     hr_r = threshold_hr_fraction
-    return 60.0 * hr_r * 0.64 * math.exp(b * hr_r)
+    return 60.0 * hr_r * BANISTER_TRIMP_SCALING * math.exp(b * hr_r)
 
 
 def _compute_hr_time_in_zones(

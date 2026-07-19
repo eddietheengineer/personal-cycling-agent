@@ -1,3 +1,5 @@
+from src.config.constants import DOWNSAMPLE_MAX_POINTS
+
 """Pure UI helper functions and constants extracted from visualize.py.
 
 These functions have no dependency on Streamlit's ``st`` module or any
@@ -43,7 +45,7 @@ def _stream_id(activity_id: str) -> str:
 # Downsampling / time helpers
 # ---------------------------------------------------------------------------
 
-def _downsample(elapsed: list, values: list, max_points: int = 10_000) -> tuple[list, list]:
+def _downsample(elapsed: list, values: list, max_points: int = DOWNSAMPLE_MAX_POINTS) -> tuple[list, list]:
     """Uniformly downsample to at most *max_points* points."""
     if max_points <= 0:
         return elapsed, values

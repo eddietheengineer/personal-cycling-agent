@@ -13,6 +13,8 @@ from urllib.request import urlopen
 
 import json
 
+from src.config.constants import WEATHER_PRECIP_RIDEABLE, HTTP_TIMEOUT_SEC
+
 logger = logging.getLogger(__name__)
 
 SLOT_HOURS = {
@@ -34,7 +36,7 @@ def _is_clear(hw: dict) -> bool:
     """Check if a weather dict represents rideable conditions."""
     condition = hw.get("condition", "unknown")
     precip = hw.get("precip", 0)
-    return condition not in ("storm", "snow") and precip < 40
+    return condition not in ("storm", "snow") and precip < WEATHER_PRECIP_RIDEABLE
 
 
 def find_rideable_slots(forecast_day: dict, available_hours: list[int],
@@ -107,7 +109,7 @@ def get_weekly_forecast(lat: float, lon: float) -> list[dict]:
         f"&forecast_days=7"
     )
     try:
-        with urlopen(url, timeout=10) as resp:
+        with urlopen(url, timeout=HTTP_TIMEOUT_SEC) as resp:
             data = json.loads(resp.read().decode())
     except Exception as e:
         logger.error("Weather fetch failed: %s", e)

@@ -14,6 +14,8 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
+from src.config.constants import DEFAULT_ANALYSIS_WINDOW_DAYS
+
 logger = logging.getLogger(__name__)
 
 
@@ -1444,7 +1446,7 @@ class CyclingDB:
         return dict(row) if row else None
 
     def get_recent_daily_readiness(
-        self, athlete_id: str, days: int = 30
+        self, athlete_id: str, days: int = DEFAULT_ANALYSIS_WINDOW_DAYS
     ) -> list[dict[str, Any]]:
         """Get recent daily readiness records for an athlete."""
         rows = self.conn.execute(
@@ -1740,7 +1742,7 @@ class CyclingDB:
         ).fetchone()
         return dict(row) if row else None
 
-    def get_morning_checkins(self, limit: int = 30) -> list[dict[str, Any]]:
+    def get_morning_checkins(self, limit: int = DEFAULT_ANALYSIS_WINDOW_DAYS) -> list[dict[str, Any]]:
         """Get recent morning check-ins."""
         rows = self.conn.execute(
             "SELECT * FROM morning_checkin ORDER BY date DESC LIMIT ?", (limit,)

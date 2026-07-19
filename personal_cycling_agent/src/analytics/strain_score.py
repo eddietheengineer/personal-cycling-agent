@@ -15,6 +15,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+try:
+    from src.config.constants import NP_FOURTH_ROOT, NP_POWER_EXPONENT, SECONDS_PER_HOUR
+except ImportError:
+    from ..config.constants import NP_FOURTH_ROOT, NP_POWER_EXPONENT, SECONDS_PER_HOUR
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +149,7 @@ def compute_strain_score(
     aerobic = power <= cp
 
     # Normalization factor
-    norm = pmax / (cp ** 2) * 100.0 / 3600.0
+    norm = pmax / (cp ** 2) * 100.0 / SECONDS_PER_HOUR
 
     ss_pmax = float(np.sum(sr[alactic]) * norm) if np.any(alactic) else 0.0
     ss_wp = float(np.sum(sr[glycolytic]) * norm) if np.any(glycolytic) else 0.0
@@ -156,7 +160,7 @@ def compute_strain_score(
     if ftp > 0 and len(power) > 0:
         np_val = _compute_normalized_power(power)
         if_val = np_val / ftp
-        tss_eq = (len(power) / 3600.0 * np_val * if_val) / ftp * 100.0
+        tss_eq = (len(power) / SECONDS_PER_HOUR * np_val * if_val) / ftp * 100.0
     else:
         tss_eq = 0.0
 
@@ -176,7 +180,7 @@ def _compute_normalized_power(power: np.ndarray) -> float:
     cumsum = np.cumsum(power)
     cumsum = np.insert(cumsum, 0, 0.0)
     ma = (cumsum[30:] - cumsum[:-30]) / 30.0
-    return float(np.mean(ma ** 4)) ** 0.25
+    return float(np.mean(ma ** NP_POWER_EXPONENT)) ** NP_FOURTH_ROOT
 
 
 def strain_score_to_dict(result: StrainScoreResult) -> dict[str, Any]:

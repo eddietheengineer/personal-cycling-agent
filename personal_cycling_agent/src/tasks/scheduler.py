@@ -27,6 +27,7 @@ from datetime import datetime
 from typing import Any
 
 from src import config
+from src.config.constants import DEFAULT_ACTIVITY_SYNC_MINUTES, DEFAULT_WELLNESS_SYNC_HOURS
 from src.tasks.worker import get_default_sync
 
 
@@ -48,8 +49,8 @@ logger = logging.getLogger(__name__)
 
 # ── Defaults ──────────────────────────────────────────────────────────────
 
-DEFAULT_ACTIVITY_MINUTES = 30
-DEFAULT_WELLNESS_HOURS = 6
+DEFAULT_ACTIVITY_MINUTES = DEFAULT_ACTIVITY_SYNC_MINUTES
+DEFAULT_WELLNESS_HOURS = DEFAULT_WELLNESS_SYNC_HOURS
 
 
 def _env_bool(key: str, default: bool = False) -> bool:

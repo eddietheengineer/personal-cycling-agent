@@ -23,6 +23,16 @@ from typing import Any, Callable
 from dataclasses import dataclass
 
 from src import config
+from src.config.constants import (
+    GARMIN_RATE_LIMIT_MIN_INTERVAL,
+    GARMIN_RATE_LIMIT_MAX_BACKOFF,
+    GARMIN_RATE_LIMIT_BACKOFF_FACTOR,
+    GARMIN_ACTIVITY_BATCH_SIZE,
+    GARMIN_FIT_DOWNLOAD_INTERVAL,
+    GARMIN_WELLNESS_POLL_INTERVAL,
+    MAX_SYNC_DAYS,
+    DEFAULT_CLI_SYNC_DAYS,
+)
 from src.db.store import CyclingDB
 
 logger = logging.getLogger(__name__)
@@ -270,9 +280,9 @@ class RateLimiter:
 
     def __init__(
         self,
-        min_interval: float = 1.0,
-        max_backoff: float = 300.0,
-        backoff_factor: float = 2.0,
+        min_interval: float = GARMIN_RATE_LIMIT_MIN_INTERVAL,
+        max_backoff: float = GARMIN_RATE_LIMIT_MAX_BACKOFF,
+        backoff_factor: float = GARMIN_RATE_LIMIT_BACKOFF_FACTOR,
     ):
         self.min_interval = min_interval
         self.max_backoff = max_backoff
@@ -832,7 +842,7 @@ def _sync_activities_batch(
 
     # --- Phase 1: Activity Discovery ---
     new_activities: list[dict[str, Any]] = []
-    batch_size = 100
+    batch_size = GARMIN_ACTIVITY_BATCH_SIZE
     offset = 0
     date_cutoff_reached = False
 
@@ -970,7 +980,7 @@ def _sync_activities_batch(
 
         try:
             _rate_limiter.wait()
-            time.sleep(1.0)  # spread load between downloads
+            time.sleep(GARMIN_FIT_DOWNLOAD_INTERVAL)  # spread load between downloads
             stored = _fetch_activity_streams(client, activity_id, db)
             total_processed += 1
             total_stored += stored
@@ -1273,7 +1283,7 @@ def sync_garmin(
     current_date = last_date  # include today for partial data
     days_synced = 0
     # Cap unbounded sync to 10 years back to avoid datetime underflow
-    max_days = 3650 if unbounded else days
+    max_days = MAX_SYNC_DAYS if unbounded else days
     while days_synced < max_days:
         sync_dates.append(current_date)
         current_date -= timedelta(days=1)
@@ -1709,7 +1719,7 @@ def sync_garmin(
             if progress_callback is not None:
                 pct = 10 + int(i / max(len(fetch_dates), 1) * 80)
                 progress_callback(min(pct, 95), f"Wellness: {target_str} ({i+1}/{len(fetch_dates)} days)")
-            time.sleep(0.5)
+            time.sleep(GARMIN_WELLNESS_POLL_INTERVAL)
             continue
 
         record = {
@@ -1755,7 +1765,7 @@ def sync_garmin(
             pct = 10 + int(i / max(len(fetch_dates), 1) * 80)
             progress_callback(min(pct, 95), f"Wellness: {target_str} ({i+1}/{len(fetch_dates)} days)")
 
-        time.sleep(0.5)
+        time.sleep(GARMIN_WELLNESS_POLL_INTERVAL)
 
     db.close()
     return {
@@ -1919,7 +1929,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     config.setup()
 
-    days = 90
+    days = DEFAULT_CLI_SYNC_DAYS
     if len(_sys.argv) > 1:
         days = int(_sys.argv[1])
 
@@ -1988,7 +1998,7 @@ if __name__ == "__main__":
             total_stored += stored
             total_with_hrv += with_hrv
         db.set_last_synced("garmin_wellness", target_str)
-        time.sleep(0.5)
+        time.sleep(GARMIN_WELLNESS_POLL_INTERVAL)
 
     db.close()
     print(f"Done. Wellness: {total_stored}, With HRV: {total_with_hrv}")

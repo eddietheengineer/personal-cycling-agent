@@ -22,6 +22,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+try:
+    from src.config.constants import NP_FOURTH_ROOT, NP_POWER_EXPONENT
+except ImportError:
+    from ..config.constants import NP_FOURTH_ROOT, NP_POWER_EXPONENT
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +116,7 @@ def _compute_normalized_power(power: np.ndarray) -> float:
     p_ma = _moving_average(power, 30)
 
     # Raise to 4th power, take mean, then 4th root
-    np_val = float(np.mean(np.power(p_ma, 4))) ** 0.25
+    np_val = float(np.mean(np.power(p_ma, NP_POWER_EXPONENT))) ** NP_FOURTH_ROOT
     return np_val
 
 

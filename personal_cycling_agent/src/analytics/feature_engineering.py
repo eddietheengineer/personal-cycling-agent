@@ -10,6 +10,10 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+try:
+    from src.config.constants import ATL_HALFLIFE_DAYS, CTL_HALFLIFE_DAYS
+except ImportError:
+    from ..config.constants import ATL_HALFLIFE_DAYS, CTL_HALFLIFE_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +90,9 @@ def compute_features(
     # --- EWMA for load metrics ---
     if "tss" in df.columns:
         # CTL-like: 18-day half-life → alpha = 1 - exp(ln(0.5)/18) ≈ 0.038
-        df["ctl"] = df["tss"].ewm(halflife=18, min_periods=1).mean()
+        df["ctl"] = df["tss"].ewm(halflife=CTL_HALFLIFE_DAYS, min_periods=1).mean()
         # ATL-like: 7-day half-life
-        df["atl"] = df["tss"].ewm(halflife=7, min_periods=1).mean()
+        df["atl"] = df["tss"].ewm(halflife=ATL_HALFLIFE_DAYS, min_periods=1).mean()
         # ACWR
         df["acwr"] = df["atl"] / df["ctl"].replace(0, 1)
         # 7-day rolling TSS

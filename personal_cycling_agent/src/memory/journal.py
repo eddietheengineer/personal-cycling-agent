@@ -7,6 +7,8 @@ import threading
 from datetime import date, datetime
 from pathlib import Path
 
+from src.config.constants import DEFAULT_JOURNAL_LINES
+
 logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
@@ -27,7 +29,7 @@ def load_journal() -> str:
     return path.read_text(encoding="utf-8")
 
 
-def load_recent(n_lines: int = 30) -> str:
+def load_recent(n_lines: int = DEFAULT_JOURNAL_LINES) -> str:
     """Return the last *n_lines* non-empty lines of the journal."""
     text = load_journal()
     if not text:

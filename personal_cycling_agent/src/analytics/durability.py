@@ -11,13 +11,15 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+try:
+    from src.config.constants import DEEPLY_FATIGUED_KJ, FATIGUED_KJ
+except ImportError:
+    from ..config.constants import DEEPLY_FATIGUED_KJ, FATIGUED_KJ
 
 logger = logging.getLogger(__name__)
 
 # Fatigue load thresholds in kJ
 FRESH_KJ = 0
-FATIGUED_KJ = 1000
-DEEPLY_FATIGUED_KJ = 1500
 
 
 @dataclass

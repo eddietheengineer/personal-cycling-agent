@@ -15,6 +15,10 @@ import math
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
+try:
+    from src.config.constants import ATL_HALFLIFE_DAYS, CTL_HALFLIFE_DAYS
+except ImportError:
+    from ..config.constants import ATL_HALFLIFE_DAYS, CTL_HALFLIFE_DAYS
 
 
 @dataclass
@@ -95,8 +99,8 @@ def compute_training_load(
         daily_dates.append(current.isoformat())
         current += timedelta(days=1)
 
-    ctl = _ema(daily_tss, half_life=18.0)
-    atl = _ema(daily_tss, half_life=7.0)
+    ctl = _ema(daily_tss, half_life=CTL_HALFLIFE_DAYS)
+    atl = _ema(daily_tss, half_life=ATL_HALFLIFE_DAYS)
 
     last_idx = len(daily_dates) - 1
     ctl_val = ctl[last_idx]
@@ -153,8 +157,8 @@ def compute_training_load_history(
         daily_dates.append(current.isoformat())
         current += timedelta(days=1)
 
-    ctl = _ema(daily_tss, half_life=18.0)
-    atl = _ema(daily_tss, half_life=7.0)
+    ctl = _ema(daily_tss, half_life=CTL_HALFLIFE_DAYS)
+    atl = _ema(daily_tss, half_life=ATL_HALFLIFE_DAYS)
 
     result = []
     for i in range(len(daily_dates)):

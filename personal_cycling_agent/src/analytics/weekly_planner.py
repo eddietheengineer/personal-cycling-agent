@@ -22,6 +22,27 @@ from src.config import vault_path
 from src.config.schedule import load_schedule, get_available_days, get_available_hours
 from src.services.weather import get_location, get_weekly_forecast, find_ride_slot
 
+try:
+    from src.config.constants import (
+        CTL_HALFLIFE_DAYS,
+        ATL_HALFLIFE_DAYS,
+        WEATHER_PRECIP_INDOOR_THRESHOLD,
+        WEATHER_WIND_INDOOR_THRESHOLD,
+        WEATHER_TEMP_MAX,
+        WEATHER_TEMP_MIN,
+        WEATHER_PRECIP_BACKUP_THRESHOLD,
+    )
+except ImportError:
+    from ..config.constants import (
+        CTL_HALFLIFE_DAYS,
+        ATL_HALFLIFE_DAYS,
+        WEATHER_PRECIP_INDOOR_THRESHOLD,
+        WEATHER_WIND_INDOOR_THRESHOLD,
+        WEATHER_TEMP_MAX,
+        WEATHER_TEMP_MIN,
+        WEATHER_PRECIP_BACKUP_THRESHOLD,
+    )
+
 logger = logging.getLogger(__name__)
 
 
@@ -166,8 +187,8 @@ def _project_ctl_atl(current_ctl: float, current_atl: float, daily_tss: list[flo
     """
     import math
 
-    alpha_ctl = 1 - math.exp(-math.log(2) / 18.0)  # ~0.0378
-    alpha_atl = 1 - math.exp(-math.log(2) / 7.0)   # ~0.0943
+    alpha_ctl = 1 - math.exp(-math.log(2) / CTL_HALFLIFE_DAYS)  # ~0.0378
+    alpha_atl = 1 - math.exp(-math.log(2) / ATL_HALFLIFE_DAYS)   # ~0.0943
 
     ctl = current_ctl
     atl = current_atl
@@ -197,16 +218,16 @@ def _weather_adjustment(forecast: dict | None) -> tuple[bool, str]:
 
     if condition in ("storm", "snow"):
         return True, f"{condition.title()} expected — indoor recommended"
-    if precip > 60:
+    if precip > WEATHER_PRECIP_INDOOR_THRESHOLD:
         return True, f"{precip}% chance of rain — indoor recommended"
-    if wind > 30:
+    if wind > WEATHER_WIND_INDOOR_THRESHOLD:
         return True, f"Wind {wind:.0f} km/h — indoor recommended"
-    if temp_max > 35:
+    if temp_max > WEATHER_TEMP_MAX:
         return False, f"Hot ({temp_max*9/5+32:.0f}°F) — train early, hydrate well"
-    if temp_min < -5:
+    if temp_min < WEATHER_TEMP_MIN:
         return False, f"Cold ({temp_min*9/5+32:.0f}°F) — warm up extra"
 
-    if precip > 30:
+    if precip > WEATHER_PRECIP_BACKUP_THRESHOLD:
         return False, f"{precip}% chance of rain — have indoor backup"
     return False, ""
 
@@ -388,8 +409,8 @@ def project_tsb(
     Returns (ctl_series, atl_series, tsb_series) of length len(daily_tss).
     """
     import math
-    alpha_ctl = 1 - math.exp(-math.log(2) / 18.0)
-    alpha_atl = 1 - math.exp(-math.log(2) / 7.0)
+    alpha_ctl = 1 - math.exp(-math.log(2) / CTL_HALFLIFE_DAYS)
+    alpha_atl = 1 - math.exp(-math.log(2) / ATL_HALFLIFE_DAYS)
 
     ctl = ctx.current_ctl
     atl = ctx.current_atl
