@@ -1283,13 +1283,33 @@ def _render_trends():
         "Last 90 Days": (today - timedelta(days=90), today),
         "Last 30 Days": (today - timedelta(days=30), today),
         "All Time": (date.fromisoformat(min_date), today),
+        "Custom": None,
     }
 
     selected_preset = st.selectbox("Time range", list(preset_map.keys()), index=0)
-    preset_start, preset_end = preset_map[selected_preset]
 
-    oldest = preset_start.isoformat()
-    newest = preset_end.isoformat()
+    if selected_preset == "Custom":
+        col1, col2 = st.columns(2)
+        with col1:
+            custom_start = st.date_input(
+                "Start date",
+                value=today - timedelta(days=90),
+                min_value=date.fromisoformat(min_date),
+                max_value=today,
+            )
+        with col2:
+            custom_end = st.date_input(
+                "End date",
+                value=today,
+                min_value=date.fromisoformat(min_date),
+                max_value=today,
+            )
+        oldest = custom_start.isoformat()
+        newest = custom_end.isoformat()
+    else:
+        preset_start, preset_end = preset_map[selected_preset]
+        oldest = preset_start.isoformat()
+        newest = preset_end.isoformat()
 
     # ---- Critical Power trend ----
     # CP is estimated per-activity using a rolling 90-day PDC window
