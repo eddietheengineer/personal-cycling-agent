@@ -1270,9 +1270,19 @@ def _render_trends():
         st.info("No wellness data found. Run sync first.")
         return
 
+    # Use earliest activity date (not wellness) for the date range.
+    # Wellness data starts when the user got a Garmin watch, but
+    # power data may go back much further.
     all_dates = [r["date"] for r in wellness_rows]
-    min_date = min(all_dates)
-    max_date = max(max(all_dates), date.today().isoformat())
+    wellness_min = min(all_dates)
+    wellness_max = max(all_dates)
+
+    # Get earliest activity date
+    earliest_act = db.conn.execute(
+        "SELECT MIN(substr(start_date, 1, 10)) FROM activities"
+    ).fetchone()[0]
+    min_date = min(earliest_act, wellness_min)
+    max_date = max(wellness_max, date.today().isoformat())
 
     today = date.today()
     this_year_start = date(today.year, 1, 1).isoformat()
