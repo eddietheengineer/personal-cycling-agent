@@ -1389,7 +1389,7 @@ def _render_trends():
         # Compute smooth decay line from cp_used (decayed CP per activity)
         import math as _math
         from datetime import date as _date, timedelta as _td
-        decay_half_life = 42.0
+        decay_half_life = 60.0
         decay_dates = []
         decay_vals = []
         dates = [_date.fromisoformat(d["date"]) for d in cp_chart_data]

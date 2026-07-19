@@ -252,14 +252,14 @@ def run_analyze() -> dict:
                 act_date = None
 
             # --- CP decay + bump model (eFTP style) ---
-            # CP decays over time (half-life 42 days). It bumps up only
-            # when a new effort (3-min best) exceeds the decaying estimate.
+            # CP decays over time (half-life 60 days). It bumps up only
+            # when a new effort exceeds the decaying estimate.
             # This matches TrainingPeaks/intervals.icu eFTP behavior.
             import math as _math
             if act_date is not None and last_activity_date is not None:
                 days_since = (act_date - last_activity_date).days
                 if days_since > 0:
-                    decay = _math.exp(-_math.log(2) * days_since / 42.0)
+                    decay = _math.exp(-_math.log(2) * days_since / 60.0)
                     current_cp = current_cp * decay
 
             if power_samples:
