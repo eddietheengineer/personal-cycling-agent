@@ -66,19 +66,15 @@ def setup() -> Path:
 def _resolve_hashed_passwords() -> None:
     """
     For any env var in _HASHED_VARS whose value starts with 'pbkdf2:',
-    verify it against the _RAW value stored alongside it and replace
-    the env var with the raw plaintext.
+    verify it against the _RAW value stored alongside it and store
+    the raw plaintext in _resolved_credentials dict.
 
     Format in config.env:
         GARMIN_PASSWORD=pbkdf2:<salt_hex>:<hash_hex>
         GARMIN_PASSWORD_RAW=actual_secret_value
 
-    For garminconnect, the _RAW value is only needed for initial auth;
-    tokens are cached thereafter.
-
-
-    After resolution, the _RAW env vars are cleared — they are redundant
-    once the plaintext is in the target var.
+    Resolved passwords are stored in _resolved_credentials (not os.environ)
+    to minimize exposure in /proc/<pid>/environ and child processes.
     """
     for var in _HASHED_VARS:
         hashed = os.environ.get(var, "")
@@ -95,7 +91,9 @@ def _resolve_hashed_passwords() -> None:
             salt = bytes.fromhex(salt_hex)
             computed = hashlib.pbkdf2_hmac('sha256', raw_value.encode(), salt, 600000).hex()
             if computed == hash_hex:
-                os.environ[var] = raw_value
+                _resolved_credentials[var] = raw_value
+                # Clear hashed value from env — no longer needed
+                os.environ[var] = ""
             else:
                 os.environ[var] = ""
         elif hashed.startswith("hash:"):
@@ -106,13 +104,25 @@ def _resolve_hashed_passwords() -> None:
                 continue
             computed = hashlib.sha256(raw_value.encode("utf-8")).hexdigest()
             if computed == digest:
-                os.environ[var] = raw_value
+                _resolved_credentials[var] = raw_value
+                os.environ[var] = ""
             else:
                 os.environ[var] = ""
         # If value doesn't start with 'pbkdf2:' or 'hash:', it's plaintext — leave as-is
 
-        # Clear the _RAW variant — redundant once resolved, reduces exposure surface
+        # Clear _RAW env var after resolution (success or failure)
         os.environ.pop(raw_var, None)
+
+
+# Module-level store for resolved credentials (not in os.environ)
+_resolved_credentials: dict[str, str] = {}
+
+
+def get_resolved_credential(var: str) -> str:
+    """Get a resolved credential, checking _resolved_credentials first, then os.environ."""
+    if var in _resolved_credentials:
+        return _resolved_credentials[var]
+    return os.environ.get(var, "")
 
 
 def hash_password(plaintext: str) -> tuple[str, str]:

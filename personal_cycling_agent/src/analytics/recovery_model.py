@@ -366,7 +366,7 @@ class IndividualRecoveryModel:
         if coef_data:
             self.model.coef_ = np.array(coef_data)
         intercept_data = data.get("model_intercept", 0.0)
-        if intercept_data:
+        if intercept_data is not None:
             self.model.intercept_ = np.array([intercept_data])
         if data.get("scaler_mean"):
             self.scaler.mean_ = np.array(data["scaler_mean"])

@@ -17,7 +17,7 @@ import logging
 import os
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from dataclasses import dataclass
@@ -246,7 +246,7 @@ def _safe_timestamp_to_date(ts_ms: float | int | None) -> str | None:
     if ts_sec <= 0:
         return None
     try:
-        return datetime.utcfromtimestamp(ts_sec).strftime("%Y-%m-%d")
+        return datetime.fromtimestamp(ts_sec, tz=timezone.utc).strftime("%Y-%m-%d")
     except (OSError, OverflowError, ValueError):
         return None
 
@@ -384,8 +384,9 @@ def _get_garmin_credentials() -> tuple[str, str, str]:
     The password is stored as a hash in config.env but resolved to plaintext
     by config.setup() before this is called.
     """
+    from src.config import get_resolved_credential
     email = os.getenv("GARMIN_EMAIL", "")
-    password = os.getenv("GARMIN_PASSWORD", "")
+    password = get_resolved_credential("GARMIN_PASSWORD")
     tokenstore = os.getenv("GARMIN_TOKENSTORE", "")
     return email, password, tokenstore
 

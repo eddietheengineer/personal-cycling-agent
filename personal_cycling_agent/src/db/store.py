@@ -889,7 +889,7 @@ class CyclingDB:
 
             # Start with API values
             duration = (row["duration_ms"] or 0) / 1000.0
-            distance = (row["distance_cm"] or 0)  # Column named cm but stores meters
+            distance = (row["distance_cm"] or 0)  # Column named cm but stores meters (historical)
             avg_power = row["avg_power"]
             max_power = row["max_power"]
             avg_hr = row["avg_heart_rate"]
