@@ -34,9 +34,11 @@ def _hour_weather(hourly_data: dict, hour: int) -> dict:
 
 def _is_clear(hw: dict) -> bool:
     """Check if a weather dict represents rideable conditions."""
+    if not hw:
+        return False  # No weather data available — not rideable
     condition = hw.get("condition", "unknown")
     precip = hw.get("precip", 0)
-    return condition not in ("storm", "snow") and precip < WEATHER_PRECIP_RIDEABLE
+    return condition not in ("storm", "snow", "unknown") and precip < WEATHER_PRECIP_RIDEABLE
 
 
 def find_rideable_slots(forecast_day: dict, available_hours: list[int],

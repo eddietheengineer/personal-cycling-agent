@@ -798,7 +798,7 @@ def generate_ai_plan() -> WeeklyPlan:
 
     def _raw_to_days(raw_days: list[dict]) -> list[DailyPlan]:
         """Convert LLM JSON to DailyPlan objects, forcing dates to this week."""
-        weekday_to_date = {d.weekday(): d.isoformat() for d in ctx.week_dates}
+        weekday_to_date = {slot.weekday: slot.date for slot in ctx.day_slots}
         days = []
         for rd in raw_days[:7]:
             weekday = rd.get("weekday", 0)

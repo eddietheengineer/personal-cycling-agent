@@ -2563,12 +2563,14 @@ def _render_memory_settings():
 
     journal_text = load_journal()
 
-    # Scrollable journal viewer
+    # Scrollable journal viewer (HTML-escaped to prevent XSS)
+    import html
+    safe_text = html.escape(journal_text) if journal_text else "<em>No entries yet. Chat with the coach to build memory.</em>"
     st.markdown(
         '<div style="max-height: 300px; overflow-y: auto; border: 1px solid #ddd; '
         'border-radius: 4px; padding: 12px; background: #fafafa; font-family: monospace; '
         'font-size: 0.85em; white-space: pre-wrap;">'
-        + (journal_text if journal_text else "<em>No entries yet. Chat with the coach to build memory.</em>")
+        + safe_text
         + "</div>",
         unsafe_allow_html=True,
     )
@@ -3029,8 +3031,8 @@ def _render_weekly_calendar():
         "anaerobic": "#9c27b0",
         "mixed": "#00bcd4",
     }
-
-    for i, day in enumerate(plan.days):
+    import html
+    for day in plan.days:
         day_name = day_labels[day.weekday]
         day_date = day.date.split("-")[2]
 
@@ -3048,8 +3050,12 @@ def _render_weekly_calendar():
         w_temp = f"{tmax_f:.0f}°F/{tmin_f:.0f}°F" if tmax_f else ""
         w_line = f"{w_icon} {w_temp}" if w_temp else ""
 
+        # HTML-escape user/LLM-controlled content to prevent XSS
+        safe_ride_note = html.escape(str(day.ride_note)) if day.ride_note else ""
+        safe_session_type = html.escape(str(day.session_type)).title()
+
         if day.rest_day:
-            ride_line = f'<div style="color: #555; font-size: 0.75em; margin-top: 2px;">{day.ride_note}</div>' if day.ride_note else ''
+            ride_line = f'<div style="color: #555; font-size: 0.75em; margin-top: 2px;">{safe_ride_note}</div>' if safe_ride_note else ''
             content = f"""
             <div style="padding: 12px; border: {border}; border-radius: 8px; background: {bg}; text-align: center; min-height: 90px;">
                 <div style="font-weight: 600; color: #888;">{day_name} {day_date}</div>
@@ -3059,11 +3065,11 @@ def _render_weekly_calendar():
             </div>"""
         else:
             indoor_icon = "🏠" if day.indoor else "🚴"
-            ride_line = f'<div style="color: #555; font-size: 0.75em; margin-top: 2px;">{day.ride_note}</div>' if day.ride_note else ''
+            ride_line = f'<div style="color: #555; font-size: 0.75em; margin-top: 2px;">{safe_ride_note}</div>' if safe_ride_note else ''
             content = f"""
             <div style="padding: 12px; border: {border}; border-radius: 8px; background: {bg}; text-align: center; min-height: 110px;">
                 <div style="font-weight: 600; color: {color_display};">{day_name} {day_date}</div>
-                <div style="font-size: 1.2em; margin: 4px 0;">{indoor_icon} {day.session_type.title()}</div>
+                <div style="font-size: 1.2em; margin: 4px 0;">{indoor_icon} {safe_session_type}</div>
                 <div style="color: #aaa; font-size: 0.85em;">{day.duration_min}min · TSS {day.target_tss:.0f}</div>
                 <div style="color: {color_display}; font-size: 0.8em;">{day.target_zone}</div>
                 <div style="color: #555; font-size: 0.8em; margin-top: 4px;">{w_line}</div>

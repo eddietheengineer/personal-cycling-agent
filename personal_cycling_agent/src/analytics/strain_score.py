@@ -127,7 +127,7 @@ def compute_strain_score(
     Returns:
         StrainScoreResult with decomposed strain scores.
     """
-    if not power_samples or cp <= 0 or pmax <= cp:
+    if not power_samples or cp < 20.0 or pmax <= cp:
         return StrainScoreResult(0.0, 0.0, 0.0, 0.0, 0.0)
 
     power = np.array(power_samples, dtype=float)
