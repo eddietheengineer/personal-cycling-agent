@@ -194,12 +194,8 @@ def run_analyze() -> dict:
             profile_cp = 200.0
             logger.info("No CP set, bootstrapping with 200W default")
 
-        # Rolling 90-day PDC window for CP estimation (intervals.icu style).
-        # CP is estimated from all rides in the last 90 days — no arbitrary
-        # decay constant. Old efforts naturally drop out of the window.
-        # Each ride's PDC is stored with its date; before processing a new
-        # activity, the window is filtered and CP re-estimated.
-        rolling_pdc_data: list[dict] = []  # {"date": datetime, "power_duration_curve": dict}
+        # Rolling 90-day CP: max ride_cp from last 90 days (intervals.icu style).
+        # Old efforts naturally drop out after 90 days.
         _profile = {
             "resting_hr": int(os.environ.get("RESTING_HR", 70)),
             "max_hr": int(os.environ.get("MAX_HR", 190)),
@@ -261,23 +257,22 @@ def run_analyze() -> dict:
                 except Exception as e:
                     logger.warning(f"PDC computation failed for {activity_id}: {e}")
 
-            # Add this ride's PDC to the rolling window
-            if pdc is not None and act_date is not None:
-                rolling_pdc_data.append({"date": act_date, "power_duration_curve": pdc})
 
-            # Estimate CP from rolling 90-day window
+            # Estimate CP from rolling 90-day window.
+            # CP = max ride_cp from all rides in the last 90 days.
+            # This matches intervals.icu: the best effort in the window
+            # defines CP. Old efforts naturally drop out after 90 days.
             current_cp = profile_cp
-            if act_date is not None and rolling_pdc_data:
-                cutoff = act_date - timedelta(days=90)
-                window = [
-                    {"power_duration_curve": d["power_duration_curve"]}
-                    for d in rolling_pdc_data if d["date"] >= cutoff
-                ]
-                if len(window) >= 2:
-                    cp_est, wp_est = estimate_critical_power(window)
-                    if cp_est > 50:
-                        current_cp = cp_est
-                        current_w_prime = wp_est
+            if act_date is not None:
+                cutoff = (act_date - timedelta(days=90)).strftime("%Y-%m-%d")
+                max_row = db.conn.execute(
+                    "SELECT MAX(m.ride_cp) FROM activity_metrics m "
+                    "JOIN activities a ON a.id = m.activity_id "
+                    "WHERE m.ride_cp IS NOT NULL AND a.start_date >= ? AND a.start_date <= ?",
+                    (cutoff, act_date.strftime("%Y-%m-%d")),
+                ).fetchone()
+                if max_row and max_row[0] is not None and max_row[0] > profile_cp:
+                    current_cp = max_row[0]
 
             # Estimate per-ride CP for bar chart (from this ride only)
             ride_cp_est = None
