@@ -16,6 +16,7 @@
   "ingress_stream": true,
   "panel_icon": "mdi:bicycle",
   "panel_title": "Cycling",
+  "map": [{"type": "data", "read_only": false}],
   "init": false,
   "hassio_api": true,
   "options": {
