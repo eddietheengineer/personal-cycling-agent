@@ -613,8 +613,8 @@ def _render_readiness_card():
         logger.debug("Failed to load latest_analysis.json", exc_info=True)
         return
 
-    readiness = analysis.get("readiness", {})
-    training_load = analysis.get("training_load", {})
+    readiness = analysis.get("readiness") or {}
+    training_load = analysis.get("training_load") or {}
     cp = analysis.get("cp")
 
     state = readiness.get("state", "unknown").replace("_", " ").title()
@@ -1977,6 +1977,7 @@ def _render_garmin_setup():
         sync_all_clicked = st.button(
             "Sync All Historical Data",
             disabled=not is_connected,
+            use_container_width=True,
             key="sync_all_historical",
         )
     with col3:
@@ -1992,8 +1993,9 @@ def _render_garmin_setup():
     force_resync_clicked = st.button(
         "🔄 Force Resync All Activities",
         disabled=not is_connected or bool(st.session_state.get("syncing")),
-        key="force_resync_all",
+        use_container_width=True,
         help="Reset sync state and re-download all activities from scratch.",
+        key="force_resync_all",
     )
 
     if sync_all_clicked:
