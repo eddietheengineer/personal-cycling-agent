@@ -17,6 +17,8 @@ COPY src/ ./src/
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh
 RUN useradd -m -s /bin/bash cycling && chown -R cycling:cycling /app
+# Ensure /data is writable by cycling user (HA mounts /data as root:root)
+RUN mkdir -p /data && chown cycling:cycling /data
 
 USER cycling
 
