@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 
 # Personal Cycling Agent - Entrypoint
-# Works both as a Home Assistant add-on (with bashio) and standalone.
+# Works both as a Home Assistant add-on and standalone.
 
 set -e
 
 # ── Detect environment ───────────────────────────────────────────────
-if command -v bashio >/dev/null 2>&1; then
+# HA Supervisor sets HASSIO_INGRESS_ENTRY when ingress is enabled.
+# Also check for /data directory (HA always mounts persistent /data).
+# bashio is NOT available in custom images (python:3.12-slim base).
+if [ -n "${HASSIO_INGRESS_ENTRY}" ] || [ -d "/data" ]; then
     DATA_DIR="/data"
+    HA_MODE=true
 else
     DATA_DIR="${DATA_DIR:-${CYCLING_AGENT_VAULT:-${HOME}/cycling-agent-data}}"
+    HA_MODE=false
 fi
 export CYCLING_AGENT_VAULT="${DATA_DIR}"
 
@@ -82,13 +87,13 @@ print('Database initialized')
 " || true
 
 # ── Start Streamlit ──────────────────────────────────────────────────
-if command -v bashio >/dev/null 2>&1; then
-    bashio::log.info "Starting dashboard on port 8501..."
+if $HA_MODE; then
+    echo "[INFO] Starting dashboard on port 8501..."
 else
     echo "Starting dashboard on port 8501..."
 fi
 
-if command -v bashio >/dev/null 2>&1; then
+if $HA_MODE; then
     xsrf_flag=""
 else
     xsrf_flag="--server.enableXsrfProtection true"
@@ -107,37 +112,37 @@ STREAMLIT_PID=$!
 # meaning the user has already completed auth through the dashboard.
 TOKEN_DIR="${GARMIN_TOKENSTORE:-${DATA_DIR}/.garminconnect}"
 if [ -d "${TOKEN_DIR}" ] && [ -n "$(ls -A "${TOKEN_DIR}" 2>/dev/null)" ]; then
-    if command -v bashio >/dev/null 2>&1; then
-        bashio::log.info "Cached tokens found — running sync and analysis in background..."
+    if $HA_MODE; then
+        echo "[INFO] Cached tokens found — running sync and analysis in background..."
     else
         echo "Cached tokens found — running sync and analysis in background..."
     fi
     (
         python3 -m src.main --ingest 2>&1 || {
-            if command -v bashio >/dev/null 2>&1; then
-                bashio::log.warning "Sync failed or rate-limited"
+            if $HA_MODE; then
+                echo "[WARNING] Sync failed or rate-limited"
             else
                 echo "Warning: Sync failed or rate-limited"
             fi
         }
         python3 -m src.main --sync-routes 2>&1 || {
-            if command -v bashio >/dev/null 2>&1; then
-                bashio::log.warning "Route sync failed"
+            if $HA_MODE; then
+                echo "[WARNING] Route sync failed"
             else
                 echo "Warning: Route sync failed"
             fi
         }
         python3 -m src.main --analyze 2>&1 || {
-            if command -v bashio >/dev/null 2>&1; then
-                bashio::log.warning "Analysis failed"
+            if $HA_MODE; then
+                echo "[WARNING] Analysis failed"
             else
                 echo "Warning: Analysis failed"
             fi
         }
     ) &
 else
-    if command -v bashio >/dev/null 2>&1; then
-        bashio::log.info "No cached Garmin tokens — authenticate via the dashboard to enable sync."
+    if $HA_MODE; then
+        echo "[INFO] No cached Garmin tokens — authenticate via the dashboard to enable sync."
     else
         echo "No cached Garmin tokens — authenticate via the dashboard to enable sync."
     fi

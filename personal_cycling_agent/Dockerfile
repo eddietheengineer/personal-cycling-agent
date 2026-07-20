@@ -1,7 +1,8 @@
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    CYCLING_AGENT_VAULT=/data
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl && \
