@@ -20,10 +20,13 @@ Call config.setup() once at program startup before accessing any env vars.
 """
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 # Environment variable names whose values are stored as pbkdf2 hashes
 _HASHED_VARS = {"GARMIN_PASSWORD"}
