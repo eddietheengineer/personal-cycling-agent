@@ -346,6 +346,16 @@ if "scheduler_started" not in st.session_state:
     except Exception:
         logger.debug("Auto-sync scheduler failed to start", exc_info=True)
 
+# ---------------------------------------------------------------------------
+# Seed default wiki pages (first run only)
+# ---------------------------------------------------------------------------
+if "wiki_seeded" not in st.session_state:
+    st.session_state.wiki_seeded = True
+    try:
+        from src.wiki import seed_default_wiki
+        seed_default_wiki()
+    except Exception:
+        logger.debug("Wiki seeding failed", exc_info=True)
 
 # ---------------------------------------------------------------------------
 # Sidebar navigation (compact icon-based)
@@ -1171,6 +1181,40 @@ def _render_activity_detail():
 
     if not has_any_stream:
         st.warning("No stream data for this activity.")
+    # -- Post-exercise checkin --
+    st.subheader("Post-Ride Check-in")
+    existing_checkin = db.get_post_ride_checkin(selected_id)
+    expanded = not bool(existing_checkin)
+
+    label = "Checked in" if existing_checkin else "Log how this ride felt"
+    with st.expander(label, expanded=expanded):
+        if existing_checkin:
+            rpe_val = existing_checkin.get("rpe")
+            legs_val = existing_checkin.get("legs_feeling")
+            notes_val = existing_checkin.get("notes")
+            rpe_label = {1:"Very Easy",2:"Easy",3:"Moderate",4:"Somewhat Hard",5:"Hard",
+                          6:"Very Hard",7:"Extremely Hard",8:"Very Very Hard",9:"Max Effort",10:"Absolute Max"}.get(rpe_val, str(rpe_val)) if rpe_val else "—"
+            st.caption(f"RPE: {rpe_label} ({rpe_val}/10) · Legs: {legs_val or '—'}")
+            if notes_val:
+                st.caption(f"Notes: {notes_val}")
+            return
+
+        with st.form("post_ride_checkin_form", clear_on_submit=False):
+            rpe = st.slider("RPE (Rate of Perceived Exertion)", 1, 10, 5,
+                format_func=lambda v: {1:"Very Easy",2:"Easy",3:"Moderate",4:"Somewhat Hard",5:"Hard",
+                                       6:"Very Hard",7:"Extremely Hard",8:"Very Very Hard",9:"Max Effort",10:"Absolute Max"}[v])
+            legs_feeling = st.selectbox("How did your legs feel?",
+                options=["Fresh", "Normal", "Heavy", "Dead"], index=1)
+            notes = st.text_area("Notes", placeholder="Any observations about the ride...", key="post_ride_notes")
+
+            if st.form_submit_button("Save Check-in", type="primary"):
+                db.store_post_ride_checkin({
+                    "activity_id": selected_id,
+                    "rpe": rpe,
+                    "legs_feeling": legs_feeling,
+                    "notes": notes,
+                })
+                st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -2241,6 +2285,7 @@ def _render_garmin_setup():
     else:
         st.info("No power meter data found. Click 'Extract Power Meter Info' to scan FIT files.")
         if st.button("Extract Power Meter Info", type="primary", use_container_width=True, key="extract_pm"):
+            from src.ingestion.garmin_connect import extract_power_meters
             count = extract_power_meters()
             st.success(f"Extracted power meter info for {count} activities.")
             st.rerun()

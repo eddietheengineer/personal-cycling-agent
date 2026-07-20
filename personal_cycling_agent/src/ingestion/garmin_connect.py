@@ -133,6 +133,7 @@ def _parse_fit_frames(fit_path: "Path", extract_power_meter: bool = False) -> Fi
             if frame.name == "session":
                 ef = _get_field(frame, "total_elapsed_time")
                 if ef is not None and ef.value is not None:
+                    # FIT total_elapsed_time is in seconds — stored as-is in total_elapsed_time_ms column
                     duration_ms = float(ef.value)
 
                 ed = _get_field(frame, "total_distance")
@@ -794,21 +795,15 @@ def _garmin_activity_to_store_format(activity: dict[str, Any]) -> dict[str, Any]
         activity_type_key.lower(),
         activity_type_key.title() if activity_type_key else "Activity",
     )
-
-    # Garmin API: duration is milliseconds, distance is meters
-    # Convert duration to seconds for storage
-    duration_ms = activity.get("duration") or 0
+    # Garmin API: duration is seconds, distance is meters
+    duration_s = activity.get("duration") or 0
     distance_m = activity.get("distance") or 0
 
     return {
         "id": f"garmin_{activity_id}",
         "start_date_local": start_time_local,
         "type": activity_type,
-        "duration": duration_ms / 1000.0,
-        "distance": distance_m,
-        "average_power": activity.get("avgPower"),
-        "max_power": activity.get("maxPower"),
-        "average_hr": activity.get("avgHeartRate"),
+        "duration": duration_s,
         "max_hr": activity.get("maxHeartRate"),
         "calories": activity.get("calories"),
         "tss": activity.get("trainingStressScore"),

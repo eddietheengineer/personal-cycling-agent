@@ -550,6 +550,20 @@ class CyclingDB:
 
         c.execute("CREATE INDEX IF NOT EXISTS idx_validation_log_athlete ON validation_log(athlete_id)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_validation_log_date ON validation_log(target_date)")
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS post_ride_checkin (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                athlete_id      TEXT    NOT NULL,
+                activity_id     TEXT    NOT NULL UNIQUE,
+                rpe             INTEGER,
+                legs_feeling    TEXT,
+                notes           TEXT,
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        c.execute("CREATE INDEX IF NOT EXISTS idx_post_ride_checkin_athlete ON post_ride_checkin(athlete_id)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_post_ride_checkin_activity ON post_ride_checkin(activity_id)")
 
         self._commit()
         # Run raw tables migration after all tables exist
@@ -890,9 +904,10 @@ class CyclingDB:
             garmin_id = row["garmin_id"]
             db_id = f"garmin_{garmin_id}"
 
-            # Start with API values
-            duration = (row["duration_ms"] or 0) / 1000.0
-            distance = (row["distance_cm"] or 0)  # Column named cm but stores meters (historical)
+            # Start with API values (column names are misleading — duration_ms is actually seconds,
+            # distance_cm is actually meters — historical naming from Garmin API conversion)
+            duration = (row["duration_ms"] or 0)
+            distance = (row["distance_cm"] or 0)
             avg_power = row["avg_power"]
             max_power = row["max_power"]
             avg_hr = row["avg_heart_rate"]
@@ -918,7 +933,8 @@ class CyclingDB:
                 if fit["total_calories"] is not None:
                     calories = fit["total_calories"]
                 if fit["total_elapsed_time_ms"] is not None:
-                    fit_dur = fit["total_elapsed_time_ms"] / 1000.0
+                    # Column name says ms but fitdecode returns seconds
+                    fit_dur = fit["total_elapsed_time_ms"]
                     if fit_dur > 0:
                         duration = fit_dur
                 if fit["total_distance_m"] is not None:
@@ -963,8 +979,8 @@ class CyclingDB:
             # Balance
             avg_left_balance = api_data.get("avgLeftBalance")
 
-            # Moving duration (seconds)
-            moving_dur = (api_data.get("movingDuration") or 0) / 1000.0 if api_data.get("movingDuration") else None
+            # Moving duration (API returns seconds, not ms despite column naming)
+            moving_dur = api_data.get("movingDuration")
 
             # Intensity factor
             intensity_factor = api_data.get("intensityFactor")
@@ -1792,6 +1808,32 @@ class CyclingDB:
             "SELECT * FROM morning_checkin ORDER BY date DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+    # -- Post-ride checkin --
+
+    def store_post_ride_checkin(self, data: dict[str, Any]) -> None:
+        """Store or update a post-ride check-in record for an activity."""
+        athlete_id = data.get("athlete_id", "default")
+        activity_id = data.get("activity_id")
+        if not activity_id:
+            return
+
+        self._exec(
+            """INSERT INTO post_ride_checkin (athlete_id, activity_id, rpe, legs_feeling, notes)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(activity_id) DO UPDATE SET
+                   rpe = excluded.rpe,
+                   legs_feeling = excluded.legs_feeling,
+                   notes = excluded.notes""",
+            (athlete_id, activity_id, data.get("rpe"), data.get("legs_feeling"), data.get("notes")),
+        )
+        self._commit()
+
+    def get_post_ride_checkin(self, activity_id: str) -> dict[str, Any] | None:
+        """Get a post-ride check-in by activity_id."""
+        row = self._exec(
+            "SELECT * FROM post_ride_checkin WHERE activity_id = ?", (activity_id,)
+        ).fetchone()
+        return dict(row) if row else None
     # -- Lifecycle --
 
     def close(self):

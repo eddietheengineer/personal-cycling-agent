@@ -10,3 +10,7 @@ Modules:
 - index: index.md and log.md management
 - ingest: source ingestion pipeline with LLM processing
 """
+
+from src.wiki.engine import ensure_wiki, seed_default_wiki, wiki_path
+
+__all__ = ["ensure_wiki", "seed_default_wiki", "wiki_path"]
