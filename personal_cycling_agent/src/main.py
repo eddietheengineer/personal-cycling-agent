@@ -258,16 +258,10 @@ def run_analyze() -> dict:
             if d not in ride_cp_by_date or cp > ride_cp_by_date[d]:
                 ride_cp_by_date[d] = cp
 
-        # Pre-compute sorted dates + prefix max for O(log n) rolling CP lookup
+        # Pre-compute sorted dates for O(log n) rolling CP window lookup
         import bisect
         sorted_cp_dates = sorted(ride_cp_by_date.keys())
-        prefix_max: list[float] = []
-        for d in sorted_cp_dates:
-            v = ride_cp_by_date[d]
-            if not prefix_max or v > prefix_max[-1]:
-                prefix_max.append(v)
-            else:
-                prefix_max.append(prefix_max[-1])
+        sorted_cp_values = [ride_cp_by_date[d] for d in sorted_cp_dates]
 
         current_cp: float = 0.0
         wp_result = None
@@ -317,16 +311,15 @@ def run_analyze() -> dict:
                 db.store_activity_metrics(activity_id, {"ride_cp": ride_cp_est})
 
             # Rolling 90-day CP: max ride_cp from last 90 days (including this ride).
-            # Computed from pre-fetched sorted dates + prefix max (O(log n) per activity).
+            # Computed from pre-fetched sorted dates + range max (O(log n) bisect + O(window) max).
             current_cp = 0.0
             if act_date is not None:
                 cutoff = (act_date - timedelta(days=ROLLING_CP_WINDOW_DAYS)).strftime("%Y-%m-%d")
                 act_date_str_fmt = act_date.strftime("%Y-%m-%d")
                 lo = bisect.bisect_left(sorted_cp_dates, cutoff)
                 hi = bisect.bisect_right(sorted_cp_dates, act_date_str_fmt)
-                if lo < hi and hi - 1 < len(prefix_max):
-                    current_cp = prefix_max[hi - 1]
-            # Fallback: use this ride's own CP estimate if window is empty
+                if lo < hi:
+                    current_cp = max(sorted_cp_values[lo:hi])
             if current_cp <= 0 and ride_cp_est is not None:
                 current_cp = ride_cp_est
             # --- Compute power metrics with current CP ---
