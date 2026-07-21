@@ -11,13 +11,14 @@ Conventions:
 - 4th-power NP with 30-second moving average (Intervals.icu method).
 
 Sources:
-- CP model: Monod & Scherrer (1965), Hill et al. (1999) — 2-parameter P = CP + W'/t
+- CP model: FastFitness.Tips / Morton's 3-parameter CP model (fft.tips/curve)
 - NP: TrainingPeaks/Hunter Allen 4th-power method
 - Zones: Coggan (2015) 5-zone model
 - TSS/IF: Banister et al. (1999) impulse-response model
 """
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,15 +34,36 @@ logger = logging.getLogger(__name__)
 _ZONE_BOUNDARIES = [0.0, 0.56, 0.75, 0.90, 1.05, float("inf")]
 _ZONE_NAMES = ["Z1", "Z2", "Z3", "Z4", "Z5"]
 
-# Durations used for CP estimation from PDC best-effort powers (seconds)
-# 3min, 5min, 8min, 20min — covers the CP-sensitive range per Monod-Scherrer
-# Shorter efforts are dominated by PP/W'; longer efforts approach the CP asymptote.
-_CP_ESTIMATION_DURATIONS = [180, 300, 480, 1200]
+# FastFitness.Tips power curve ratios (All-rounder profile).
+# Maps duration (seconds) -> fraction of FTP. Source: fft.tips/curve,
+# based on Morton's 3-parameter CP model fitted to ~5000 cyclists.
+# intervals.icu uses these same ratios for eFTP estimation.
+# Log-log interpolation between table entries gives ratios for any duration.
+_FTT_CP_RATIOS: dict[int, float] = {
+    60: 1.808,    # 1 min: Neuromuscular Sprint
+    120: 1.503,   # 2 min: Sprint
+    180: 1.400,   # 3 min
+    300: 1.281,   # 5 min: VO2Max & 4DP
+    480: 1.225,   # 8 min: TrainerRoad 8min
+    600: 1.201,   # 10 min
+    900: 1.158,   # 15 min
+    1200: 1.128,  # 20 min: Zwift ShortFTP
+    1800: 1.079,  # 30 min
+    3600: 1.000,  # 60 min: FTP60
+}
 # Minimum effort duration for CP estimation (seconds). Below this, power is
 # dominated by anaerobic capacity (PP/W'), not CP. Aligns with intervals.icu default.
 _CP_MIN_DURATION = 180
+# Maximum effort duration for CP estimation (seconds). Above this, power drops
+# below FTP due to fatigue (endurance fade), not threshold capacity.
+_CP_MAX_DURATION = 3600
 # Power-duration curve durations in seconds
-_PDC_DURATIONS = [1, 3, 5, 10, 30, 60, 120, 180, 300, 600, 1200, 1800, 3600]
+# Fine granularity in CP-sensitive range: every 10s from 3-10min, every 1min from 10-60min.
+_PDC_DURATIONS = sorted(set(
+    [1, 3, 5, 10, 30, 60, 120]
+    + list(range(180, 610, 10))
+    + list(range(600, 3601, 60))
+))
 
 
 @dataclass
@@ -261,162 +283,168 @@ def compute_power_metrics(
     )
 
 
+def _ftt_ratio(dur: float) -> float:
+    """
+    Interpolate the FastFitness.Tips power curve ratio for a given duration.
+
+    Uses log-log interpolation between table entries. Ratios represent
+    effort_power / FTP for the All-rounder profile.
+
+    Source: fft.tips/curve, Morton's 3-parameter CP model fitted to ~5000 cyclists.
+    """
+    durations = sorted(_FTT_CP_RATIOS.keys())
+    if dur <= durations[0]:
+        return _FTT_CP_RATIOS[durations[0]]
+    if dur >= durations[-1]:
+        return _FTT_CP_RATIOS[durations[-1]]
+
+    for i in range(len(durations) - 1):
+        if durations[i] <= dur <= durations[i + 1]:
+            log_d = math.log(dur)
+            log_d0 = math.log(durations[i])
+            log_d1 = math.log(durations[i + 1])
+            log_r0 = math.log(_FTT_CP_RATIOS[durations[i]])
+            log_r1 = math.log(_FTT_CP_RATIOS[durations[i + 1]])
+            t = (log_d - log_d0) / (log_d1 - log_d0)
+            log_r = log_r0 + t * (log_r1 - log_r0)
+            return math.exp(log_r)
+    return 1.0
+
+
+def _estimate_cp_from_efforts(
+    efforts: list[tuple[float, float]],
+) -> tuple[float, float]:
+    """
+    Estimate CP from a list of (duration, avg_power) efforts using FTT ratios.
+
+    For each effort, CP = power / ratio(duration). Takes the maximum CP
+    across all efforts — the best effort in the window defines CP.
+
+    Returns (cp, w_prime) tuple. W' is estimated from the best effort:
+    W' = (power - CP) * duration.
+
+    Returns (0.0, 0.0) if no valid efforts found.
+    """
+    if not efforts:
+        return 0.0, 0.0
+
+    best_cp = 0.0
+    best_effort: tuple[float, float] | None = None
+
+    for dur, pwr in efforts:
+        if dur < _CP_MIN_DURATION or dur > _CP_MAX_DURATION or pwr <= 0:
+            continue
+        ratio = _ftt_ratio(dur)
+        cp = pwr / ratio
+        if cp > best_cp:
+            best_cp = cp
+            best_effort = (dur, pwr)
+
+    if best_cp <= 0 or best_effort is None:
+        return 0.0, 0.0
+
+    # Estimate W' from the best effort: W' = (power - CP) * duration
+    w_prime = (best_effort[1] - best_cp) * best_effort[0]
+    if w_prime <= 0:
+        w_prime = 0.0
+
+    return round(best_cp, 2), round(w_prime, 2)
+
+
 def estimate_critical_power(
     activity_data: list[dict],
 ) -> tuple[float, float]:
     """
-    Estimate Critical Power and W' using a 2-parameter model from PDC best-effort data.
+    Estimate Critical Power and W' from PDC best-effort data using
+    FastFitness.Tips power curve ratios (Morton's 3-parameter CP model).
 
-    For each activity, extracts the best sustained power at standard durations
-    (3min, 5min, 8min, 20min) from the power-duration curve. These represent
-    the athlete's true threshold capacity at each duration, unlike whole-ride
-    averages which dilute short hard efforts.
+    For each activity, extracts best sustained power at all available durations
+    from the power-duration curve. For each effort, CP = power / ratio(duration).
+    The maximum CP across all efforts defines the estimate.
 
-    Model: avg_power = CP + W' / duration
-    Plotting avg_power vs 1/duration gives a line with intercept = CP, slope = W'.
+    Only uses efforts with duration between {_CP_MIN_DURATION}s and {_CP_MAX_DURATION}s
+    (3min to 60min). Below 3min, power is dominated by anaerobic capacity.
+    Above 60min, power drops due to endurance fade, not threshold capacity.
 
-    Uses weighted least squares where weight = duration (longer efforts have
-    lower variance in their power estimate).
-
-    Only uses efforts with duration >= {_CP_MIN_DURATION}s and avg_power > 0.
-
-    Source: Monod & Scherrer (1965) 2-parameter CP model; weighted LS per
-    standard regression practice (longer efforts have lower variance).
+    Source: FastFitness.Tips (fft.tips/curve), based on Morton's 3-parameter
+    critical power model fitted to ~5000 cyclists. Same approach used by
+    intervals.icu for eFTP estimation.
 
     Args:
         activity_data: List of dicts, each with keys:
-            - 'power_duration_curve': dict[int, float], best N-sec power (from PDC)
-            - 'pdc_efforts': list[dict] with 'duration' and 'avg_power' (pre-extracted)
-            - (fallback) 'duration': float, 'avg_power': float (whole-ride, legacy)
+            'power_duration_curve': dict[int, float], best N-sec power (from PDC)
+            'pdc_efforts': list[dict] with 'duration' and 'avg_power' (pre-extracted)
+            (fallback) 'duration': float, 'avg_power': float (whole-ride, legacy)
 
     Returns:
         (cp, w_prime) tuple in watts and joules respectively.
         Returns (0.0, 0.0) if insufficient data.
     """
-    points: list[tuple[float, float, float]] = []  # (1/duration, avg_power, weight)
-
     # Collect best effort at each duration across all rides
     best_by_duration: dict[int, float] = {}
 
     for activity in activity_data:
-        # Try PDC efforts first (best-effort at standard durations)
         pdc_efforts = activity.get("pdc_efforts", [])
         if not pdc_efforts:
-            # Fallback: extract from power_duration_curve if available
             pdc = activity.get("power_duration_curve", {})
             if pdc:
-                for dur in _CP_ESTIMATION_DURATIONS:
-                    pwr = pdc.get(dur, 0)
-                    if dur >= _CP_MIN_DURATION and pwr > 0:
+                for dur, pwr in pdc.items():
+                    if dur >= _CP_MIN_DURATION and dur <= _CP_MAX_DURATION and pwr > 0:
                         pdc_efforts.append({"duration": dur, "avg_power": pwr})
             else:
-                # Legacy fallback: whole-ride average (less accurate)
+                # Legacy fallback: whole-ride average
                 duration = float(activity.get("duration", 0))
                 avg_power = activity.get("avg_power")
                 if avg_power is None:
                     samples = activity.get("power_samples", [])
                     if samples:
                         avg_power = float(np.mean(samples))
-                if duration >= _CP_MIN_DURATION and avg_power and avg_power > 0:
+                if (duration >= _CP_MIN_DURATION
+                        and duration <= _CP_MAX_DURATION
+                        and avg_power and avg_power > 0):
                     pdc_efforts.append({"duration": duration, "avg_power": avg_power})
 
         for effort in pdc_efforts:
             duration = float(effort.get("duration", 0))
             avg_power = float(effort.get("avg_power", 0))
-
-            if duration < _CP_MIN_DURATION:
+            if duration < _CP_MIN_DURATION or duration > _CP_MAX_DURATION:
                 continue
             if avg_power <= 0:
                 continue
-
-            # Keep only the best power at each duration
             dur_key = int(duration)
             if dur_key not in best_by_duration or avg_power > best_by_duration[dur_key]:
                 best_by_duration[dur_key] = avg_power
 
-    # Build regression points from best efforts
-    for duration, avg_power in best_by_duration.items():
-        weight = duration
-        points.append((1.0 / duration, avg_power, weight))
+    efforts = list(best_by_duration.items())
+    cp, w_prime = _estimate_cp_from_efforts(efforts)
 
-    if len(points) < 2:
-        logger.warning(
-            "Insufficient data for CP estimation (need >= 2 efforts >= %ds)",
-            _CP_MIN_DURATION,
+    if cp > 0:
+        logger.info(
+            f"Estimated CP: {cp:.1f}W, W': {w_prime:.0f}J from {len(efforts)} efforts"
         )
-        return 0.0, 0.0
-
-    x = np.array([p[0] for p in points])  # 1/duration
-    y = np.array([p[1] for p in points])  # avg_power
-    w = np.array([p[2] for p in points])  # weights
-
-    # Weighted linear regression: y = CP + W' * x
-    # Normal equations with weights: (W^T W) beta = W^T y
-    # Source: Standard weighted least squares; weight = duration (longer efforts
-    # have lower variance in their power estimate per Monod-Scherrer model).
-    sw = np.sum(w)
-    swx = np.sum(w * x)
-    swx2 = np.sum(w * x * x)
-    swy = np.sum(w * y)
-    swxy = np.sum(w * x * y)
-
-    denom = sw * swx2 - swx * swx
-    if abs(denom) < 1e-12:
-        logger.warning("Singular weighted regression matrix in CP estimation")
-        return 0.0, 0.0
-
-    slope = (sw * swxy - swx * swy) / denom       # W'
-    intercept = (swx2 * swy - swx * swxy) / denom  # CP
-
-    cp = float(intercept)
-    w_prime = float(slope)  # in joules (W * s = J)
-
-    # Sanity: CP should be positive and less than the max observed power
-    if cp <= 0:
-        logger.warning(f"CP estimate non-positive ({cp}), returning 0")
-        return 0.0, 0.0
-
-    max_observed = float(np.max(y))
-    if cp >= max_observed:
-        logger.warning(
-            f"CP estimate ({cp:.1f}) >= max observed power ({max_observed:.1f}), "
-            "clamping to 95% of max"
-        )
-        cp = max_observed * 0.95
-
-    # Sanity: W' should be positive
-    if w_prime <= 0:
-        logger.warning(f"W' estimate non-positive ({w_prime}), returning 0")
-        w_prime = 0.0
-
-    logger.info(
-        f"Estimated CP: {cp:.1f}W, W': {w_prime:.0f}J from {len(points)} efforts"
-    )
-    return round(cp, 2), round(w_prime, 2)
+    return cp, w_prime
 
 
 def estimate_ride_cp(pdc: dict[int, float]) -> float | None:
     """
-    Estimate Critical Power for a single ride from its PDC.
+    Estimate Critical Power for a single ride from its PDC using FTT ratios.
 
-    First tries full CP regression across all rides. If that fails (single ride,
-    insufficient data), falls back to scaling shorter-duration efforts:
-    3min/1.3, 2min/1.25, 1min/1.2.
+    For each effort >= 180s, computes CP = power / ratio(duration).
+    Takes the maximum CP across all efforts.
 
     Returns None if no usable data found.
     """
-    # Try full CP regression
-    ride_data = [{"power_duration_curve": pdc}]
-    cp_est, _ = estimate_critical_power(ride_data)
-    if cp_est > 50:
-        return cp_est
+    efforts: list[tuple[float, float]] = []
+    for dur, pwr in pdc.items():
+        if dur >= _CP_MIN_DURATION and dur <= _CP_MAX_DURATION and pwr > 0:
+            efforts.append((float(dur), float(pwr)))
 
-    # Fallback: scale shorter durations up to estimate CP
-    # MTB rides and interval training often lack 3min+ contiguous power.
-    for dur, scale in [(180, 1.3), (120, 1.25), (60, 1.2)]:
-        pwr = pdc.get(dur, 0)
-        if pwr > 0 and pwr < 600:
-            return pwr / scale
+    if not efforts:
+        return None
+
+    cp, _ = _estimate_cp_from_efforts(efforts)
+    if cp > 50:
+        return cp
     return None
 
 

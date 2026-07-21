@@ -267,10 +267,10 @@ class TestComputePowerMetrics:
         assert np.isclose(total, 100.0)
 
     def test_pdc_has_all_durations(self):
-        """PDC dict has all 13 standard durations."""
+        """PDC dict has all standard durations (100 with fine granularity)."""
         samples = [200.0] * 3600
         result = compute_power_metrics("act1", samples, 3600.0, 200.0)
-        assert len(result.power_duration_curve) == 13
+        assert len(result.power_duration_curve) == 100
 
     def test_activity_id_preserved(self):
         """Activity ID is preserved in result."""
@@ -280,18 +280,18 @@ class TestComputePowerMetrics:
 
 
 # ── estimate_critical_power ────────────────────────────────────────────────
-# Now returns (cp, w_prime) tuple; uses PDC efforts; min duration 180s.
+# Uses FTT ratios (Morton's 3-param CP model). CP = max(power / ratio(dur)).
 
 
 class TestEstimateCriticalPower:
-    def test_two_known_pdc_efforts(self):
-        """Two activities with PDC efforts at standard durations → positive CP."""
+    def test_two_activities_pdc_efforts(self):
+        """Two activities with PDC efforts → positive CP."""
         activities = [
             {
                 "pdc_efforts": [
                     {"duration": 180, "avg_power": 310.0},
                     {"duration": 300, "avg_power": 280.0},
-                    {"duration": 480, "avg_power": 260.0},
+                    {"duration": 600, "avg_power": 260.0},
                     {"duration": 1200, "avg_power": 240.0},
                 ]
             },
@@ -299,7 +299,7 @@ class TestEstimateCriticalPower:
                 "pdc_efforts": [
                     {"duration": 180, "avg_power": 305.0},
                     {"duration": 300, "avg_power": 275.0},
-                    {"duration": 480, "avg_power": 255.0},
+                    {"duration": 600, "avg_power": 255.0},
                     {"duration": 1200, "avg_power": 235.0},
                 ]
             },
@@ -307,22 +307,16 @@ class TestEstimateCriticalPower:
         cp, wp = estimate_critical_power(activities)
         assert cp > 0
         assert wp > 0
-        # CP should be below the lowest observed power (235W)
-        assert cp < 240
+        # CP should be below the highest observed power
+        assert cp < 310
 
     def test_from_power_duration_curve(self):
         """Can extract efforts from power_duration_curve dict."""
         activities = [
             {
                 "power_duration_curve": {
-                    180: 310.0, 300: 280.0, 480: 260.0, 1200: 240.0,
+                    180: 310.0, 300: 280.0, 600: 260.0, 1200: 240.0,
                     1: 500.0, 3: 450.0, 5: 430.0, 10: 400.0,
-                }
-            },
-            {
-                "power_duration_curve": {
-                    180: 305.0, 300: 275.0, 480: 255.0, 1200: 235.0,
-                    1: 490.0, 3: 440.0, 5: 420.0, 10: 390.0,
                 }
             },
         ]
@@ -338,16 +332,15 @@ class TestEstimateCriticalPower:
         ]
         cp, wp = estimate_critical_power(activities)
         assert cp > 0
-        # With 1h@250W and 2h@220W, CP ≈ 190W
-        assert 180 < cp < 220
-        assert wp > 0
+        # 3600s @ 250W: ratio=1.0 -> CP=250. 7200s > 3600 max, skipped.
+        assert cp == pytest.approx(250.0, abs=1)
 
-    def test_less_than_two_efforts(self):
-        """<2 qualifying efforts returns (0.0, 0.0)."""
+    def test_single_effort_returns_cp(self):
+        """Single qualifying effort returns a CP estimate."""
         activities = [{"pdc_efforts": [{"duration": 180, "avg_power": 300.0}]}]
         cp, wp = estimate_critical_power(activities)
-        assert cp == 0.0
-        assert wp == 0.0
+        assert cp > 0
+        assert wp > 0
 
     def test_empty_list(self):
         """Empty list returns (0.0, 0.0)."""
@@ -356,13 +349,13 @@ class TestEstimateCriticalPower:
         assert wp == 0.0
 
     def test_single_activity_with_multiple_efforts(self):
-        """Single activity with multiple PDC efforts → enough points."""
+        """Single activity with multiple PDC efforts → positive CP."""
         activities = [
             {
                 "pdc_efforts": [
                     {"duration": 180, "avg_power": 310.0},
                     {"duration": 300, "avg_power": 280.0},
-                    {"duration": 480, "avg_power": 260.0},
+                    {"duration": 600, "avg_power": 260.0},
                 ]
             },
         ]
@@ -370,18 +363,18 @@ class TestEstimateCriticalPower:
         assert cp > 0
         assert wp > 0
 
-    def test_non_positive_cp_clamped(self):
-        """If regression yields non-positive CP, return (0.0, 0.0)."""
+    def test_non_positive_power_returns_zero(self):
+        """If all efforts have non-positive power, return (0.0, 0.0)."""
         activities = [
             {
                 "pdc_efforts": [
-                    {"duration": 1200, "avg_power": 200.0},
-                    {"duration": 180, "avg_power": 100.0},
+                    {"duration": 1200, "avg_power": 0.0},
+                    {"duration": 180, "avg_power": -10.0},
                 ]
             },
         ]
         cp, wp = estimate_critical_power(activities)
-        assert cp >= 0
+        assert cp == 0.0
 
     def test_short_efforts_filtered(self):
         """Efforts < 180s are skipped."""
@@ -404,7 +397,7 @@ class TestEstimateCriticalPower:
             {
                 "pdc_efforts": [
                     {"duration": 3600, "avg_power": 0.0},
-                    {"duration": 7200, "avg_power": -10.0},
+                    {"duration": 1800, "avg_power": -10.0},
                 ]
             },
         ]
@@ -412,34 +405,32 @@ class TestEstimateCriticalPower:
         assert cp == 0.0
         assert wp == 0.0
 
-    def test_cp_clamped_below_max(self):
-        """If CP >= max observed, clamp to 95% of max."""
+    def test_cp_below_max_observed(self):
+        """CP should not exceed the max observed power."""
         activities = [
             {
                 "pdc_efforts": [
                     {"duration": 180, "avg_power": 200.0},
                     {"duration": 300, "avg_power": 200.0},
-                    {"duration": 480, "avg_power": 200.0},
+                    {"duration": 600, "avg_power": 200.0},
                 ]
             },
         ]
         cp, wp = estimate_critical_power(activities)
-        # With identical power at all durations, CP ≈ 200 which equals max.
-        # Should be clamped to ~95% of max, or at least not exceed max.
-        assert cp <= 200.0 + 1e-6  # allow floating point tolerance
+        # With identical power at all durations, CP should be below max.
+        assert cp <= 200.0 + 1e-6
 
     def test_rounded_output(self):
         """CP and W' are rounded to 2 decimal places."""
         activities = [
             {"duration": 3600, "avg_power": 250.0},
-            {"duration": 7200, "avg_power": 220.0},
         ]
         cp, wp = estimate_critical_power(activities)
         assert cp == round(cp, 2)
         assert wp == round(wp, 2)
 
     def test_w_prime_positive(self):
-        """W' from regression should be positive for realistic data."""
+        """W' should be positive for realistic data."""
         activities = [
             {
                 "pdc_efforts": [
@@ -451,40 +442,39 @@ class TestEstimateCriticalPower:
         cp, wp = estimate_critical_power(activities)
         assert wp > 0
 
+    def test_max_duration_filter(self):
+        """Efforts > 3600s are skipped (endurance fade, not threshold)."""
+        activities = [
+            {
+                "pdc_efforts": [
+                    {"duration": 7200, "avg_power": 200.0},
+                ]
+            },
+        ]
+        cp, wp = estimate_critical_power(activities)
+        assert cp == 0.0
+
 
 # ── estimate_ride_cp ───────────────────────────────────────────────────────
 
 
 class TestEstimateRideCp:
-    def test_full_cp_regression(self):
-        """When PDC has enough data for regression, use it."""
-        pdc = {180: 310.0, 300: 280.0, 480: 260.0, 1200: 240.0}
+    def test_ride_with_multiple_efforts(self):
+        """Ride with multiple PDC entries → CP from best effort."""
+        pdc = {180: 310.0, 300: 280.0, 600: 260.0, 1200: 240.0}
         cp = estimate_ride_cp(pdc)
         assert cp is not None
-        assert cp > 200  # CP should be near the asymptote
+        assert cp > 200
 
-    def test_fallback_3min(self):
-        """Single 3min effort falls back to 3min/1.3."""
+    def test_ride_single_3min_effort(self):
+        """Single 3min effort → CP via FTT ratio (~1.40 for 3min)."""
         pdc = {1: 500.0, 3: 450.0, 180: 260.0}
         cp = estimate_ride_cp(pdc)
         assert cp is not None
-        assert np.isclose(cp, 260.0 / 1.3, atol=0.5)
+        # 260 / 1.40 ≈ 185.7
+        assert 180 < cp < 195
 
-    def test_fallback_2min(self):
-        """When 3min is missing, fall back to 2min/1.25."""
-        pdc = {1: 500.0, 3: 450.0, 60: 300.0, 120: 275.0}
-        cp = estimate_ride_cp(pdc)
-        assert cp is not None
-        assert np.isclose(cp, 275.0 / 1.25, atol=0.5)
-
-    def test_fallback_1min(self):
-        """When 3min and 2min are missing, fall back to 1min/1.2."""
-        pdc = {1: 500.0, 3: 450.0, 30: 350.0, 60: 320.0}
-        cp = estimate_ride_cp(pdc)
-        assert cp is not None
-        assert np.isclose(cp, 320.0 / 1.2, atol=0.5)
-
-    def test_no_usable_data(self):
+    def test_ride_no_usable_data(self):
         """Returns None when no durations have valid power."""
         pdc = {1: 0.0, 3: 0.0, 60: 0.0, 120: 0.0, 180: 0.0}
         cp = estimate_ride_cp(pdc)
@@ -495,23 +485,14 @@ class TestEstimateRideCp:
         cp = estimate_ride_cp({})
         assert cp is None
 
-    def test_high_power_capped(self):
-        """Power >= 600W at short durations is skipped (likely sprint, not CP)."""
-        pdc = {1: 1000.0, 3: 800.0, 60: 700.0, 120: 650.0, 180: 620.0}
+    def test_short_only_efforts(self):
+        """Only short efforts (< 180s) → None."""
+        pdc = {1: 1000.0, 3: 800.0, 60: 700.0, 120: 650.0}
         cp = estimate_ride_cp(pdc)
-        assert cp is None  # all durations >= 600W, all skipped
-
-    def test_partial_high_power(self):
-        """If 3min is high but 2min is valid, use 2min."""
-        pdc = {60: 300.0, 120: 280.0, 180: 700.0}
-        cp = estimate_ride_cp(pdc)
-        assert cp is not None
-        # 180 skipped (>600), falls back to 120/1.25
-        assert np.isclose(cp, 280.0 / 1.25, atol=0.5)
+        assert cp is None
 
     def test_mtb_ride_pdc(self):
         """MTB-style PDC with stops: 3min average diluted by stops still works."""
-        # Simulate MTB ride: 100min with 5min efforts separated by 1min stops
         power = np.zeros(6000)
         for i in range(1000, 1300):
             power[i] = 250.0
@@ -523,7 +504,6 @@ class TestEstimateRideCp:
         cp = estimate_ride_cp(pdc)
         assert cp is not None
         assert cp > 0
-        # CP should be reasonable (not zero, not astronomical)
         assert 50 < cp < 400
 
 
