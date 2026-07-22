@@ -1,4 +1,4 @@
-from src.config.constants import DOWNSAMPLE_MAX_POINTS
+from src.config.constants import DOWNSAMPLE_MAX_POINTS, KM_TO_MILES, M_TO_FEET
 
 """Pure UI helper functions and constants extracted from visualize.py.
 
@@ -32,6 +32,58 @@ def _distance_km(m: Optional[float]) -> str:
     if m is None or m <= 0:
         return "\u2014"
     return f"{m / 1000:.2f} km"
+
+
+def _format_distance(m: Optional[float], units: str = "metric") -> str:
+    """Format distance (meters) into human-readable string with unit suffix.
+    
+    units: "metric" for km, "imperial" for miles.
+    """
+    if m is None or m <= 0:
+        return "\u2014"
+    if units == "imperial":
+        return f"{m / 1000 * KM_TO_MILES:.2f} mi"
+    return f"{m / 1000:.2f} km"
+
+
+def _format_elevation(m: Optional[float], units: str = "metric") -> str:
+    """Format elevation (meters) into human-readable string with unit suffix."""
+    if m is None:
+        return "\u2014"
+    if units == "imperial":
+        return f"{m * M_TO_FEET:.0f} ft"
+    return f"{m:.0f} m"
+
+
+def _format_speed_label(units: str = "metric") -> str:
+    """Return speed axis label for the given unit system."""
+    return "Speed (mph)" if units == "imperial" else "Speed (km/h)"
+
+
+def _format_altitude_label(units: str = "metric") -> str:
+    """Return altitude axis label for the given unit system."""
+    return "Altitude (ft)" if units == "imperial" else "Altitude (m)"
+
+
+def _get_units_system() -> str:
+    """Read the user's unit system preference from the profile.
+    
+    Returns "imperial" or "metric" (default).
+    """
+    from src.config import user_profile_path
+    profile_path = user_profile_path()
+    if profile_path.exists():
+        try:
+            text = profile_path.read_text()
+            for line in text.splitlines():
+                line = line.strip()
+                if line.startswith("- Units:"):
+                    val = line.split(":", 1)[1].strip().lower()
+                    if val in ("imperial", "metric"):
+                        return val
+        except Exception:
+            pass
+    return "metric"
 
 
 def _stream_id(activity_id: str) -> str:
@@ -194,6 +246,7 @@ _PROFILE_KEY_MAP = {
     "gender": "gender",
     "power_meter": "power_meter",
     "hr_monitor": "hr_monitor",
+    "units": "units",
 }
 
 _PROFILE_KEY_NORMALIZATIONS = [

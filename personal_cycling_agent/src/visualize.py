@@ -50,6 +50,7 @@ from src.config.constants import (
     TSB_TIRED,
     MAX_SYNC_DAYS,
     MS_TO_KMH,
+    MS_TO_MPH,
     MILES_TO_KM,
     EARTH_RADIUS_KM,
     HTTP_TIMEOUT_SEC,
@@ -62,6 +63,11 @@ from src.ui_helpers import (
     _elapsed_to_minutes,
     _format_duration,
     _distance_km,
+    _format_distance,
+    _format_elevation,
+    _format_speed_label,
+    _format_altitude_label,
+    _get_units_system,
     _make_zones,
     _parse_profile_text,
     _stream_id,
@@ -1021,10 +1027,11 @@ def _render_activity_detail():
     st.subheader(f"Activity: {combined.get('activity_name') or combined.get('activity_type') or 'Unknown'}")
     st.caption(f"ID: {combined['id']} | Type: {combined.get('activity_type', 'Unknown') or 'Unknown'}")
 
+    units = _get_units_system()
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Date", combined["start_date"][:10])
     col2.metric("Duration", _format_duration(combined.get("duration")), help=f"Source: {combined.get('source_duration', 'API')}")
-    col3.metric("Distance", _distance_km(combined.get("distance")), help=f"Source: {combined.get('source_distance', 'API')}")
+    col3.metric("Distance", _format_distance(combined.get("distance"), units), help=f"Source: {combined.get('source_distance', 'API')}")
     col4.metric("Calories", f"{combined.get('calories', 0):.0f}" if combined.get("calories") else "—", help=f"Source: {combined.get('source_calories', 'API')}")
 
     col5, col6, col7, col8 = st.columns(4)
@@ -1075,10 +1082,10 @@ def _render_activity_detail():
     # -- Environment --
     st.subheader("Environment")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Elev Gain", f"{combined.get('elevation_gain', 0):.0f} m" if combined.get('elevation_gain') else "—")
-    col2.metric("Elev Loss", f"{combined.get('elevation_loss', 0):.0f} m" if combined.get('elevation_loss') else "—")
-    col3.metric("Min Elev", f"{combined.get('min_elevation', 0):.0f} m" if combined.get('min_elevation') else "—")
-    col4.metric("Max Elev", f"{combined.get('max_elevation', 0):.0f} m" if combined.get('max_elevation') else "—")
+    col1.metric("Elev Gain", _format_elevation(combined.get('elevation_gain'), units) if combined.get('elevation_gain') else "—")
+    col2.metric("Elev Loss", _format_elevation(combined.get('elevation_loss'), units) if combined.get('elevation_loss') else "—")
+    col3.metric("Min Elev", _format_elevation(combined.get('min_elevation'), units) if combined.get('min_elevation') else "—")
+    col4.metric("Max Elev", _format_elevation(combined.get('max_elevation'), units) if combined.get('max_elevation') else "—")
 
     col5, col6 = st.columns(2)
     col5.metric("Temp", f"{combined.get('min_temperature', 0):.0f}–{combined.get('max_temperature', 0):.0f} °C" if combined.get('min_temperature') and combined.get('max_temperature') else "—")
@@ -1127,9 +1134,9 @@ def _render_activity_detail():
     metric_labels = {
         "power": "Power (W)",
         "heart_rate": "Heart Rate (bpm)",
-        "speed": "Speed (km/h)",
+        "speed": _format_speed_label(units),
         "cadence": "Cadence (rpm)",
-        "altitude": "Altitude (m)",
+        "altitude": _format_altitude_label(units),
     }
 
     sid = _stream_id(selected_id)
@@ -1149,9 +1156,15 @@ def _render_activity_detail():
         values = [r["value"] for r in rows]
         elapsed, values = _downsample(elapsed, values)
 
-        # Garmin speed is in m/s; convert to km/h for display
+        # Convert units for display
         if metric == "speed":
-            values = [v * MS_TO_KMH for v in values]
+            if units == "imperial":
+                values = [v * MS_TO_MPH for v in values]
+            else:
+                values = [v * MS_TO_KMH for v in values]
+        elif metric == "altitude" and units == "imperial":
+            from src.config.constants import M_TO_FEET
+            values = [v * M_TO_FEET for v in values]
 
         y_label = metric_labels.get(metric, metric)
         title = y_label
@@ -1639,6 +1652,7 @@ def _render_profile():
         "hr_monitor": os.getenv("HR_MONITOR", ""),
         "gender": os.getenv("GENDER", "male"),
         "tsb_floor": -10,
+        "units": "metric",
     }
 
     if profile_path.exists():
@@ -1655,6 +1669,9 @@ def _render_profile():
             name = st.text_input("Name", value=profile["name"], key="prof_name")
             weight = st.number_input("Weight (kg)", min_value=0, value=profile["weight_kg"], key="prof_weight")
             height = st.number_input("Height (cm)", min_value=0, value=profile["height_cm"], key="prof_height")
+            units = st.selectbox("Display Units", ["metric", "imperial"],
+                                 index=["metric", "imperial"].index(profile["units"]) if profile["units"] in ["metric", "imperial"] else 0,
+                                 key="prof_units")
 
             st.subheader("Training")
             disciplines = ["road", "gravel", "MTB", "TT"]
@@ -1750,6 +1767,7 @@ def _render_profile():
 - Name: {name}
 - Weight (kg): {int(weight)}
 - Height (cm): {int(height)}
+- Units: {units}
 
 ## Training History
 - Primary discipline: {discipline}

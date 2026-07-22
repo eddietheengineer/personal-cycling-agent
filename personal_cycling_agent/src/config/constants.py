@@ -130,7 +130,10 @@ SYNC_LOG_CAP = 500  # max sync log entries to keep in memory
 DOWNSAMPLE_MAX_POINTS = 10_000
 EARTH_RADIUS_KM = 6371.0
 MS_TO_KMH = 3.6
+MS_TO_MPH = 2.23694
 MILES_TO_KM = 1.60934
+KM_TO_MILES = 0.621371
+M_TO_FEET = 3.28084
 
 # ---------------------------------------------------------------------------
 # W' Estimation Defaults
