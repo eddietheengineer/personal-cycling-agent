@@ -27,11 +27,11 @@ def _format_duration(seconds: Optional[float]) -> str:
     return f"{m}m {s}s"
 
 
-def _distance_km(cm: Optional[float]) -> str:
-    """Format Garmin distance (centimeters) into km string."""
-    if cm is None or cm <= 0:
+def _distance_km(m: Optional[float]) -> str:
+    """Format distance (meters) into km string."""
+    if m is None or m <= 0:
         return "\u2014"
-    return f"{cm / 100000:.2f} km"
+    return f"{m / 1000:.2f} km"
 
 
 def _stream_id(activity_id: str) -> str:

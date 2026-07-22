@@ -10,7 +10,7 @@ Requires plotly and streamlit in requirements.txt.
 
 NOTE on units from Garmin Connect:
   - duration is stored in seconds (converted from Garmin ms on ingest)
-  - distance is stored in centimeters
+  - distance is stored in meters
   - speed in activity_streams is m/s
   - elapsed in activity_streams is seconds
 """
