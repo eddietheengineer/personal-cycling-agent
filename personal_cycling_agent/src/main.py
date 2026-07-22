@@ -291,10 +291,12 @@ def run_analyze() -> dict:
 
             # Parse activity date
             act_date_str = act.get("start_date", "")[:10]
+            act_date = None
+            act_date_str_fmt = act_date_str
             try:
                 act_date = datetime.strptime(act_date_str, "%Y-%m-%d")
             except ValueError:
-                act_date = None
+                pass
 
             # Compute PDC for this ride
             pdc = None
@@ -310,12 +312,25 @@ def run_analyze() -> dict:
             if ride_cp_est is not None:
                 db.store_activity_metrics(activity_id, {"ride_cp": ride_cp_est})
 
+                # Update the pre-fetched CP lookup so rolling window sees the new value.
+                if act_date is not None:
+                    d = act_date_str_fmt
+                    if d not in ride_cp_by_date or ride_cp_est > ride_cp_by_date[d]:
+                        ride_cp_by_date[d] = ride_cp_est
+                        # Find and update the corresponding entry in sorted lists.
+                        idx = bisect.bisect_left(sorted_cp_dates, d)
+                        if idx < len(sorted_cp_dates) and sorted_cp_dates[idx] == d:
+                            sorted_cp_values[idx] = ride_cp_est
+                        else:
+                            # New date — insert in sorted order.
+                            sorted_cp_dates.insert(idx, d)
+                            sorted_cp_values.insert(idx, ride_cp_est)
+
             # Rolling 90-day CP: max ride_cp from last 90 days (including this ride).
             # Computed from pre-fetched sorted dates + range max (O(log n) bisect + O(window) max).
             current_cp = 0.0
             if act_date is not None:
                 cutoff = (act_date - timedelta(days=ROLLING_CP_WINDOW_DAYS)).strftime("%Y-%m-%d")
-                act_date_str_fmt = act_date.strftime("%Y-%m-%d")
                 lo = bisect.bisect_left(sorted_cp_dates, cutoff)
                 hi = bisect.bisect_right(sorted_cp_dates, act_date_str_fmt)
                 if lo < hi:
