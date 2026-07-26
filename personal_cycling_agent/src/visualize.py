@@ -935,8 +935,9 @@ def _render_dashboard_coach():
         try:
             from src.agent.db_query import query_db
 
-            with st.spinner("Coach is thinking..."):
+            with st.status("Coach is thinking...", expanded=False) as status:
                 response = llm_client.generate(full_prompt, stream=False)
+                status.update(label="Coach responded", state="complete", expanded=False)
 
             # If coach requests a DB query, execute it and ask again
             if response.strip().startswith("QUERY:"):
@@ -950,6 +951,9 @@ def _render_dashboard_coach():
                     f"ASSISTANT:"
                 )
                 response = llm_client.generate(followup, stream=False)
+
+            if not response.strip():
+                response = "(The coach didn't provide a response.)"
 
             st.session_state.coach_messages.append({"role": "assistant", "content": response})
 
@@ -972,8 +976,14 @@ def _render_dashboard_coach():
             import threading
             threading.Thread(target=_extract_and_save, daemon=True).start()
         except Exception as e:
+            logger.warning(f"Coach error: {e}", exc_info=True)
             st.error(f"Coach error: {e}")
+            st.session_state.coach_messages.append(
+                {"role": "assistant", "content": f"Sorry, I encountered an error: {e}"}
+            )
 
+        # Clear the input field and rerun
+        st.session_state.dash_coach_input = ""
         st.rerun()
 def _zone_colors():
     """Return zone color list matching current Streamlit theme."""
