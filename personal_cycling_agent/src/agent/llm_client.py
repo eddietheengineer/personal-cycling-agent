@@ -86,7 +86,12 @@ def _get_model() -> str:
 # ── OpenAI-compatible API ────────────────────────────────────────────
 
 def _openai_generate(prompt: str, stream: bool) -> str:
-    """Generate using OpenAI-compatible /v1/chat/completions API."""
+    """Generate using OpenAI-compatible /v1/chat/completions API.
+
+    The ``prompt`` text may contain system instructions followed by a
+    "Conversation:" block with USER/ASSISTANT turns.  We split it into
+    proper chat messages so the LLM has a ``user`` message to respond to.
+    """
     base_url = _get_base_url()
     url = f"{base_url}/chat/completions"
     api_key = _get_api_key()
@@ -97,22 +102,84 @@ def _openai_generate(prompt: str, stream: bool) -> str:
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    # --- Split prompt into proper chat messages ---
+    messages = _split_prompt_into_messages(prompt)
+
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": prompt},
-        ],
+        "messages": messages,
         "temperature": 0.3,
         "max_tokens": 2048,
         "stream": stream,
     }
 
-    logger.info(f"Sending to {url} (model={model})")
+    logger.info(f"Sending to {url} (model={model}, messages={len(messages)})")
 
     if stream:
         return _openai_stream(url, headers, payload, timeout)
     else:
         return _openai_blocking(url, headers, payload, timeout)
+
+
+def _split_prompt_into_messages(prompt: str) -> list[dict]:
+    """Split a combined prompt string into system + chat messages.
+
+    Handles two formats:
+    1. ``{system}\n\nConversation:\nUSER: ...\nASSISTANT: ...`` — coach chat
+    2. Plain text with no Conversation block — prescription / extraction
+    """
+    conv_marker = "\nConversation:"
+    idx = prompt.find(conv_marker)
+
+    if idx == -1:
+        # No conversation block — treat as system + a minimal user prompt
+        # to ensure the LLM actually generates a response.
+        return [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": "Please respond."},
+        ]
+
+    system = prompt[:idx].strip()
+    conv_text = prompt[idx + len(conv_marker):].strip()
+
+    # Parse conversation turns: "USER: ...", "ASSISTANT: ..."
+    turns: list[dict] = []
+    lines = conv_text.split("\n")
+    current_role: str | None = None
+    current_lines: list[str] = []
+
+    for line in lines:
+        if line.startswith("USER: "):
+            if current_role is not None:
+                turns.append({"role": current_role, "content": "\n".join(current_lines).strip()})
+            current_role = "user"
+            current_lines = [line[6:]]
+        elif line.startswith("ASSISTANT:"):
+            if current_role is not None:
+                turns.append({"role": current_role, "content": "\n".join(current_lines).strip()})
+            current_role = "assistant"
+            content = line[len("ASSISTANT:"):]
+            current_lines = [content] if content else []
+        else:
+            current_lines.append(line)
+
+    # Flush last turn
+    if current_role is not None:
+        content = "\n".join(current_lines).strip()
+        if content:
+            turns.append({"role": current_role, "content": content})
+
+    # Build final messages list
+    messages: list[dict] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.extend(turns)
+
+    # Guard: ensure there's at least a user message (LLMs won't respond to system-only)
+    if not any(m["role"] == "user" for m in messages):
+        messages.append({"role": "user", "content": "Please respond."})
+
+    return messages
 
 
 def _openai_blocking(url: str, headers: dict, payload: dict, timeout: int) -> str:
