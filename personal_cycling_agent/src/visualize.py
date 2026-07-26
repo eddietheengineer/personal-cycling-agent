@@ -862,6 +862,7 @@ def _render_dashboard_coach():
     if "coach_messages" not in st.session_state:
         st.session_state.coach_messages = []
 
+
     st.markdown("**💬 Coach**")
 
     # Show last few messages
@@ -982,8 +983,6 @@ def _render_dashboard_coach():
                 {"role": "assistant", "content": f"Sorry, I encountered an error: {e}"}
             )
 
-        # Clear the input field and rerun
-        st.session_state.dash_coach_input = ""
         st.rerun()
 def _zone_colors():
     """Return zone color list matching current Streamlit theme."""

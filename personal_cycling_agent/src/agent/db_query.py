@@ -7,9 +7,9 @@ Allows the coach to query the cycling database for any data it needs
 to answer questions about training history, patterns, and causes.
 """
 
+from pathlib import Path
+
 import logging
-import re
-import sqlite3
 
 logger = logging.getLogger(__name__)
 
