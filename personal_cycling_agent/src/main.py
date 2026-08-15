@@ -682,7 +682,7 @@ def run_prescribe(analysis: dict | None = None) -> str:
                 }]
                 activity_for_ml = [{
                     "start_date": readiness.get("date", ""),
-                    "tss": training_load.get("atl", 0),
+                    "tss": readiness.get("recent_tss", 0),
                     "np": 0, "ifr": 0,
                     "w_prime_min_balance": 50,
                     "decoupling_drift": 0,
