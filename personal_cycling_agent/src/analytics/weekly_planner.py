@@ -828,6 +828,7 @@ def generate_ai_plan() -> WeeklyPlan:
         return days
 
     # Retry loop: up to 3 attempts with validation feedback
+    last_errors: list[PlanValidationError] = []
     MAX_RETRIES = 3
     for attempt in range(MAX_RETRIES):
         prompt = _build_prompt() if attempt == 0 else _build_prompt(
