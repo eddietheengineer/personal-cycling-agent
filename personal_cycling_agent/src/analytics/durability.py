@@ -114,11 +114,26 @@ def compute_durability(
             return None
         return float(peaks[idx])
 
-    p1_fresh = peak_at_load(peak_1min, cumulative_kj, FRESH_KJ + 1)  # near start
+    # Fresh peak: find the first valid rolling max value at or after the point
+    # where cumulative kJ crosses the fresh threshold. This avoids the bug where
+    # the rolling max window hasn't filled yet at kJ=1 (only 4s at 250W).
+    def fresh_peak(peaks: np.ndarray, cum_kj: np.ndarray, threshold: float) -> float | None:
+        """Get the first valid rolling max value at or after the kJ threshold."""
+        idx = np.searchsorted(cum_kj, threshold)
+        if idx >= len(peaks):
+            return None
+        # Find the first valid value at or after idx
+        valid = peaks[idx:]
+        valid = valid[~np.isnan(valid)]
+        if len(valid) == 0:
+            return None
+        return float(valid[0])
+
+    p1_fresh = fresh_peak(peak_1min, cumulative_kj, FRESH_KJ + 1)
     p1_fatigued = peak_at_load(peak_1min, cumulative_kj, FATIGUED_KJ)
     p1_deep = peak_at_load(peak_1min, cumulative_kj, DEEPLY_FATIGUED_KJ)
 
-    p5_fresh = peak_at_load(peak_5min, cumulative_kj, FRESH_KJ + 1)
+    p5_fresh = fresh_peak(peak_5min, cumulative_kj, FRESH_KJ + 1)
     p5_fatigued = peak_at_load(peak_5min, cumulative_kj, FATIGUED_KJ)
     p5_deep = peak_at_load(peak_5min, cumulative_kj, DEEPLY_FATIGUED_KJ)
 

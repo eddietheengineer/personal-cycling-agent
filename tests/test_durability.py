@@ -75,52 +75,53 @@ class TestComputeDurabilitySteadyPower:
     """Known-value verification with constant power."""
 
     def test_steady_200w_one_hour(self):
-        """Steady 200W for 3600s: total_kj = 720. Fresh peak is None (rolling_max window not ready at 1 kJ threshold)."""
+        """Steady 200W for 3600s: total_kj = 720. Fresh peak is 200W (first valid rolling max)."""
         power = [200.0] * 3600
         result = compute_durability("act6", power)
         assert result.total_kj == pytest.approx(720.0)
-        # searchsorted(cum_kj, 1) returns index 5 (cum_kj[5]=1.2), but rolling_max needs i>=60 → None
-        assert result.peak_1min_fresh is None
+        # Fresh peak: first valid rolling max value at or after kJ=1 → 200W
+        assert result.peak_1min_fresh == pytest.approx(200.0)
         # 1000 kJ threshold is never reached (only 720 kJ total)
         assert result.peak_1min_fatigued is None
         assert result.peak_1min_deeply_fatigued is None
+        # Fatigued is None → degradation is None
         assert result.degradation_1min is None
 
     def test_steady_300w_crosses_1000_kj(self):
-        """300W steady: crosses 1000 kJ at ~3333s. Fresh peak is None (window not ready at 1 kJ)."""
+        """300W steady: crosses 1000 kJ at ~3333s. Fresh peak is 300W (first valid rolling max)."""
         power = [300.0] * 4000  # 1200 kJ total
         result = compute_durability("act7", power)
         assert result.total_kj == pytest.approx(1200.0)
-        # searchsorted(cum_kj, 1) → index 3 (cum_kj[3]=1.2), rolling_max needs i>=60 → None
-        assert result.peak_1min_fresh is None
+        # Fresh peak: first valid rolling max value at or after kJ=1 → 300W
+        assert result.peak_1min_fresh == pytest.approx(300.0)
         assert result.peak_1min_fatigued == pytest.approx(300.0)
-        # Fresh is None → degradation is None
-        assert result.degradation_1min is None
+        # Fresh == fatigued → degradation is 100%
+        assert result.degradation_1min == pytest.approx(100.0)
 
     def test_steady_power_crosses_all_thresholds(self):
-        """Power high enough and long enough to cross 1000 and 1500 kJ. Fresh peaks are None (window not ready at 1 kJ)."""
+        """Power high enough and long enough to cross 1000 and 1500 kJ. Fresh peaks are valid."""
         # 400W for 5000s = 2000 kJ
         power = [400.0] * 5000
         result = compute_durability("act8", power)
         assert result.total_kj == pytest.approx(2000.0)
-        # Fresh peaks: searchsorted(cum_kj, 1) returns index < 60 → None
-        assert result.peak_1min_fresh is None
-        assert result.peak_5min_fresh is None
+        # Fresh peaks: first valid rolling max value at or after kJ=1 → 400W
+        assert result.peak_1min_fresh == pytest.approx(400.0)
+        assert result.peak_5min_fresh == pytest.approx(400.0)
         # Fatigued/deeply fatigued peaks are valid (thresholds reached after window is ready)
         assert result.peak_1min_fatigued == pytest.approx(400.0)
         assert result.peak_1min_deeply_fatigued == pytest.approx(400.0)
         assert result.peak_5min_fatigued == pytest.approx(400.0)
         assert result.peak_5min_deeply_fatigued == pytest.approx(400.0)
-        # Fresh is None → degradation is None
-        assert result.degradation_1min is None
-        assert result.degradation_5min is None
+        # Fresh == fatigued → degradation is 100%
+        assert result.degradation_1min == pytest.approx(100.0)
+        assert result.degradation_5min == pytest.approx(100.0)
 
 
 class TestComputeDurabilityDegradation:
     """Verify degradation ratios when power drops at fatigue thresholds."""
 
     def test_1min_degradation_with_power_drop(self):
-        """Power drops from 300W to 240W after 1000 kJ. Fresh peak is None."""
+        """Power drops from 300W to 240W after 1000 kJ. Fresh peak is 300W."""
         # 300W for 3334s = ~1000.2 kJ, then 240W for 2000s
         # searchsorted(cum_kj, 1000) → index 3333 (cum_kj[3333]=1000.2)
         # Rolling 1-min window at index 3333 covers indices 3274..3333, all 300W
@@ -128,26 +129,26 @@ class TestComputeDurabilityDegradation:
         power_after = [240.0] * 2000
         power = power_before + power_after
         result = compute_durability("act9", power)
-        # Fresh peak: searchsorted(cum_kj, 1) returns index < 60 → None
-        assert result.peak_1min_fresh is None
+        # Fresh peak: first valid rolling max value at or after kJ=1 → 300W
+        assert result.peak_1min_fresh == pytest.approx(300.0)
         # Fatigued peak at crossing: window still has 300W samples
         assert result.peak_1min_fatigued == pytest.approx(300.0)
-        # Fresh is None → degradation is None
-        assert result.degradation_1min is None
+        # Fresh == fatigued → degradation is 100%
+        assert result.degradation_1min == pytest.approx(100.0)
     def test_5min_degradation_with_power_drop(self):
-        """5-min degradation computed correctly when power drops after 1000 kJ. Fresh peak is None."""
+        """5-min degradation computed correctly when power drops after 1000 kJ. Fresh peak is 300W."""
         # 300W for 3334s → ~1000 kJ, then 240W for 3000s
         # searchsorted(cum_kj, 1000) → index 3333; 5-min window at 3333 covers 3034..3333, all 300W
         power_before = [300.0] * 3334
         power_after = [240.0] * 3000
         power = power_before + power_after
         result = compute_durability("act10", power)
-        # Fresh peak: searchsorted(cum_kj, 1) returns index < 300 → None
-        assert result.peak_5min_fresh is None
+        # Fresh peak: first valid rolling max value at or after kJ=1 → 300W
+        assert result.peak_5min_fresh == pytest.approx(300.0)
         # Fatigued peak at crossing: 5-min window still has 300W samples
         assert result.peak_5min_fatigued == pytest.approx(300.0)
-        # Fresh is None → degradation is None
-        assert result.degradation_5min is None
+        # Fresh == fatigued → degradation is 100%
+        assert result.degradation_5min == pytest.approx(100.0)
 
     def test_no_degradation_when_fatigued_threshold_not_reached(self):
         """If total kJ < 1000, fatigued peaks are None → degradation is None."""
@@ -156,32 +157,35 @@ class TestComputeDurabilityDegradation:
         assert result.peak_1min_fatigued is None
         assert result.degradation_1min is None
     def test_degradation_rounding(self):
-        """Degradation is None when fresh peak is None (window not ready at 1 kJ)."""
-        # 300W fresh, 233W fatigued → would be 233/300 * 100 = 77.666...
-        # But fresh peak is None → degradation is None
+        """Degradation is computed when fresh peak is valid."""
+        # 300W fresh, 233W fatigued → 233/300 * 100 = 77.666...
         power_before = [300.0] * 3334
         power_after = [233.0] * 2000
         power = power_before + power_after
         result = compute_durability("act12", power)
-        assert result.degradation_1min is None
+        # Fresh peak: 300W, fatigued peak: 300W (window still has 300W samples)
+        assert result.peak_1min_fresh == pytest.approx(300.0)
+        assert result.peak_1min_fatigued == pytest.approx(300.0)
+        # Fresh == fatigued → degradation is 100%
+        assert result.degradation_1min == pytest.approx(100.0)
 
 
 class TestComputeDurabilityLongRide:
     """Long rides crossing multiple fatigue thresholds."""
 
     def test_long_ride_crosses_fatigued_and_deeply_fatigued(self):
-        """Ride long enough to cross both 1000 kJ and 1500 kJ thresholds. Fresh peak is None."""
+        """Ride long enough to cross both 1000 kJ and 1500 kJ thresholds. Fresh peak is 250W."""
         # 250W for 7000s = 1750 kJ
         power = [250.0] * 7000
         result = compute_durability("act13", power)
         assert result.total_kj == pytest.approx(1750.0)
-        # Fresh peak: searchsorted(cum_kj, 1) returns index < 60 → None
-        assert result.peak_1min_fresh is None
+        # Fresh peak: first valid rolling max value at or after kJ=1 → 250W
+        assert result.peak_1min_fresh == pytest.approx(250.0)
         assert result.peak_1min_fatigued is not None
         assert result.peak_1min_deeply_fatigued is not None
 
     def test_degradation_with_deep_fatigue(self):
-        """Power drops at 1000 kJ and again at 1500 kJ. Fresh peak is None."""
+        """Power drops at 1000 kJ and again at 1500 kJ. Fresh peak is 350W."""
         # 350W for ~2858s = ~1000 kJ, then 300W for ~1667s = ~500 kJ, then 250W for 2000s
         # searchsorted(cum_kj, 1000) → index 2857; rolling window at 2857 still all 350W
         power1 = [350.0] * 2858  # ~1000.3 kJ
@@ -189,48 +193,48 @@ class TestComputeDurabilityLongRide:
         power3 = [250.0] * 2000  # ~500 kJ (cumulative ~2000.4)
         power = power1 + power2 + power3
         result = compute_durability("act14", power)
-        # Fresh peak is None (window not ready at 1 kJ)
-        assert result.peak_1min_fresh is None
+        # Fresh peak: first valid rolling max value at or after kJ=1 → 350W
+        assert result.peak_1min_fresh == pytest.approx(350.0)
         # Fatigued peak at crossing: window still has 350W samples
         assert result.peak_1min_fatigued == pytest.approx(350.0)
         # Deeply fatigued: searchsorted(cum_kj, 1500) → index in power2 region
         # Window at that point covers 300W samples
         assert result.peak_1min_deeply_fatigued == pytest.approx(300.0)
-        # Fresh is None → degradation is None
-        assert result.degradation_1min is None
+        # Fresh == fatigued → degradation is 100%
+        assert result.degradation_1min == pytest.approx(100.0)
 
     def test_5min_window_not_ready_at_fresh_threshold(self):
         """Fresh threshold is 1 kJ; 5-min window needs 300 samples.
-        If power is very high, 1 kJ is reached in <300 samples → 5-min fresh is None."""
+        If power is very high, 1 kJ is reached in <300 samples → 5-min fresh is 1000W."""
         # 1000W: 1 kJ in 1 second (index 0). 5-min window needs i >= 300.
-        # searchsorted(cum_kj, 1) → index 0 or 1. peak_5min[0/1] is NaN.
+        # searchsorted(cum_kj, 1) → index 0 or 1.
+        # Fresh peak: first valid rolling max value at or after kJ=1 → 1000W
         power = [1000.0] * 500
         result = compute_durability("act15", power)
         # 1-min window: i >= 60, cum_kj[60] = 61 kJ >> 1 kJ
-        # searchsorted finds index 0 (cum_kj[0] = 1.0 >= 1.0)
-        # peak_1min[0] is NaN → fresh is None for both
-        assert result.peak_1min_fresh is None
-        assert result.peak_5min_fresh is None
+        # Fresh peak: first valid rolling max value at or after kJ=1 → 1000W
+        assert result.peak_1min_fresh == pytest.approx(1000.0)
+        assert result.peak_5min_fresh == pytest.approx(1000.0)
 
 
 class TestComputeDurabilityEdgeCases:
     """Additional edge cases and boundary conditions."""
 
     def test_exactly_60_samples(self):
-        """Exactly 60 samples: rolling max first valid at index 60, but len=60 means max index is 59."""
+        """Exactly 60 samples: rolling max first valid at index 59 (window-1)."""
         power = [200.0] * 60
         result = compute_durability("act16", power)
-        # rolling_max: i ranges 0..59, condition i >= 60 never true → all NaN
-        assert result.peak_1min_fresh is None
+        # rolling_max: i ranges 0..59, condition i >= 59 true at index 59 → valid
+        # Fresh peak: first valid rolling max value at or after kJ=1 → 200W
+        assert result.peak_1min_fresh == pytest.approx(200.0)
 
     def test_exactly_61_samples(self):
         """61 samples: first valid rolling max at index 60."""
         power = [200.0] * 61
         result = compute_durability("act17", power)
         # cum_kj[60] = 61 * 200 / 1000 = 12.2 kJ >> 1 kJ
-        # searchsorted(cum_kj, 1) → index 5 (cum_kj[5] = 1.2 kJ)
-        # peak_1min[5] is NaN (5 < 60) → None
-        assert result.peak_1min_fresh is None
+        # Fresh peak: first valid rolling max value at or after kJ=1 → 200W
+        assert result.peak_1min_fresh == pytest.approx(200.0)
 
     def test_enough_samples_for_fresh_reading(self):
         """61 samples at 20W: cum_kj[60] = 1.22 kJ, searchsorted(1) → index 50.
@@ -272,12 +276,12 @@ class TestComputeDurabilityZeroPowerDegradation:
     """Degradation behavior with zero power values."""
 
     def test_zero_power_at_fatigued_threshold(self):
-        """Fresh peak is None (window not ready at 1 kJ). Fatigued peak is valid."""
+        """Fresh peak is 300W (first valid rolling max). Fatigued peak is valid."""
         # 300W for 3334s → ~1000 kJ, then 0W for 2000s
         power = [300.0] * 3334 + [0.0] * 2000
         result = compute_durability("act21", power)
-        # Fresh peak: searchsorted(cum_kj, 1) returns index < 60 → None
-        assert result.peak_1min_fresh is None
+        # Fresh peak: first valid rolling max value at or after kJ=1 → 300W
+        assert result.peak_1min_fresh == pytest.approx(300.0)
         # At 1000 kJ crossing, rolling 1-min peak includes some 300W samples
         assert result.peak_1min_fatigued is not None
 
@@ -303,11 +307,11 @@ class TestDurabilityToDict:
         d = durability_to_dict(result)
         assert d["activity_id"] == "act23"
         assert d["total_kj"] == pytest.approx(1200.0)
-        # Fresh peak is None (window not ready at 1 kJ)
-        assert d["peak_1min_fresh"] is None
+        # Fresh peak: first valid rolling max value at or after kJ=1 → 300W
+        assert d["peak_1min_fresh"] == pytest.approx(300.0)
         assert d["peak_1min_fatigued"] == pytest.approx(300.0)
-        # Fresh is None → degradation is None
-        assert d["degradation_1min"] is None
+        # Fresh == fatigued → degradation is 100%
+        assert d["degradation_1min"] == pytest.approx(100.0)
         assert set(d.keys()) == {
             "activity_id",
             "total_kj",
@@ -331,14 +335,14 @@ class TestDurabilityToDict:
         assert d["degradation_1min"] is None
 
     def test_serialize_with_degradation(self):
-        """Dict reflects degradation=None when fresh peak is None."""
+        """Dict reflects degradation=100% when fresh peak equals fatigued peak."""
         power_before = [300.0] * 3334
         power_after = [240.0] * 2000
         power = power_before + power_after
         result = compute_durability("act25", power)
         d = durability_to_dict(result)
-        # Fresh is None → degradation is None
-        assert d["degradation_1min"] is None
+        # Fresh == fatigued → degradation is 100%
+        assert d["degradation_1min"] == pytest.approx(100.0)
 
     def test_serialize_all_thresholds_reached(self):
         """All fatigue states populated in dict."""
