@@ -988,7 +988,7 @@ def sync_activities(
             sync_date = newest[:10] if newest else today.isoformat()
             db.set_last_synced("garmin_activities", sync_date, resume_offset=0)
     except Exception:
-        logger.debug("Failed to update last synced date", exc_info=True)
+        logger.warning("Failed to update last synced date", exc_info=True)
 
     try:
         db.close()
@@ -1066,7 +1066,7 @@ def extract_power_meters(db_path: str | None = None) -> int:
                     updated += 1
                     break
         except Exception as e:
-            logger.debug(f"Failed to parse {fit_path}: {e}")
+            logger.warning(f"Failed to parse {fit_path}: {e}")
 
     db.close()
     logger.info(f"Extracted power meter info for {updated} activities")

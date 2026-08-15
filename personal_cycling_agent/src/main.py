@@ -106,6 +106,10 @@ def _deduplicate_samples(rows: list) -> list[float]:
     from chest strap + optical HR from watch).  When the FIT parser stores
     these in the DB they appear as separate rows with identical elapsed
     times.  Keep only the first sample per second.
+
+    Input MUST be sorted by elapsed time (guaranteed by the SQL query's
+    ORDER BY elapsed).  np.unique returns indices of the first occurrence
+    in sorted order, so unsorted input would produce incorrect results.
     """
     if not rows:
         return []
@@ -143,7 +147,24 @@ def run_analyze() -> dict:
         wellness_records = db.get_wellness()
         if not wellness_records:
             logger.warning("No wellness data in DB; run --ingest first")
-            return {}
+            return {
+                "cp": 0.0,
+                "readiness": None,
+                "training_load": None,
+                "training_load_history": [],
+                "power_metrics": [],
+                "recent_activities": [],
+                "w_prime": [],
+                "durability": [],
+                "decoupling": [],
+                "thresholds": [],
+                "ml_model": None,
+                "strain_scores": [],
+                "pmax_estimates": [],
+                "three_dim_ir": {},
+                "individual_model": None,
+                "feedback": None,
+            }
 
         wellness_dicts = [dict(r) for r in wellness_records]
         # Build wellness index by date for HR resting HR lookup
