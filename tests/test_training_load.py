@@ -207,7 +207,7 @@ class TestComputeTrainingLoadHistory:
 class TestTrainingLoadToDict:
     def test_serialize(self):
         result = TrainingLoadResult(
-            date="2025-01-01", ctl=100.0, atl=80.0, tsb=20.0, fitness_fatigue=1.25
+            date="2025-01-01", ctl=100.0, atl=80.0, tsb=20.0, fitness_fatigue=1.25, acwr=0.8
         )
         d = training_load_to_dict(result)
         assert d == {
@@ -216,4 +216,5 @@ class TestTrainingLoadToDict:
             "atl": 80.0,
             "tsb": 20.0,
             "fitness_fatigue": 1.25,
+            "acwr": 0.8,
         }

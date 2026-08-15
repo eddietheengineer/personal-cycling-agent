@@ -30,6 +30,7 @@ class TrainingLoadResult:
     atl: float  # Acute Training Load (7-day EMA)
     tsb: float  # Training Stress Balance (CTL - ATL)
     fitness_fatigue: float  # Fitness-Fatigue ratio (CTL / ATL)
+    acwr: float  # Acute:Chronic Workload Ratio (ATL / CTL)
 
 
 def _ema(values: list[float], half_life: float) -> list[float]:
@@ -69,12 +70,12 @@ def compute_training_load(
             TSS values are already computed).
 
     Returns:
-        TrainingLoadResult with CTL, ATL, TSB, and fitness_fatigue for the
+        TrainingLoadResult with CTL, ATL, TSB, fitness_fatigue, and ACWR for the
         most recent date.
     """
     if not tss_records:
         return TrainingLoadResult(
-            date="", ctl=0.0, atl=0.0, tsb=0.0, fitness_fatigue=0.0
+            date="", ctl=0.0, atl=0.0, tsb=0.0, fitness_fatigue=0.0, acwr=0.0
         )
 
     # Sort by date to ensure chronological order
@@ -107,6 +108,7 @@ def compute_training_load(
     atl_val = atl[last_idx]
     tsb_val = ctl_val - atl_val
     fb_val = ctl_val / atl_val if atl_val > 0 else 0.0
+    acwr_val = atl_val / ctl_val if ctl_val > 0 else 0.0
 
     return TrainingLoadResult(
         date=daily_dates[last_idx],
@@ -114,6 +116,7 @@ def compute_training_load(
         atl=atl_val,
         tsb=tsb_val,
         fitness_fatigue=fb_val,
+        acwr=acwr_val,
     )
 
 
@@ -188,4 +191,5 @@ def training_load_to_dict(result: TrainingLoadResult) -> dict[str, Any]:
         "atl": result.atl,
         "tsb": result.tsb,
         "fitness_fatigue": result.fitness_fatigue,
+        "acwr": result.acwr,
     }
