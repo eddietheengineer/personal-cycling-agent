@@ -1123,6 +1123,12 @@ class CyclingDB:
         Returns the number of rows inserted.
         """
         with self._lock:
+            # Delete existing rows for this (activity_id, metric) to prevent
+            # duplicates on re-sync or reparse.
+            self.conn.execute(
+                "DELETE FROM activity_streams WHERE activity_id = ? AND metric = ?",
+                (activity_id, metric),
+            )
             rows = [(activity_id, elapsed, metric, val) for elapsed, val in values]
             self.conn.executemany(
                 "INSERT INTO activity_streams (activity_id, elapsed, metric, value) VALUES (?, ?, ?, ?)",
@@ -1378,18 +1384,14 @@ class CyclingDB:
             activity_id: the activity identifier.
             points: list of (latitude, longitude) tuples.
 
-        Returns the number of points inserted. Skips if activity already has routes.
+        Returns the number of points inserted. Deletes existing routes first
+        to allow updates (e.g. partial GPS data from a previous sync).
         """
         with self._lock:
-            existing = self.conn.execute(
-                "SELECT COUNT(*) FROM activity_routes WHERE activity_id = ?",
+            self.conn.execute(
+                "DELETE FROM activity_routes WHERE activity_id = ?",
                 (activity_id,),
-            ).fetchone()[0]
-            if existing > 0:
-                self.conn.commit()
-                logger.info(f"Activity {activity_id} already has routes; skipping")
-                return 0
-
+            )
             self.conn.executemany(
                 "INSERT INTO activity_routes (activity_id, latitude, longitude, sequence) VALUES (?, ?, ?, ?)",
                 ((activity_id, lat, lon, seq) for seq, (lat, lon) in enumerate(points)),

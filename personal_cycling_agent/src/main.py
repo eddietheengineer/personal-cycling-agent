@@ -211,15 +211,13 @@ def run_analyze() -> dict:
         hr_calibration_pairs: list[dict] = []
 
         # --- Batch-fetch all streams for all activities (single query) ---
+        # Stream keys use the full activity id (e.g. "garmin_12345").
         stream_ids = []
         for act in activity_dicts:
             aid = act.get("id", "")
             if not aid:
                 continue
-            sid = aid
-            if sid.startswith("garmin_"):
-                sid = sid[len("garmin_"):]
-            stream_ids.append(sid)
+            stream_ids.append(aid)
 
         if stream_ids:
             placeholders = ",".join("?" for _ in stream_ids)
@@ -269,8 +267,6 @@ def run_analyze() -> dict:
                 continue
 
             stream_id = activity_id
-            if stream_id.startswith("garmin_"):
-                stream_id = stream_id[len("garmin_"):]
 
             def _get_streams(sid: str, metric: str):
                 return streams_by_id_metric.get((sid, metric), [])

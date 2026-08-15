@@ -87,9 +87,7 @@ def _get_units_system() -> str:
 
 
 def _stream_id(activity_id: str) -> str:
-    """Strip 'garmin_' prefix for activity_streams lookup."""
-    if activity_id.startswith("garmin_"):
-        return activity_id[len("garmin_"):]
+    """Return the stream key for an activity (same as the activity id)."""
     return activity_id
 
 

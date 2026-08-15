@@ -645,7 +645,7 @@ def _fetch_activity_streams(
         return total_stored
 
     except Exception as e:
-        logger.debug(f"Failed to fetch streams for activity {activity_id}: {type(e).__name__}: {e}")
+        logger.warning(f"Failed to fetch streams for activity {activity_id}: {type(e).__name__}: {e}")
         return 0
 
 

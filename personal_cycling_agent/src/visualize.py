@@ -207,6 +207,8 @@ def _clear_sync_flags() -> None:
     st.session_state.rearsing = False
     st.session_state.sync_origin = ""
     st.session_state.sync_mode = ""
+    # Invalidate the analysis cache so the next render picks up fresh data
+    st.session_state.pop("_analysis_cache", None)
 
 def _render_sync_progress(origin: str) -> None:
     """Render the sync progress dialog when a sync is running or just completed.

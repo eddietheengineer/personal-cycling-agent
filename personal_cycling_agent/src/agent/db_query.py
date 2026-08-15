@@ -9,6 +9,7 @@ to answer questions about training history, patterns, and causes.
 
 from pathlib import Path
 
+import re
 import logging
 
 logger = logging.getLogger(__name__)
