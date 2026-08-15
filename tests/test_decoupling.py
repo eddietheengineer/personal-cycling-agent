@@ -83,7 +83,8 @@ class TestNegativeDrift:
         # drift = ((2.0 - 1.818) / 1.818) * 100 ≈ +10%
         assert result.drift_pct > 0
         assert abs(result.drift_pct - 10.0) < 0.1
-        assert result.increase_duration_recommended is False
+        # HR falling → fitness improving → recommend increase
+        assert result.increase_duration_recommended is True
 
     def test_small_improvement_within_threshold(self):
         """HR drops slightly → drift within 5% → recommended=True."""
@@ -206,10 +207,10 @@ class TestZerosInMiddle:
 
 class TestCustomThreshold:
     def test_strict_threshold(self):
-        """With threshold=1.0, even 2% drift → not recommended."""
+        """With threshold=1.0, even 2% negative drift (HR rising) → not recommended."""
         n = 200
         power = [200.0] * n
-        hr = [100.0] * 100 + [98.0] * 100  # ~2% drift
+        hr = [100.0] * 100 + [102.0] * 100  # ~-2% drift (HR rising)
         result = compute_decoupling("act19", power, hr, drift_threshold=1.0)
         assert result.increase_duration_recommended is False
 

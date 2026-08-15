@@ -103,8 +103,15 @@ def compute_decoupling(
     else:
         drift_pct = 0.0
 
-    # If drift is small (absolute), aerobic fitness is holding
-    increase_duration = abs(drift_pct) < drift_threshold
+    # If drift is small (absolute), aerobic fitness is holding.
+    # Negative drift (HR rising) is bad — don't increase duration.
+    # Positive drift (HR falling) is good — can increase duration.
+    if drift_pct < 0:
+        # HR rising — fatigue. Only recommend increase if drift is small.
+        increase_duration = abs(drift_pct) < drift_threshold
+    else:
+        # HR falling — fitness improving. Always recommend increase.
+        increase_duration = True
 
     logger.info(
         f"Decoupling for {activity_id}: "
