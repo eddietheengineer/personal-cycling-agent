@@ -350,6 +350,8 @@ class CyclingDB:
             CREATE TABLE IF NOT EXISTS activity_metrics (
                 activity_id     TEXT    NOT NULL,
                 ftp_used        REAL,
+                cp_used         REAL,
+                ride_cp         REAL,
                 normalized_power REAL,
                 intensity_factor REAL,
                 tss             REAL,
@@ -358,6 +360,8 @@ class CyclingDB:
                 w_prime_min_balance REAL,
                 decoupling_drift REAL,
                 duration_sec    REAL,
+                hr_tss          REAL,
+                hr_trimp        REAL,
                 computed_at     TEXT    NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (activity_id)
             )
@@ -1196,20 +1200,9 @@ class CyclingDB:
         ).fetchone()
 
         if existing is not None:
-            existing_dict = {
-                "cp_used": existing[1],
-                "ride_cp": existing[2],
-                "normalized_power": existing[3],
-                "intensity_factor": existing[4],
-                "tss": existing[5],
-                "variability_index": existing[6],
-                "w_prime_capacity": existing[7],
-                "w_prime_min_balance": existing[8],
-                "decoupling_drift": existing[9],
-                "duration_sec": existing[10],
-                "hr_tss": existing[11],
-                "hr_trimp": existing[12],
-            }
+            # Use dict(row) to avoid fragile positional indexing and ensure
+            # ALL columns (including ftp_used) are preserved on partial updates.
+            existing_dict = dict(existing)
             existing_dict.update(metrics)
             metrics = existing_dict
 
