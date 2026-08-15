@@ -174,8 +174,13 @@ def run_analyze() -> dict:
             if date_key:
                 wellness_by_date[date_key] = w
         latest_date = wellness_dicts[0].get("date", "")
-        # Fetch activity metrics for load-aware readiness
-        metrics_rows = db.conn.execute('SELECT * FROM activity_metrics').fetchall()
+        # Fetch activity metrics for load-aware readiness.
+        # JOIN with activities to provide start_date (activity_metrics has no date column).
+        metrics_rows = db.conn.execute(
+            "SELECT m.*, substr(a.start_date, 1, 10) as start_date "
+            "FROM activity_metrics m "
+            "JOIN activities a ON a.id = m.activity_id"
+        ).fetchall()
         activity_metrics_dicts = [dict(r) for r in metrics_rows]
         readiness_result = assess_readiness(wellness_dicts, activity_metrics_dicts, target_date=latest_date)
         readiness_dict = readiness_to_dict(readiness_result)
