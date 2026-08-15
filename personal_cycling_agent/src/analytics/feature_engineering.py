@@ -69,8 +69,11 @@ def compute_features(
         ci_df = ci_df.set_index("date")
         df = df.join(ci_df, rsuffix="_checkin", how="left")
 
-    # Forward-fill for 1-2 days, NaN for longer gaps
-    df = df.ffill(limit=2)
+    # Forward-fill wellness columns for 1-2 days (sensor gaps), but NOT activity
+    # columns — rest days should have TSS=0, not the previous day's TSS.
+    wellness_cols = [c for c in df.columns if c not in
+                     ("tss", "np", "ifr", "w_prime_min_balance", "decoupling_drift")]
+    df[wellness_cols] = df[wellness_cols].ffill(limit=2)
 
     # --- Per-athlete z-scores (30-day rolling baseline) ---
     for col in ["rmssd", "resting_hr"]:
