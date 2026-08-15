@@ -157,31 +157,3 @@ def write_page_safe(directory: str, slug: str, content: str):
     from src.wiki.engine import write_page
     path = write_page(directory, slug, content)
     return path
-
-
-def get_context_for_coach(max_tokens: int = 2000) -> str:
-    """
-    Get a condensed wiki context block for injecting into the coach's system prompt.
-    Returns the most relevant wiki content as a context summary.
-    """
-    ensure_wiki()
-    index = read_index()
-    if not index or "_No" in index:
-        return ""
-
-    # Truncate index to fit within token budget
-    if len(index) > max_tokens:
-        # Keep header and first few sections
-        lines = index.split("\n")
-        truncated = []
-        section_count = 0
-        for line in lines:
-            if line.startswith("## "):
-                section_count += 1
-                if section_count > 4:
-                    truncated.append("... [additional sections truncated]")
-                    break
-            truncated.append(line)
-        return "\n".join(truncated)
-
-    return index

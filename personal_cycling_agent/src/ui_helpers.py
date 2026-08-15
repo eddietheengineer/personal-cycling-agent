@@ -125,22 +125,22 @@ def _elapsed_to_minutes(seconds: float) -> float:
 # Zone definitions
 # ---------------------------------------------------------------------------
 
-# Power zones (based on FTP): Z1 <55%, Z2 55-75%, Z3 76-90%, Z4 91-105%, Z5 >105%
+# Power zones (based on FTP): Z1 <55%, Z2 55-75%, Z3 75-90%, Z4 90-105%, Z5 >105%
 _ZONE_RANGES = [
     (0.0, 0.55, "Z1: Active Recovery"),
     (0.55, 0.75, "Z2: Endurance"),
-    (0.76, 0.90, "Z3: Tempo"),
-    (0.91, 1.05, "Z4: Threshold"),
+    (0.75, 0.90, "Z3: Tempo"),
+    (0.90, 1.05, "Z4: Threshold"),
     (1.05, 999, "Z5: VO2/Neuromuscular"),
 ]
 
-# HR zones (based on Max HR): Z1 <58%, Z2 59-74%, Z3 75-89%, Z4 90-94%, Z5 >95%
+# HR zones (based on Max HR): Z1 <58%, Z2 58-74%, Z3 74-89%, Z4 89-94%, Z5 >94%
 _HR_RANGES = [
     (0.0, 0.58, "Z1: Active Recovery"),
-    (0.59, 0.74, "Z2: Endurance"),
-    (0.75, 0.89, "Z3: Tempo"),
-    (0.90, 0.94, "Z4: Threshold"),
-    (0.95, 999, "Z5: VO2/Neuromuscular"),
+    (0.58, 0.74, "Z2: Endurance"),
+    (0.74, 0.89, "Z3: Tempo"),
+    (0.89, 0.94, "Z4: Threshold"),
+    (0.94, 999, "Z5: VO2/Neuromuscular"),
 ]
 
 _LIGHT_COLORS = ["#1f77b4", "#2ca02c", "#ff7f0e", "#d62728", "#9467bd"]

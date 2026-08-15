@@ -527,13 +527,19 @@ def _render_week_strip():
     weather_icons = {"clear": "☀️", "cloudy": "⛅", "rain": "🌧", "snow": "❄️", "storm": "⛈"}
     day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-    # Fetch fresh weather so every card always has data
+    # Fetch weather (cached for 1 hour to avoid per-render HTTP calls)
     from src.services.weather import get_location, get_weekly_forecast
-    forecast_map: dict[str, dict] = {}
-    location = get_location()
-    if location:
-        for f in get_weekly_forecast(location[0], location[1]):
-            forecast_map[f.get("date", "")] = f
+    import time as _time
+    _weather_cache = st.session_state.get("_weather_cache", {})
+    _weather_ts = _weather_cache.get("ts", 0)
+    if _time.time() - _weather_ts > 3600:
+        location = get_location()
+        if location:
+            forecasts = get_weekly_forecast(location[0], location[1])
+            st.session_state._weather_cache = {"ts": _time.time(), "data": {f.get("date", ""): f for f in forecasts}}
+        else:
+            st.session_state._weather_cache = {"ts": _time.time(), "data": {}}
+    forecast_map: dict[str, dict] = st.session_state._weather_cache.get("data", {})
 
     cols = st.columns(7)
     for i, day in enumerate(plan.days):
@@ -576,13 +582,9 @@ def _render_week_strip():
             ctl_s, atl_s, tsb_s = plan.ctl_series, plan.atl_series, plan.tsb_series
         else:
             from src.analytics.weekly_planner import _project_ctl_atl
-            from src import config as cfg
-            result_path = cfg.vault_path() / "data" / "latest_analysis.json"
             ctl_val, atl_val = DEFAULT_CTL_FALLBACK, DEFAULT_ATL_FALLBACK
-            if result_path.exists():
-                import json
-                with open(result_path) as f:
-                    analysis = json.load(f)
+            analysis = _load_analysis()
+            if analysis:
                 tl = analysis.get("training_load", {})
                 ctl_val = tl.get("ctl", DEFAULT_CTL_FALLBACK)
                 atl_val = tl.get("atl", DEFAULT_ATL_FALLBACK)
@@ -612,21 +614,35 @@ def _render_week_strip():
         st.plotly_chart(fig, use_container_width=True)
 
 
-def _render_readiness_card():
-    """Compact readiness status card with metrics."""
-    from src import config as cfg
 
+def _load_analysis() -> dict | None:
+    """Load latest_analysis.json with mtime-based caching."""
+    from src import config as cfg
+    import json
     result_path = cfg.vault_path() / "data" / "latest_analysis.json"
     if not result_path.exists():
-        st.info("No analysis data yet. Use **Update Latest Data** in Settings.")
-        return
-
+        return None
     try:
-        import json
+        mtime = result_path.stat().st_mtime
+    except OSError:
+        return None
+    cache = st.session_state.get("_analysis_cache", {})
+    if cache.get("mtime") == mtime:
+        return cache.get("data")
+    try:
         with open(result_path) as f:
-            analysis = json.load(f)
+            data = json.load(f)
+        st.session_state._analysis_cache = {"mtime": mtime, "data": data}
+        return data
     except Exception:
         logger.debug("Failed to load latest_analysis.json", exc_info=True)
+        return None
+
+def _render_readiness_card():
+    """Compact readiness status card with metrics."""
+    analysis = _load_analysis()
+    if analysis is None:
+        st.info("No analysis data yet. Use **Update Latest Data** in Settings.")
         return
 
     readiness = analysis.get("readiness") or {}
@@ -895,15 +911,7 @@ def _render_dashboard_coach():
         from src.memory.journal import load_recent
         from src import config as cfg
 
-        analysis = None
-        result_path = cfg.vault_path() / "data" / "latest_analysis.json"
-        if result_path.exists():
-            try:
-                import json
-                with open(result_path) as f:
-                    analysis = json.load(f)
-            except Exception:
-                logger.debug("Failed to load latest_analysis.json for coach context", exc_info=True)
+        analysis = _load_analysis()
 
         system_prompt = prompt_builder.build_system_prompt(
             readiness=analysis.get("readiness") if analysis else None,

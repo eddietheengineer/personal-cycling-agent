@@ -310,7 +310,7 @@ def sync_routes_from_fit(db: CyclingDB, raw_dir: Path | None = None) -> dict[str
     counts = {"processed": 0, "with_gps": 0, "without_gps": 0, "total_points": 0}
 
     for fit_path in fit_files:
-        activity_id = fit_path.stem  # bare numeric filename, e.g. "21634975856"
+        activity_id = f"garmin_{fit_path.stem}"
 
         # Skip if already has routes
         if db.get_route_count_for_activity(activity_id) > 0:

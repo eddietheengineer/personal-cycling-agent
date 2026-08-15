@@ -267,25 +267,3 @@ def build_system_prompt(
     )
 
     return "\n".join(sections)
-
-
-def build_json_context(
-    readiness: dict[str, Any] | None = None,
-    thresholds: list[dict[str, Any]] | None = None,
-    w_prime: list[dict[str, Any]] | None = None,
-    durability: list[dict[str, Any]] | None = None,
-    decoupling: list[dict[str, Any]] | None = None,
-) -> str:
-    """
-    Build a compact JSON context for structured LLM consumption.
-
-    Returns a JSON string with all analytics data.
-    """
-    context: dict[str, Any] = {
-        "readiness": readiness,
-        "thresholds": thresholds or [],
-        "w_prime": w_prime or [],
-        "durability": durability or [],
-        "decoupling": decoupling or [],
-    }
-    return json.dumps(context, indent=2)

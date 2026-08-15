@@ -451,17 +451,6 @@ def _create_client(tokenstore: str | None = None) -> "garminconnect.Garmin":
     return result
 
 
-def _prompt_mfa_interactive() -> str:
-    """Prompt for MFA code; raise in non-interactive mode."""
-    if not sys.stdin.isatty():
-        raise RuntimeError(
-            "MFA required but running non-interactively. "
-            "Run manually or pre-cache tokens."
-        )
-    code = input("  Enter Garmin MFA code: ").strip()
-    return code
-
-
 class GarminAuthResult:
     """Result of a Garmin authentication attempt from the UI."""
 
@@ -540,113 +529,6 @@ def authenticate_garmin(
                        "Wait 30-60 minutes and try again.",
             ), None
         return GarminAuthResult(success=False, error=err_msg), None
-
-def fetch_wellness_for_date(
-    client: "garminconnect.Garmin", date_str: str
-) -> dict[str, Any] | None:
-    """
-    Fetch all wellness data for a single date from Garmin Connect.
-
-    Returns a dict compatible with the wellness table schema, or None
-    if no data is available for that date.
-    """
-    rl = _rate_limiter
-    try:
-        # Get basic stats (RHR, steps, stress)
-        rl.wait()
-        stats = _retry_on_rate_limit(lambda: client.get_stats(date_str))
-
-        # Get HRV data
-        rl.wait()
-        hrv_data = _retry_on_rate_limit(lambda: client.get_hrv_data(date_str))
-
-        # Get heart rates (for RHR verification)
-        rl.wait()
-        heart_rates = _retry_on_rate_limit(lambda: client.get_heart_rates(date_str))
-
-        # Get body composition (for weight)
-        try:
-            rl.wait()
-            body = _retry_on_rate_limit(lambda: client.get_body_composition(date_str))
-        except Exception:
-            logger.debug("Failed to fetch body composition", exc_info=True)
-            body = None
-
-        # Get weigh-ins (more reliable for weight)
-        try:
-            rl.wait()
-            weigh_ins = _retry_on_rate_limit(
-                lambda: client.get_daily_weigh_ins(date_str)
-            )
-        except Exception:
-            logger.debug("Failed to fetch weigh-ins", exc_info=True)
-            weigh_ins = None
-
-        # Extract RHR
-        resting_hr = None
-        if heart_rates and "restingHeartRateValue" in heart_rates:
-            resting_hr = heart_rates["restingHeartRateValue"]
-        elif stats and "restingHeartRate" in stats:
-            resting_hr = stats["restingHeartRate"]
-
-        # Extract RMSSD from HRV data
-        rmssd = None
-        if hrv_data and "hrvSummary" in hrv_data:
-            summary = hrv_data["hrvSummary"]
-            # Garmin returns lastNight as the primary RMSSD value
-            rmssd = summary.get("lastNightAvg")
-
-        # Extract stress
-        stress = None
-        if stats and "allDayStress" in stats:
-            stress = stats["allDayStress"].get("averageStressLevel")
-
-        # Extract steps
-        steps = stats.get("totalSteps") if stats else None
-
-        # Extract weight
-        weight = None
-        if weigh_ins and weigh_ins.get("dailyWeightList"):
-            # Use the first weigh-in of the day
-            weight = weigh_ins["dailyWeightList"][0].get("weightGrams")
-            if weight:
-                weight = weight / 1000.0  # convert grams to kg
-        elif body:
-            weight = body.get("weight")
-
-        # Extract sleep data
-        sleep_score = None
-        sleep_hours = None
-        try:
-            rl.wait()
-            sleep_data = _retry_on_rate_limit(lambda: client.get_sleep_data(date_str))
-            if sleep_data:
-                sleep_score = sleep_data.get("sleepScore")
-                # Sleep duration in seconds -> hours
-                sleep_ms = sleep_data.get("sleepTimeSeconds", 0)
-                if sleep_ms:
-                    sleep_hours = sleep_ms / 3600.0
-        except Exception:
-            logger.debug("Failed to fetch sleep data", exc_info=True)
-
-
-        if not any([resting_hr, rmssd, stress, steps, weight]):
-            return None
-
-        return {
-            "date": date_str,
-            "weight": weight,
-            "resting_hr": resting_hr,
-            "rmssd": rmssd,
-            "stress": stress,
-            "sleep_score": sleep_score,
-            "sleep_hours": sleep_hours,
-            "steps": steps,
-        }
-
-    except Exception as e:
-        logger.debug(f"Failed to fetch wellness for {date_str}: {e}")
-
 def _fetch_activity_streams(
     client: "garminconnect.Garmin",
     activity_id: int,
@@ -1255,7 +1137,7 @@ def sync_garmin(
         else:
             last_date = today - timedelta(days=1)
     else:
-        # Incremental: sync from day after last sync up to today
+        # Incremental: sync from day after last sync up to today.
         if last_synced:
             try:
                 last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
@@ -1265,32 +1147,39 @@ def sync_garmin(
                 last_date = today - timedelta(days=1)
         else:
             last_date = today - timedelta(days=1)
-        # Use the requested days limit, capped by the gap since last sync
-        gap = max(0, (today - last_date).days)
-        days = min(days, gap)
-        last_date = today
+        # Start from the day after last sync, go forward to today.
+        start = last_date + timedelta(days=1)
+        if start > today:
+            # Already up to date
+            db.close()
+            return {"wellness_records": 0, "with_hrv": 0}
+        # Build forward list, take the most recent `days` entries
+        all_dates: list[date] = []
+        d = start
+        while d <= today:
+            all_dates.append(d)
+            d += timedelta(days=1)
+        sync_dates = all_dates[-days:] if days < len(all_dates) else all_dates
 
     reset_rate_limiter()
     client = _create_client(tokenstore)
     logger.info("Authenticated with Garmin Connect")
 
-    # Build list of dates to sync
-    sync_dates: list[date] = []
-    current_date = last_date  # include today for partial data
-    days_synced = 0
-    # Cap unbounded sync to 10 years back to avoid datetime underflow
-    max_days = MAX_SYNC_DAYS if unbounded else days
-    while days_synced < max_days:
-        sync_dates.append(current_date)
-        current_date -= timedelta(days=1)
-        days_synced += 1
+    if unbounded:
+        # Unbounded: go backwards from last_date for up to MAX_SYNC_DAYS
+        current_date = last_date
+        days_synced = 0
+        while days_synced < MAX_SYNC_DAYS:
+            sync_dates.append(current_date)
+            current_date -= timedelta(days=1)
+            days_synced += 1
 
     if not sync_dates:
         db.close()
         return {"wellness_records": 0, "with_hrv": 0}
 
-    start_date = sync_dates[-1]
-    end_date = sync_dates[0]
+    start_date = min(sync_dates)
+    end_date = max(sync_dates)
     logger.info(
         f"Syncing wellness for {len(sync_dates)} days: "
         f"{start_date} to {end_date}"
@@ -1895,7 +1784,7 @@ def _parse_fit_file(
                         seen.add(t)
                         deduped.append((t, v))
                 values = deduped
-            total_stored += db.store_activity_streams(str(activity_id), metric, values)
+            total_stored += db.store_activity_streams(f"garmin_{activity_id}", metric, values)
 
     logger.info(
         f"Parsed FIT for activity {activity_id}: "
@@ -1904,83 +1793,3 @@ def _parse_fit_file(
         f"{len(result.altitude_values)} altitude samples"
     )
     return total_stored
-
-if __name__ == "__main__":
-    import sys as _sys
-
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    config.setup()
-
-    days = DEFAULT_CLI_SYNC_DAYS
-    if len(_sys.argv) > 1:
-        days = int(_sys.argv[1])
-
-    email, password, tokenstore = _get_garmin_credentials()
-    if not email or not password:
-        logger.error("Garmin credentials not set. Run setup.py first.")
-        raise SystemExit(1)
-
-    from garmin_auth import GarminAuth
-    auth = GarminAuth(email=email, password=password, token_dir=tokenstore, return_on_mfa=True)
-    result = auth.login()
-
-    if result == "needs_mfa":
-        code = input("Enter Garmin OTP: ").strip()
-        client = auth.resume_login(code)
-    elif result is not None:
-        client = result
-    else:
-        logger.error("Login failed")
-        raise SystemExit(1)
-
-    db_path = str(config.db_path("cycling_agent.sqlite"))
-    db = CyclingDB(db_path)
-    last_synced = db.get_last_synced("garmin_wellness")
-    today = datetime.now().date()
-    if last_synced:
-        try:
-            last_date = datetime.strptime(last_synced, "%Y-%m-%d").date()
-        except ValueError:
-            last_date = today - timedelta(days=1)
-    else:
-        last_date = today - timedelta(days=1)
-
-    # Build list of dates to sync (going backwards from yesterday)
-    sync_dates: list[date] = []
-    current_date = last_date - timedelta(days=1)
-    for _ in range(days):
-        sync_dates.append(current_date)
-        current_date -= timedelta(days=1)
-
-    # Only fetch days that don't already have wellness records
-    existing_dates = db.get_wellness_dates(
-        oldest=sync_dates[-1].strftime("%Y-%m-%d"),
-        newest=sync_dates[0].strftime("%Y-%m-%d"),
-    )
-    missing_dates = [d for d in sync_dates if d.strftime("%Y-%m-%d") not in existing_dates]
-
-    if existing_dates:
-        logger.info(
-            f"Skipping {len(existing_dates)} days with existing data, "
-            f"fetching {len(missing_dates)} missing days"
-        )
-
-    total_stored = 0
-    total_with_hrv = 0
-
-    for d in missing_dates:
-        target_str = d.strftime("%Y-%m-%d")
-        logger.info(f"Syncing wellness for {target_str}")
-        record = fetch_wellness_for_date(client, target_str)
-        if record is None:
-            logger.info(f"No wellness data for {target_str}")
-        else:
-            stored = db.store_wellness([record])
-            with_hrv = 1 if record.get("rmssd") is not None else 0
-            total_stored += stored
-            total_with_hrv += with_hrv
-        db.set_last_synced("garmin_wellness", target_str)
-        time.sleep(GARMIN_WELLNESS_POLL_INTERVAL)
-
-    db.close()
-    print(f"Done. Wellness: {total_stored}, With HRV: {total_with_hrv}")

@@ -41,7 +41,7 @@ from src.analytics.durability import compute_durability, durability_to_dict
 from src.analytics.decoupling import compute_decoupling, decoupling_to_dict
 from src.analytics.power_metrics import (
     _compute_power_duration_curve, compute_power_metrics,
-    estimate_critical_power, estimate_ride_cp, power_metrics_to_dict
+    estimate_ride_cp, power_metrics_to_dict
 )
 from src.analytics.training_load import (
     compute_training_load, compute_training_load_history, training_load_to_dict
@@ -109,14 +109,10 @@ def _deduplicate_samples(rows: list) -> list[float]:
     """
     if not rows:
         return []
-    result: list[float] = []
-    seen_elapsed: set[float] = set()
-    for row in rows:
-        elapsed = float(row["elapsed"])
-        if elapsed not in seen_elapsed:
-            seen_elapsed.add(elapsed)
-            result.append(float(row["value"]))
-    return result
+    elapsed = np.array([float(r["elapsed"]) for r in rows])
+    values = np.array([float(r["value"]) for r in rows])
+    _, unique_idx = np.unique(elapsed, return_index=True)
+    return values[np.sort(unique_idx)].tolist()
 
 
 def run_ingest() -> dict:
@@ -469,6 +465,10 @@ def run_analyze() -> dict:
             # Track last activity date for decay
             if act_date is not None:
                 last_activity_date = act_date
+
+            # Carry forward W' capacity for next activity
+            if wp_result is not None and wp_result.w_prime_capacity:
+                current_w_prime = wp_result.w_prime_capacity * 1000.0
         # For each dual-sensor ride, ratio = power_tss / hr_tss.
         # The median ratio scales HR TSS to match power TSS.
         # Banister TRIMP (derived from running) overestimates cycling load,
@@ -715,10 +715,15 @@ def run_prescribe(analysis: dict | None = None) -> str:
     analysis["ml_prediction"] = ml_prediction
     analysis["prescription_engine"] = prescription_engine_result
 
-    # Build the prompt
+    # Build the prompt with full analysis context
     prompt = build_system_prompt(
         readiness=analysis.get("readiness"),
         recent_activities=analysis.get("recent_activities"),
+        thresholds=analysis.get("thresholds"),
+        w_prime=analysis.get("w_prime"),
+        durability=analysis.get("durability"),
+        decoupling=analysis.get("decoupling"),
+        analysis=analysis,
     )
 
     logger.info(f"Prompt length: {len(prompt)} chars")
@@ -803,6 +808,16 @@ def main():
     else:
         analysis = None
 
+    if run_all or args.prescribe:
+        if analysis is None:
+            result_path = VAULT / "data" / "latest_analysis.json"
+            if result_path.exists():
+                with open(result_path, "r") as f:
+                    analysis = json.load(f)
+        if analysis:
+            run_prescribe(analysis)
+        else:
+            logger.warning("No analysis available for prescription; run --analyze first")
 
 
 
