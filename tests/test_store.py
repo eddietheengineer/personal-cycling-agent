@@ -518,3 +518,49 @@ class TestRefreshActivitiesDistance:
 
         rows = inst.conn.execute("SELECT distance FROM activities WHERE id = 'garmin_99999'").fetchall()
         assert rows[0]["distance"] == 1500.0
+
+
+class TestRefreshActivitiesPreservesColumns:
+    """refresh_activities must not wipe columns it does not recompute.
+
+    power_meter is set by extract_power_meters, ifr/file_type by
+    store_activities. An INSERT OR REPLACE that omits them would NULL them
+    on every sync/analyze, silently disabling the power-meter exclusion
+    filter and dropping display fields.
+    """
+
+    def test_preserves_power_meter_ifr_file_type(self, db):
+        inst, _ = db
+        inst.store_activities([{
+            "id": "garmin_12345", "start_date_local": "2026-01-01", "type": "Cycling",
+            "duration": 3600, "distance": 30000, "average_power": 200,
+            "max_power": 400, "average_hr": 140, "max_hr": 170,
+            "calories": 600, "tss": 90, "ifr": 0.8,
+            "normalized_power": 200, "file_type": "fit",
+        }])
+        inst._exec("UPDATE activities SET power_meter = ? WHERE id = ?",
+                   ("Garmin:Edge1040", "garmin_12345"))
+        inst._commit()
+
+        inst.store_raw_activity(12345, {
+            "startTimeLocal": "2026-01-01T10:00:00",
+            "activityTypeKey": "cycling",
+            "duration": 3600, "distance": 30000,
+            "avgPower": 200, "maxPower": 400,
+            "avgHeartRate": 140, "maxHeartRate": 170,
+            "calories": 600, "trainingStressScore": 90, "normPower": 200,
+        })
+
+        count = inst.refresh_activities()
+        assert count == 1
+
+        row = inst.conn.execute(
+            "SELECT ifr, file_type, power_meter, distance, average_power "
+            "FROM activities WHERE id = 'garmin_12345'"
+        ).fetchone()
+        assert row["power_meter"] == "Garmin:Edge1040", "power_meter wiped by refresh"
+        assert row["ifr"] == 0.8, "ifr wiped by refresh"
+        assert row["file_type"] == "fit", "file_type wiped by refresh"
+        # Recomputed values must still be correct
+        assert row["distance"] == 30000.0
+        assert row["average_power"] == 200

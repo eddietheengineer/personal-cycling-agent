@@ -908,6 +908,24 @@ class CyclingDB:
             garmin_id = row["garmin_id"]
             db_id = f"garmin_{garmin_id}"
 
+            # Preserve columns that refresh does not recompute (set by other
+            # code paths: power_meter by extract_power_meters, ifr/file_type by
+            # store_activities). INSERT OR REPLACE would otherwise wipe them to
+            # NULL on every sync/analyze, silently disabling the power-meter
+            # exclusion filter and dropping the IFR/file-type display fields.
+            existing_act = self._exec(
+                "SELECT ifr, file_type, power_meter FROM activities WHERE id = ?",
+                (db_id,),
+            ).fetchone()
+            if existing_act is not None:
+                preserved_ifr = existing_act["ifr"]
+                preserved_file_type = existing_act["file_type"]
+                preserved_power_meter = existing_act["power_meter"]
+            else:
+                preserved_ifr = None
+                preserved_file_type = None
+                preserved_power_meter = None
+
             # Start with API values (column names are misleading — duration_ms is actually seconds,
             # distance_cm is actually meters — historical naming from Garmin API conversion)
             duration = (row["duration_ms"] or 0)
@@ -1043,8 +1061,9 @@ class CyclingDB:
                      max_avg_power_20s, max_avg_power_30s, max_avg_power_60s, max_avg_power_120s,
                      max_avg_power_300s, max_avg_power_600s, max_avg_power_1200s, max_avg_power_1800s, max_avg_power_3600s,
                      source_duration, source_distance, source_power, source_hr, source_calories,
+                     ifr, file_type, power_meter,
                      updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
                 (
                     db_id,
                     start_date,
@@ -1103,6 +1122,9 @@ class CyclingDB:
                     source_power,
                     source_hr,
                     source_calories,
+                    preserved_ifr,
+                    preserved_file_type,
+                    preserved_power_meter,
                 ),
             )
             refreshed += 1
