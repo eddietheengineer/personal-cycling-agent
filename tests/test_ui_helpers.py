@@ -58,7 +58,7 @@ class TestFormatDuration:
 
 class TestDistanceKm:
     def test_normal(self):
-        assert _distance_km(5000000) == "50.00 km"
+        assert _distance_km(50000) == "50.00 km"
 
     def test_zero_returns_dash(self):
         assert _distance_km(0) == "\u2014"
@@ -67,13 +67,13 @@ class TestDistanceKm:
         assert _distance_km(None) == "\u2014"
 
     def test_precision(self):
-        assert _distance_km(1234567) == "12.35 km"
+        assert _distance_km(12345) == "12.35 km"
 
     def test_one_km(self):
-        assert _distance_km(100000) == "1.00 km"
+        assert _distance_km(1000) == "1.00 km"
 
     def test_fractional_km(self):
-        assert _distance_km(12345) == "0.12 km"
+        assert _distance_km(1234) == "1.23 km"
 
 
 # ---------------------------------------------------------------------------
@@ -82,8 +82,8 @@ class TestDistanceKm:
 
 
 class TestStreamId:
-    def test_strips_prefix(self):
-        assert _stream_id("garmin_12345") == "12345"
+    def test_returns_id_unchanged(self):
+        assert _stream_id("garmin_12345") == "garmin_12345"
 
     def test_no_prefix(self):
         assert _stream_id("12345") == "12345"
@@ -92,7 +92,7 @@ class TestStreamId:
         assert _stream_id("") == ""
 
     def test_prefix_only(self):
-        assert _stream_id("garmin_") == ""
+        assert _stream_id("garmin_") == "garmin_"
 
     def test_no_false_match(self):
         assert _stream_id("garminlike_99") == "garminlike_99"
@@ -203,9 +203,9 @@ class TestZoneForValue:
         # Exact upper boundary of Z4 (1.05)
         assert _zone_for_value(105, 100, _ZONE_RANGES) == 3
 
-    def test_gap_between_zones(self):
-        # 0.755 is between Z2 hi=0.75 and Z3 lo=0.76 -> no match -> -1
-        assert _zone_for_value(75.5, 100, _ZONE_RANGES) == -1
+    def test_contiguous_boundary(self):
+        # 0.75 is the shared boundary of Z2 (hi) and Z3 (lo) -> Z2 (first match)
+        assert _zone_for_value(75, 100, _ZONE_RANGES) == 1
 
     def test_hr_zones(self):
         # 70% of max HR -> Z2 (0.59 to 0.74)

@@ -316,11 +316,11 @@ class TestActivityDetailContracts:
         assert _format_duration(None) == "—"
 
     def test_distance_km_conversion(self, seed_db):
-        """Distance formatting converts centimeters to km."""
+        """Distance formatting converts meters to km."""
         from src.ui_helpers import _distance_km
 
-        assert _distance_km(5000000) == "50.00 km"
-        assert _distance_km(1234567) == "12.35 km"
+        assert _distance_km(50000) == "50.00 km"
+        assert _distance_km(12345) == "12.35 km"
         assert _distance_km(None) == "—"
 
 
