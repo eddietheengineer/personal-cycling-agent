@@ -392,12 +392,87 @@ def _get_garmin_credentials() -> tuple[str, str, str]:
     return email, password, tokenstore
 
 
+def _resolve_tokenstore(tokenstore: str | None = None) -> str:
+    """Resolve the Garmin token store directory.
+
+    Priority: explicit argument > GARMIN_TOKENSTORE env var >
+    vault/.garminconnect > ~/.garminconnect.
+    """
+    if tokenstore is None:
+        tokenstore = os.getenv("GARMIN_TOKENSTORE", "")
+    if not tokenstore:
+        vault = os.getenv("CYCLING_AGENT_VAULT", "")
+        if vault and os.path.isdir(os.path.join(vault, ".garminconnect")):
+            tokenstore = os.path.join(vault, ".garminconnect")
+        elif os.path.isdir(os.path.expanduser("~/.garminconnect")):
+            tokenstore = os.path.expanduser("~/.garminconnect")
+    return tokenstore or os.path.expanduser("~/.garminconnect")
+
+
+def _has_cached_tokens(tokenstore: str) -> bool:
+    """Return True if the token store directory contains a token file."""
+    if not tokenstore or not os.path.isdir(tokenstore):
+        return False
+    try:
+        return any(f.endswith((".json", ".pkl")) for f in os.listdir(tokenstore))
+    except OSError:
+        return False
+
+
+# ── Sync pause (circuit breaker for login failures) ────────────────────
+# When a login attempt fails (blocked, bad credentials, MFA, ...), cron
+# must NOT keep retrying: every attempt extends Garmin's IP block. A
+# pause flag is written; the cron line skips the pipeline while it
+# exists, and _create_client refuses fresh logins. Any successful
+# login (dashboard sign-in or a passing sync) removes the flag.
+
+PAUSE_FLAG_NAME = ".garmin_sync_paused"
+
+
+def _pause_flag_path() -> Path:
+    return config.vault_path() / PAUSE_FLAG_NAME
+
+
+def is_sync_paused() -> bool:
+    """Return True if Garmin sync is paused after a login failure."""
+    return _pause_flag_path().exists()
+
+
+def pause_sync(reason: str) -> None:
+    """Pause cron-driven Garmin sync after a login failure."""
+    flag = _pause_flag_path()
+    try:
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.write_text(
+            f"paused_at: {datetime.now(timezone.utc).isoformat()}\n"
+            f"reason: {reason}\n"
+        )
+    except OSError as e:
+        logger.error("Could not write sync pause flag %s: %s", flag, e)
+    logger.error("Garmin sync PAUSED after login failure: %s", reason)
+
+
+def resume_sync() -> None:
+    """Resume cron-driven Garmin sync after a successful login."""
+    flag = _pause_flag_path()
+    try:
+        if flag.exists():
+            flag.unlink()
+            logger.info("Garmin sync resumed after successful login")
+    except OSError as e:
+        logger.warning("Could not remove sync pause flag %s: %s", flag, e)
+
+
 def _create_client(tokenstore: str | None = None) -> "garminconnect.Garmin":
     """Create and return an authenticated Garmin client using garmin-auth.
 
     Reuses cached tokens when available to avoid re-authenticating (and
     triggering MFA) on every sync. Falls back to full login only when
     no cached tokens exist.
+
+    Circuit breaker: if a previous login failed (pause flag set) and no
+    cached tokens remain, refuses to attempt another login — retrying
+    would extend Garmin's IP block. Sign in via the dashboard to resume.
     """
     if garminconnect is None:
         raise ImportError(
@@ -411,43 +486,48 @@ def _create_client(tokenstore: str | None = None) -> "garminconnect.Garmin":
         )
 
     email, password, _ = _get_garmin_credentials()
+    tokenstore = _resolve_tokenstore(tokenstore)
 
-    # Use GARMIN_TOKENSTORE env var if not explicitly provided
-    if tokenstore is None:
-        tokenstore = os.getenv("GARMIN_TOKENSTORE", "")
-
-    # Fallback: try vault/.garminconnect, then ~/.garminconnect
-    if not tokenstore:
-        vault = os.getenv("CYCLING_AGENT_VAULT", "")
-        if vault and os.path.isdir(os.path.join(vault, ".garminconnect")):
-            tokenstore = os.path.join(vault, ".garminconnect")
-        elif os.path.isdir(os.path.expanduser("~/.garminconnect")):
-            tokenstore = os.path.expanduser("~/.garminconnect")
+    # Circuit breaker: after a login failure, don't hammer Garmin.
+    # Cached tokens still work (no credentials submitted), so only
+    # block when a fresh login would be required.
+    if is_sync_paused() and not _has_cached_tokens(tokenstore):
+        raise RuntimeError(
+            "Garmin sync is paused after a login failure. "
+            "Sign in via the dashboard to resume."
+        )
 
     auth = GarminAuth(
         email=email,
         password=password,
-        token_dir=tokenstore if tokenstore else "~/.garminconnect",
+        token_dir=tokenstore,
         return_on_mfa=True,
     )
 
     # auth.login() tries cached tokens first (via _try_cached_login internally),
     # then falls back to fresh login if needed. If MFA is required, it returns
     # "needs_mfa" instead of prompting interactively.
-    result = auth.login()
+    try:
+        result = auth.login()
+    except Exception as e:
+        pause_sync(str(e) or e.__class__.__name__)
+        raise
 
     if result == "needs_mfa":
+        pause_sync("Garmin login requires MFA; non-interactive sync cannot complete it")
         raise RuntimeError(
             "Garmin login requires MFA but running non-interactively. "
             "Please log in via the Settings page first to cache tokens."
         )
 
     if result is None:
+        pause_sync("Garmin login returned None")
         raise RuntimeError(
             "Garmin login returned None — check credentials, network, "
             "or token directory permissions."
         )
 
+    resume_sync()
     return result
 
 
@@ -475,7 +555,9 @@ def authenticate_garmin(
     Phase 2 (MFA completion): pass the saved auth_instance + mfa_code.
         Calls auth.resume_login(code) on the same instance.
 
-    On success, tokens are persisted in *tokenstore* for future use.
+    On success, tokens are persisted in *tokenstore* for future use and
+    any sync pause is cleared. On failure the sync pause flag is set so
+    cron does not keep retrying the login.
     """
     if GarminAuth is None:
         return GarminAuthResult(
@@ -487,19 +569,24 @@ def authenticate_garmin(
     if mfa_code is not None and auth_instance is not None:
         try:
             auth_instance.resume_login(mfa_code)
+            resume_sync()
             return GarminAuthResult(success=True), auth_instance
         except ValueError as e:
+            pause_sync(str(e))
             return GarminAuthResult(success=False, error=str(e)), auth_instance
         except Exception as e:
             err_msg = str(e)
             if any(kw in err_msg.lower() for kw in ["mfa", "two-factor", "verification", "invalid"]):
+                pause_sync("Invalid MFA verification code")
                 return GarminAuthResult(success=False, error="Invalid verification code."), auth_instance
             if "429" in err_msg or "rate limited" in err_msg.lower():
+                pause_sync(err_msg)
                 return GarminAuthResult(
                     success=False,
                     error="Garmin has temporarily blocked login from this IP. "
                            "Wait 30-60 minutes and try again.",
                 ), auth_instance
+            pause_sync(err_msg)
             return GarminAuthResult(success=False, error=err_msg), auth_instance
 
     # ── Phase 1: initial login ─────────────────────────────────────────
@@ -516,10 +603,12 @@ def authenticate_garmin(
             return GarminAuthResult(success=False, mfa_required=True), auth
 
         # result is a Garmin client → success
+        resume_sync()
         return GarminAuthResult(success=True), auth
 
     except Exception as e:
         err_msg = str(e)
+        pause_sync(err_msg or e.__class__.__name__)
         if any(kw in err_msg.lower() for kw in ["mfa", "two-factor", "verification code", "second factor"]):
             return GarminAuthResult(success=False, mfa_required=True), None
         if "429" in err_msg or "rate limited" in err_msg.lower():
@@ -644,6 +733,11 @@ def _fetch_activity_streams(
         )
         return total_stored
 
+    except garminconnect.GarminConnectTooManyRequestsError:
+        # Propagate to the batch handler: it saves the resume offset and
+        # aborts. Swallowing 429s here would silently skip every remaining
+        # activity's streams and mark the batch complete.
+        raise
     except Exception as e:
         logger.warning(f"Failed to fetch streams for activity {activity_id}: {type(e).__name__}: {e}")
         return 0
@@ -1126,6 +1220,8 @@ def sync_garmin(
 
     today = datetime.now().date()
 
+    sync_dates: list[date] = []
+
     if unbounded:
         if last_synced:
             try:
@@ -1153,13 +1249,15 @@ def sync_garmin(
             # Already up to date
             db.close()
             return {"wellness_records": 0, "with_hrv": 0}
-        # Build forward list, take the most recent `days` entries
+        # Build forward list; take the OLDEST `days` entries so the
+        # last_synced cursor advances day by day without skipping gaps.
+        # (Taking the newest would permanently drop missed days.)
         all_dates: list[date] = []
         d = start
         while d <= today:
             all_dates.append(d)
             d += timedelta(days=1)
-        sync_dates = all_dates[-days:] if days < len(all_dates) else all_dates
+        sync_dates = all_dates[:days] if days < len(all_dates) else all_dates
 
     reset_rate_limiter()
     client = _create_client(tokenstore)
@@ -1173,6 +1271,8 @@ def sync_garmin(
             sync_dates.append(current_date)
             current_date -= timedelta(days=1)
             days_synced += 1
+        # Process oldest-first so last_synced ends at the newest date.
+        sync_dates.reverse()
 
     if not sync_dates:
         db.close()

@@ -84,7 +84,7 @@ def estimate_w_prime_from_activity(
 
     power = np.array(power_samples)
     duration = len(power)
-    if cp_estimate is None:
+    if cp_estimate is None or cp_estimate <= 0:
         cp_estimate = _compute_normalized_power(power)
 
     # Estimate W' capacity if not provided (max excess power integral over short bursts)

@@ -8,3 +8,5 @@ __pycache__/
 .venv/
 venv/
 sync_to_ha.py
+nohup.out
+.pytest_cache/

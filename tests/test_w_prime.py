@@ -168,14 +168,14 @@ class TestKnownValues:
         assert result.min_balance_pct == pytest.approx(0.9504, abs=0.01)
 
     def test_zero_cp_estimate(self):
-        """When CP=0, all power is excess → rapid depletion with recovery."""
+        """CP=0 is invalid and falls back to NP; steady ride at NP → no excess, balance full."""
         result = estimate_w_prime_from_activity(
             "zero_cp", _steady(200, 100), cp_estimate=0, w_prime_capacity=20.0,
             tau=240.0,  # fixed tau for deterministic test
         )
-        # Recovery model partially recovers; true min_balance_pct ≈ 0.18
-        # (tracked across all iterations)
-        assert result.min_balance_pct == pytest.approx(0.1808, abs=0.01)
+        # CP falls back to NP (=200 W for steady 200 W) → zero excess power,
+        # so W' is never drawn down and balance stays at capacity.
+        assert result.min_balance_pct == pytest.approx(1.0, abs=0.01)
 
 
 # ── Progression recommendation ───────────────────────────────────────────

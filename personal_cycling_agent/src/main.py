@@ -31,7 +31,7 @@ from src.config.constants import ROLLING_CP_WINDOW_DAYS
 
 config.setup()
 
-from src.ingestion.garmin_connect import sync_garmin, sync_activities
+from src.ingestion.garmin_connect import sync_garmin, sync_activities, is_sync_paused
 from src.ingestion.garmin_export import sync_routes_from_fit
 from src.db.store import CyclingDB
 from src.analytics.readiness import assess_readiness, readiness_to_dict
@@ -121,6 +121,12 @@ def _deduplicate_samples(rows: list) -> list[float]:
 
 def run_ingest() -> dict:
     """Fetch and store data from Garmin Connect."""
+    if is_sync_paused():
+        logger.warning(
+            "Garmin sync is paused after a login failure — skipping ingestion. "
+            "Sign in via the dashboard to resume."
+        )
+        return {}
     logger.info("Starting data ingestion...")
     counts = sync_garmin(db_path=DB_PATH)
     logger.info(f"Wellness sync complete: {counts}")
@@ -528,6 +534,7 @@ def run_analyze() -> dict:
 
         # --- ML Model Training ---
         ml_result = {}
+        features_df = None  # shared with individual-model training below
         try:
             wellness_dicts = [dict(r) for r in wellness_records]
             metrics_rows = db.conn.execute('SELECT * FROM activity_metrics').fetchall()
@@ -574,7 +581,7 @@ def run_analyze() -> dict:
             else:
                 logger.info("Starting fresh individual model")
 
-            if not features_df.empty:
+            if features_df is not None and not features_df.empty:
                 if "resting_hr" in features_df.columns:
                     targets = features_df["resting_hr"].shift(-1)
                     train_result = indiv_model.train(features_df, targets)

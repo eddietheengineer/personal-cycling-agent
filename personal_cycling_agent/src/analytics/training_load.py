@@ -87,7 +87,9 @@ def compute_training_load(
 
     tss_by_date: dict[date, float] = {}
     for r in sorted_records:
-        tss_by_date[date.fromisoformat(r["date"])] = r["tss"]
+        # Accumulate: a day can have multiple rides (power TSS + HR TSS records)
+        d = date.fromisoformat(r["date"])
+        tss_by_date[d] = tss_by_date.get(d, 0.0) + r["tss"]
 
     # Build daily TSS series (zero-fill gaps)
     delta = (end_date - start_date).days
@@ -147,7 +149,9 @@ def compute_training_load_history(
 
     tss_by_date: dict[date, float] = {}
     for r in sorted_records:
-        tss_by_date[date.fromisoformat(r["date"])] = r["tss"]
+        # Accumulate: a day can have multiple rides (power TSS + HR TSS records)
+        d = date.fromisoformat(r["date"])
+        tss_by_date[d] = tss_by_date.get(d, 0.0) + r["tss"]
 
     # Build daily TSS series (zero-fill gaps)
     delta = (end_date - start_date).days

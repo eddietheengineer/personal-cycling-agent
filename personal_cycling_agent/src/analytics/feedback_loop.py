@@ -53,8 +53,8 @@ def analyze_post_ride_feedback(
         actual_zones: Actual time in each zone (percentage).
         planned_intensity: Planned intensity (0-1, where 1 = max effort).
         actual_intensity: Actual intensity achieved (0-1).
-        decoupling_drift: Power:HR drift percentage (negative = good, positive = bad).
-        w_prime_balance: W' balance percentage (0 = depleted, 100 = full).
+        decoupling_drift: Power:HR drift percentage (negative = HR rose relative to power = bad).
+        w_prime_balance: W' balance as a fraction of capacity (0 = depleted, 1 = full).
         ftp_drift: FTP change since last estimate (positive = improvement).
 
     Returns:
@@ -85,8 +85,8 @@ def analyze_post_ride_feedback(
         tss_adjustment = min(1.3, 1.0 + (1.0 - tss_ratio) * 0.3)
         reasons.append(f"TSS undershoot ({tss_ratio:.0%} of plan) — can increase next day")
 
-    # Rule 2: Decoupling increase → more aerobic base
-    if decoupling_drift is not None and decoupling_drift > 5.0:
+    # Rule 2: Bad decoupling (HR rising relative to power) → more aerobic base
+    if decoupling_drift is not None and decoupling_drift < -5.0:
         zone_shift = -1  # Shift to lower zones (more aerobic)
         reasons.append(f"Decoupling drift ({decoupling_drift:.1f}%) — add aerobic base work")
 
@@ -96,10 +96,10 @@ def analyze_post_ride_feedback(
         reasons.append(f"FTP improved ({ftp_drift:.0f}W) — can increase load")
 
     # Rule 4: W' depletion → recovery focus
-    if w_prime_balance is not None and w_prime_balance < 20.0:
+    if w_prime_balance is not None and w_prime_balance < 0.20:
         tss_adjustment = max(0.5, tss_adjustment * 0.7)
         zone_shift = min(zone_shift, -1)
-        reasons.append(f"W' depleted ({w_prime_balance:.0f}%) — prioritize recovery")
+        reasons.append(f"W' depleted ({w_prime_balance:.0%}) — prioritize recovery")
 
     # Rule 5: Zone mismatch → adjust targets
     if abs(zone_drift) > 20.0:

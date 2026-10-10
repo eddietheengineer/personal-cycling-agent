@@ -1862,6 +1862,7 @@ def _render_garmin_setup():
     from src.tasks.worker import BackgroundSync
     from src.ingestion.garmin_export import sync_routes_from_fit
     from src.db.store import CyclingDB
+    from src.ingestion.garmin_connect import is_sync_paused
 
     st.subheader("Garmin Connect")
 
@@ -1902,6 +1903,8 @@ def _render_garmin_setup():
             st.warning("MFA required. Enter your verification code below.")
     elif auth_state == "error":
         st.error(f"Authentication failed: {auth_error}")
+        if is_sync_paused():
+            st.info("Background sync is paused and will not retry. It resumes automatically after a successful sign-in.")
         if has_credentials:
             st.info("Your credentials are saved. Try signing in again.")
             if st.button("Sign In Again", key="signin_retry"):
@@ -1910,30 +1913,38 @@ def _render_garmin_setup():
                 st.session_state.garmin_auth_error = ""
                 st.rerun()
     elif has_credentials:
-        # Credentials saved but not yet authenticated — try to auth now
-        # (handles page reload after initial sign-in)
-        st.info("Credentials saved. Attempting to authenticate...")
-        from src.ingestion.garmin_connect import authenticate_garmin
-        tokenstore = os.environ.get("GARMIN_TOKENSTORE", "")
-        result, auth_inst = authenticate_garmin(
-            current_email, os.environ.get("GARMIN_PASSWORD", ""), tokenstore
-        )
-        if result.success:
-            st.session_state.garmin_auth_state = "connected"
-            st.session_state.garmin_auth_instance = None
-            st.session_state.garmin_auth_error = ""
-            st.success(f"Connected as: {current_email}")
-            is_connected = True
-            st.rerun()
-        elif result.mfa_required:
-            st.session_state.garmin_auth_state = "mfa_pending"
-            st.session_state.garmin_auth_instance = auth_inst
-            st.session_state.garmin_auth_error = ""
-            st.rerun()
+        if is_sync_paused():
+            # Credentials saved but sync is paused after a login failure.
+            # Do NOT auto-retry — sign in manually below to resume.
+            st.warning(
+                "Automatic sync is paused after a login failure. "
+                "Sign in below to resume."
+            )
         else:
-            st.session_state.garmin_auth_state = "error"
-            st.session_state.garmin_auth_error = result.error
-            st.rerun()
+            # Credentials saved but not yet authenticated — try to auth now
+            # (handles page reload after initial sign-in)
+            st.info("Credentials saved. Attempting to authenticate...")
+            from src.ingestion.garmin_connect import authenticate_garmin
+            tokenstore = os.environ.get("GARMIN_TOKENSTORE", "")
+            result, auth_inst = authenticate_garmin(
+                current_email, os.environ.get("GARMIN_PASSWORD", ""), tokenstore
+            )
+            if result.success:
+                st.session_state.garmin_auth_state = "connected"
+                st.session_state.garmin_auth_instance = None
+                st.session_state.garmin_auth_error = ""
+                st.success(f"Connected as: {current_email}")
+                is_connected = True
+                st.rerun()
+            elif result.mfa_required:
+                st.session_state.garmin_auth_state = "mfa_pending"
+                st.session_state.garmin_auth_instance = auth_inst
+                st.session_state.garmin_auth_error = ""
+                st.rerun()
+            else:
+                st.session_state.garmin_auth_state = "error"
+                st.session_state.garmin_auth_error = result.error
+                st.rerun()
     else:
         st.info("Not connected to Garmin Connect. Sign in below.")
 
@@ -1991,7 +2002,7 @@ def _render_garmin_setup():
                         # Keep in mfa_pending so user can retry
                         st.session_state.garmin_auth_instance = auth_inst
 
-    show_signin = (not has_credentials) or (auth_state == "error") or (auth_state == "mfa_pending" and auth_instance is None)
+    show_signin = (not has_credentials) or (auth_state == "error") or is_sync_paused() or (auth_state == "mfa_pending" and auth_instance is None)
     # ── Sign-in form (when no credentials, in error state, or MFA session lost) ──
     if show_signin:
         with st.form("garmin_signin", clear_on_submit=False):
@@ -2342,25 +2353,10 @@ def _check_garmin_connected() -> bool:
     """Return True if Garmin is connected via session state or has cached tokens."""
     if st.session_state.get("garmin_auth_state") == "connected":
         return True
-    # Check for cached tokens on disk — try multiple paths
-    tokenstore_env = os.environ.get("GARMIN_TOKENSTORE", "")
-    if tokenstore_env:
-        # If GARMIN_TOKENSTORE is explicitly set, only check that path
-        if os.path.isdir(tokenstore_env):
-            files = [f for f in os.listdir(tokenstore_env) if f.endswith(('.json', '.pkl'))]
-            if files:
-                return True
-        return False
-    candidates = [
-        os.path.join(os.environ.get("CYCLING_AGENT_VAULT", ""), ".garminconnect"),
-        os.path.expanduser("~/.garminconnect"),
-    ]
-    for tokenstore in candidates:
-        if tokenstore and os.path.isdir(tokenstore):
-            files = [f for f in os.listdir(tokenstore) if f.endswith(('.json', '.pkl'))]
-            if files:
-                return True
-    return False
+    # Check the same tokenstore the sync pipeline will actually use,
+    # so the UI status matches what a login would find.
+    from src.ingestion.garmin_connect import _resolve_tokenstore, _has_cached_tokens
+    return _has_cached_tokens(_resolve_tokenstore())
 
 
 def _display_sync_results(result: dict) -> None:
@@ -2614,7 +2610,7 @@ def _render_llm_settings():
             index=0 if not cfg.get("model") else (models.index(cfg["model"]) if cfg["model"] in models else 0),
             key="llm_model_select",
         )
-        if selected:
+        if selected and selected != cfg.get("model"):
             cfg["model"] = selected
             save_llm_config(cfg)
             st.success(f"Model set to **{selected}**")

@@ -10,6 +10,7 @@ to answer questions about training history, patterns, and causes.
 from pathlib import Path
 
 import re
+import sqlite3
 import logging
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,8 @@ def query_db(sql: str, vault_path: Path, limit: int = DEFAULT_SQL_QUERY_LIMIT) -
 
     # Safety checks: blocked keywords
     for kw in BLOCKED_KEYWORDS:
-        if kw in sql_upper:
+        # Word-boundary match: "UPDATE" must not reject the column "updated_at"
+        if re.search(r"\b" + kw + r"\b", sql_upper):
             return f"ERROR: Query contains blocked keyword '{kw}'. Only SELECT queries are allowed."
 
     # Safety checks: blocked patterns (comments, statement separators)
@@ -102,12 +104,14 @@ def query_db(sql: str, vault_path: Path, limit: int = DEFAULT_SQL_QUERY_LIMIT) -
 
     try:
         conn = sqlite3.connect(str(db_path))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute(sql)
-        rows = cursor.fetchall()
-        columns = [desc[0] for desc in cursor.description]
-        conn.close()
+        try:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            columns = [desc[0] for desc in cursor.description]
+        finally:
+            conn.close()
 
         if not rows:
             return "No results found."
