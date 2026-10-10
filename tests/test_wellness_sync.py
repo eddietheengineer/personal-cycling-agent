@@ -196,3 +196,55 @@ class TestWellnessSyncDateFormatting:
         assert len(store_calls) == 1
         records = store_calls[0][0][0]
         assert records[0]["date"] == "2025-07-04"
+
+
+# -- Unbounded forward catch-up (regression) --
+
+
+class TestUnboundedForwardCatchUp:
+    """Regression: unbounded sync must catch up FORWARD from last_synced to
+    today. It previously went backwards from last_synced, which can never
+    close a forward gap — it re-synced already-stored days instead.
+
+    All Garmin client calls and the DB are mocked — no network, no real DB.
+    """
+
+    def _run_unbounded(self, last_synced, today):
+        import datetime as real_datetime
+        from src.ingestion import garmin_connect as gc
+
+        class FakeDateTime(real_datetime.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(today.year, today.month, today.day, 12, 0, 0)
+
+        mock_db = MagicMock()
+        mock_db.get_last_synced.return_value = last_synced
+        mock_db.get_wellness_dates.return_value = set()
+
+        mock_client = MagicMock()
+        # Bulk fetches return empty so no per-day fetches are triggered.
+        for name in ("get_weigh_ins", "get_body_composition", "get_daily_steps"):
+            getattr(mock_client, name).return_value = []
+
+        with patch.object(gc, "datetime", FakeDateTime), \
+             patch.object(gc, "_create_client", return_value=mock_client), \
+             patch.object(gc, "CyclingDB", return_value=mock_db), \
+             patch.object(gc, "_get_garmin_credentials",
+                          return_value=("e@example.com", "pw", None)), \
+             patch.object(gc, "_rate_limiter"), \
+             patch.object(gc, "reset_rate_limiter"):
+            gc.sync_garmin(unbounded=True, db_path="/tmp/test_unbounded.db")
+        return mock_client
+
+    def test_forward_catch_up_from_past_last_synced(self):
+        today = date(2026, 10, 10)
+        client = self._run_unbounded("2026-09-01", today)
+        args = client.get_weigh_ins.call_args[0]
+        assert args[0] == "2026-09-02"  # last_synced + 1 day
+        assert args[1] == "2026-10-10"  # today
+
+    def test_already_up_to_date_makes_no_client_calls(self):
+        today = date(2026, 10, 10)
+        client = self._run_unbounded("2026-10-10", today)  # last_synced == today
+        client.get_weigh_ins.assert_not_called()

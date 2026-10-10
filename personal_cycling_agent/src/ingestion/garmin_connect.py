@@ -1182,12 +1182,10 @@ def sync_garmin(
     in a single API call each. Then fetches HRV and sleep data per-day (these
     are per-day only in the Garmin API).
 
-    When *unbounded* is True, syncs continuously until rate-limited
-    (no day limit).
-
-    Pulls days going backwards from the last sync point. On first run with no
-    prior sync, starts from yesterday. This lets cron run daily and
-    incrementally backfill historical data without overwhelming the API.
+    When *unbounded* is True, catches up forward from the last sync point to
+    today (closing any forward gap the daily incremental sync missed). On
+    first run with no prior sync, pulls the most recent MAX_SYNC_DAYS of
+    history.
 
     Args:
         days: Number of days to sync (default 1). Ignored if *unbounded* is True.
@@ -1230,8 +1228,25 @@ def sync_garmin(
                 logger.warning(f"Unparseable last_synced value '{last_synced}', "
                                "starting from yesterday")
                 last_date = today - timedelta(days=1)
+            # Forward catch-up: sync from the day after the last sync to
+            # today. (Previously this went backwards, which can never close
+            # a forward gap — it re-synced already-stored days instead.)
+            start = last_date + timedelta(days=1)
+            if start > today:
+                db.close()
+                return {"wellness_records": 0, "with_hrv": 0}
+            d = start
+            while d <= today:
+                sync_dates.append(d)
+                d += timedelta(days=1)
         else:
-            last_date = today - timedelta(days=1)
+            # Initial backfill: no prior sync point — pull the most recent
+            # MAX_SYNC_DAYS of history, oldest-first.
+            current_date = today - timedelta(days=1)
+            for _ in range(MAX_SYNC_DAYS):
+                sync_dates.append(current_date)
+                current_date -= timedelta(days=1)
+            sync_dates.reverse()
     else:
         # Incremental: sync from day after last sync up to today.
         if last_synced:
@@ -1263,16 +1278,6 @@ def sync_garmin(
     client = _create_client(tokenstore)
     logger.info("Authenticated with Garmin Connect")
 
-    if unbounded:
-        # Unbounded: go backwards from last_date for up to MAX_SYNC_DAYS
-        current_date = last_date
-        days_synced = 0
-        while days_synced < MAX_SYNC_DAYS:
-            sync_dates.append(current_date)
-            current_date -= timedelta(days=1)
-            days_synced += 1
-        # Process oldest-first so last_synced ends at the newest date.
-        sync_dates.reverse()
 
     if not sync_dates:
         db.close()
