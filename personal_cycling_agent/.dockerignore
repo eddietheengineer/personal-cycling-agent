@@ -1,0 +1,14 @@
+# Keep the image lean and free of local dev artifacts.
+# NOTE: .dockerignore needs `**/` to match nested paths (unlike .gitignore).
+# The running dev container bind-mounts src/ over the baked-in copy, so this
+# only affects the fallback source baked into the image.
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.venv/
+**/venv/
+**/.git/
+**/*.sqlite
+**/*.sqlite3
+nohup.out

@@ -24,38 +24,36 @@ or write YAML content into it — HA will reject the add-on entirely.
 
 ### Option B: Docker container (active deployment)
 
-The app runs in a Docker container named `pca` (image `pca-test`) on port 8501. The source code is baked into the image — it does **not** volume-mount the source directory.
+The app runs in a Docker container named `pca` (image `pca-test`) on port 8501. The image holds only the **dependencies** (Python + `requirements.txt`); the container **bind-mounts the live `src/`** over the baked-in copy, so the running app is byte-for-byte your working tree.
 
-**After any code change to `src/`, you MUST rebuild and restart the container:**
+**No rebuild needed when you edit code.** The bind-mount means the container always reflects your working tree (uncommitted changes included) — this is the pre-commit preview. You only rebuild the image when `requirements.txt` changes.
 
 ```bash
 cd ~/personal-cycling-agent/personal_cycling_agent
-docker build --no-cache -t pca-test .
+docker build --no-cache -t pca-test .          # only when requirements.txt changes
 docker stop pca && docker rm pca
 docker run -d --name pca -p 8501:8501 \
   -v /home/joshua/cycling-agent-data:/data \
+  -v /home/joshua/personal-cycling-agent/personal_cycling_agent/src:/app/src \
   -e CYCLING_AGENT_VAULT=/data \
   pca-test
 ```
 
-**CRITICAL: Always use `--no-cache`.** Docker layer caching has caused stale code to ship to the container even after source changes — the build reports success but the running container executes old code. `--no-cache` ensures every rebuild actually copies the current source.
+**The `-v .../src:/app/src` bind-mount is the key.** It overrides the baked-in source with your live working tree, so edits appear in the running app immediately (no rebuild). Verify it's live: `docker exec pca stat -c %i /app/src/visualize.py` should match `stat -c %i personal_cycling_agent/src/visualize.py` on the host.
 
 **The `-e CYCLING_AGENT_VAULT=/data` flag is required.** The app resolves the vault path from `CYCLING_AGENT_VAULT` > `DATA_DIR` > `~/cycling-agent-data`. Inside the container the user is `cycling`, so `~` expands to `/home/cycling` — not the mounted `/data`. Without the env var the app creates a fresh empty database, losing all historical data.
 
-**Do not skip this step.** A `docker restart pca` is insufficient — it restarts the old image. The full rebuild cycle is required.
+**Rebuild the image (with `--no-cache`) only when `requirements.txt` changes.** `--no-cache` is still required for dependency changes (Docker layer caching can serve stale packages). For source-only changes, no rebuild is needed — the bind-mount handles it.
 
 ### After Every Commit
 
-**MUST do a force clean rebuild after every commit and push.** Docker layer caching silently serves stale code — `docker build` without `--no-cache` will report success but ship old files. The sequence is:
+The local `pca` container already reflects your working tree (via the bind-mount), so **no local rebuild is needed** after a commit. The commit/push updates the GitHub repo, which is what the HA add-on builds from:
 
 1. `git commit` + `git push`
-2. `docker image rm pca-test` (remove old image to prevent cache reuse)
-3. `cd personal_cycling_agent && docker build --no-cache -t pca-test .` (clean rebuild)
-4. `docker stop pca && docker rm pca` (remove running container)
-5. `docker run -d --name pca -p 8501:8501 -v /home/joshua/cycling-agent-data:/data -e CYCLING_AGENT_VAULT=/data pca-test`
-6. Verify the container has the new code: `docker exec pca head -5 /app/src/<changed_file>`
+2. Bump the patch version in `personal_cycling_agent/config.json` (see Versioning).
+3. In HA: **Check for updates** → **Rebuild** (the add-on builds from the pushed `main`).
 
-**Never skip steps 2 or 6.** Step 2 prevents Docker from reusing cached layers. Step 6 confirms the running container actually has the new code before declaring the commit done.
+The local `pca` container is a **pre-commit preview** of your working tree; the HA add-on is the **committed** state. After you push and rebuild HA, they converge on the same commit.
 
 **HA Add-on deployment:** Add the GitHub repo as a custom addon store in HA (**Settings → Add-ons → Add-on Store → Repositories →** `https://github.com/eddietheengineer/personal-cycling-agent`). After pushing, click **Check for updates** in the Add-on Store, then **Rebuild** in the add-on UI. No local sync needed.
 
