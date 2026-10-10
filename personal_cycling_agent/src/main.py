@@ -206,7 +206,7 @@ def run_analyze() -> dict:
         if excluded_pm:
             activity_dicts = [
                 dict(a) for a in activities
-                if a.get("power_meter") not in excluded_pm
+                if a["power_meter"] not in excluded_pm
             ]
             logger.info(f"Filtered out {len(activities) - len(activity_dicts)} activities from excluded power meters")
         else:
