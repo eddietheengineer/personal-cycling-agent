@@ -59,9 +59,49 @@ The local `pca` container is a **pre-commit preview** of your working tree; the 
 
 **Source layout:** `personal_cycling_agent/src/` is the single source of truth. Root `src/` is a symlink to `personal_cycling_agent/src/`. All edits go to `src/` (follows the symlink). Docker builds from `personal_cycling_agent/` where real files live.
 
-## Garmin Authentication (garmin-auth 0.3.0)
+## Garmin Data Backends
 
-This project uses `garmin-auth` 0.3.0 for Garmin Connect authentication. The API has specific patterns for MFA handling that must be followed to avoid breaking the auth flow.
+Garmin data is fetched through a switchable backend, selected by the
+`GARMIN_BACKEND` setting in `config.env` (default `personal`). The Settings
+page has a "Garmin data source" radio to switch between the two.
+
+- **`personal` (default, primary)** — the official **Garmin Connect Personal
+  API** (API-key auth, no password, no MFA). Implemented in
+  `src/ingestion/garmin_personal.py`. The API key is stored in `config.env` as
+  `GARMIN_PERSONAL_API_KEY` (create one at https://developer.garmin.com/).
+  Tokens are cached in `~/cycling-agent-data/.garmin_personal_token.json`.
+- **`legacy`** — the unofficial `garminconnect` client (email/password + MFA),
+  implemented in `src/ingestion/garmin_connect.py`. See the section below.
+
+### Dispatch
+
+`sync_garmin()` and `sync_activities()` in `garmin_connect.py` check
+`_use_personal_backend()` (reads `GARMIN_BACKEND`, default `personal`) and
+delegate to `garmin_personal.sync_garmin_personal` / `sync_activities_personal`
+when the Personal API is selected; otherwise they fall through to the legacy
+body unchanged. `is_sync_paused()` is backend-aware: the pause circuit breaker
+only applies to the legacy backend (the Personal API has no login to fail).
+
+### Personal API notes
+
+- Base URL `https://personal.connectapi.garmin.com`; auth is
+  `Authorization: ApiKey <key>` for the token endpoint, then `Bearer <token>`.
+- The activity-search endpoint **500s for `limit > 50`** — the client caps the
+  limit at `PERSONAL_MAX_ACTIVITY_LIMIT = 50`.
+- FIT downloads require an `Accept` header including
+  `application/x-zip-compressed` (or `*/*`); `application/zip` alone → 406.
+- The Personal API does not expose the 4 `metrics-service` charts (endurance
+  score, hill score, training readiness, morning training readiness); those
+  fields are left empty by the personal backend. The legacy backend still
+  fetches them.
+- The personal activity path reuses the legacy `_sync_activities_batch` /
+  `_fetch_activity_streams` pipeline via a `PersonalActivityClient` adapter
+  (garminconnect-compatible `get_activities` / `count_activities` /
+  `download_activity`), so FIT parsing and stream storage are shared.
+
+## Garmin Authentication (garmin-auth 0.3.0) — Legacy backend
+
+The **legacy** backend (selected via `GARMIN_BACKEND=legacy`) uses `garmin-auth` 0.3.0 for Garmin Connect authentication. The API has specific patterns for MFA handling that must be followed to avoid breaking the auth flow.
 
 ### Correct API Usage
 

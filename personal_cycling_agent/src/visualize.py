@@ -1857,18 +1857,108 @@ def _update_config_env(updates: dict) -> None:
             os.environ[k] = v
 
 
-def _render_garmin_setup():
-    """Render the Garmin Connect setup and sync tab."""
-    from src.tasks.worker import BackgroundSync
-    from src.ingestion.garmin_export import sync_routes_from_fit
-    from src.db.store import CyclingDB
+def _current_garmin_backend() -> str:
+    """Return the active Garmin backend: "personal" (default) or "legacy"."""
+    return os.getenv("GARMIN_BACKEND", "personal").strip().lower()
+
+
+def _render_backend_selector() -> None:
+    """Render the backend radio and persist the choice to config.env."""
+    current = _current_garmin_backend()
+    choice = st.radio(
+        "Garmin data source",
+        options=["personal", "legacy"],
+        index=0 if current == "personal" else 1,
+        format_func=lambda v: {
+            "personal": "Personal API (recommended)",
+            "legacy": "Legacy (email/password + MFA)",
+        }[v],
+        horizontal=True,
+        key="garmin_backend_selector",
+        help=(
+            "Personal API uses your official Garmin Personal API key (no "
+            "password, no MFA). Legacy uses the unofficial garminconnect "
+            "client with email/password."
+        ),
+    )
+    if choice != current:
+        _update_config_env({"GARMIN_BACKEND": choice})
+        os.environ["GARMIN_BACKEND"] = choice
+        st.session_state.garmin_auth_state = "idle"
+        st.session_state.garmin_auth_instance = None
+        st.session_state.garmin_auth_error = ""
+        st.rerun()
+
+
+def _render_personal_api_setup() -> None:
+    """Render the Personal API key setup (key input, save, test, status)."""
+    from src.ingestion.garmin_personal import (
+        PersonalApi,
+        GarminPersonalAuthError,
+        test_personal_connection,
+    )
+
+    st.markdown("**Personal API**")
+    st.caption(
+        "Uses your official Garmin Personal API key. Create one at "
+        "https://developer.garmin.com/ (Personal API). No password or MFA "
+        "required."
+    )
+
+    existing_key = os.environ.get("GARMIN_PERSONAL_API_KEY", "")
+    key = st.text_input(
+        "Personal API Key",
+        value=existing_key,
+        type="password",
+        placeholder="GCDC…",
+        key="garmin_personal_api_key_input",
+    )
+
+    col1, col2, col3 = st.columns([1, 1, 2])
+    with col1:
+        save_clicked = st.button("💾 Save key", key="save_personal_key")
+    with col2:
+        test_clicked = st.button("🔍 Test connection", key="test_personal_key")
+    with col3:
+        if existing_key:
+            st.caption(f"Key saved ({len(existing_key)} chars).")
+
+    if save_clicked:
+        if not key or not key.strip():
+            st.error("API key is required.")
+        else:
+            _update_config_env({"GARMIN_PERSONAL_API_KEY": key.strip()})
+            os.environ["GARMIN_PERSONAL_API_KEY"] = key.strip()
+            st.success("Personal API key saved.")
+            st.rerun()
+
+    if test_clicked:
+        ok, msg = test_personal_connection(key if key.strip() else existing_key)
+        if ok:
+            st.success(msg)
+        else:
+            st.error(msg)
+
+    if existing_key:
+        try:
+            api = PersonalApi()
+            api._ensure_token()
+            profile = api.get_user_profile()
+            name = (
+                profile.get("fullName")
+                or profile.get("displayName")
+                or "your Garmin account"
+            )
+            st.success(f"Connected to {name} via Personal API.")
+        except GarminPersonalAuthError as e:
+            st.error(f"Personal API auth failed: {e}")
+        except Exception as e:
+            st.warning(f"Could not verify Personal API connection: {e}")
+
+
+def _render_legacy_auth_ui(current_email: str, has_credentials: bool) -> None:
+    """Render the legacy (email/password + MFA) Garmin auth UI."""
     from src.ingestion.garmin_connect import is_sync_paused
-
-    st.subheader("Garmin Connect")
-
-    current_email = os.environ.get("GARMIN_EMAIL", "")
-    has_credentials = bool(current_email and os.environ.get("GARMIN_PASSWORD", ""))
-
     # ── Auth state machine ───────────────────────────────────────────
     # States: "idle" (no credentials), "mfa_pending" (needs OTP),
     # "connected" (authenticated), "error" (auth failed)
@@ -2036,6 +2126,34 @@ def _render_garmin_setup():
                         st.session_state.garmin_auth_state = "error"
                         st.session_state.garmin_auth_error = result.error
                         st.error(f"Authentication failed: {result.error}")
+
+
+def _render_garmin_setup():
+    """Render the Garmin Connect setup and sync tab."""
+    from src.tasks.worker import BackgroundSync
+    from src.ingestion.garmin_export import sync_routes_from_fit
+    from src.db.store import CyclingDB
+    from src.ingestion.garmin_connect import is_sync_paused
+
+    st.subheader("Garmin Connect")
+
+    current_email = os.environ.get("GARMIN_EMAIL", "")
+    has_credentials = bool(current_email and os.environ.get("GARMIN_PASSWORD", ""))
+
+    # ── Backend selection ────────────────────────────────────────────
+    backend = _current_garmin_backend()
+    _render_backend_selector()
+
+    if backend == "personal":
+        _render_personal_api_setup()
+    else:
+        _render_legacy_auth_ui(current_email, has_credentials)
+
+    # Connection status for gating the sync buttons (backend-aware)
+    if backend == "personal":
+        is_connected = bool(os.environ.get("GARMIN_PERSONAL_API_KEY", "").strip())
+    else:
+        is_connected = _check_garmin_connected()
 
     # ── Sync state ───────────────────────────────────────────────────
     db_sync = CyclingDB(str(config.db_path("cycling_agent.sqlite")))

@@ -377,6 +377,17 @@ def _retry_on_rate_limit(fn, max_retries: int = 3):
             time.sleep(wait)
 
 
+def _use_personal_backend() -> bool:
+    """Return True if the Personal API backend is selected (the default).
+
+    Set GARMIN_BACKEND=legacy in config.env to use the unofficial
+    garminconnect (email/password + MFA) client instead.
+    """
+    return os.getenv("GARMIN_BACKEND", "personal").strip().lower() in (
+        "personal", "personal_api", "personalapi", "personal-api",
+    )
+
+
 def _get_garmin_credentials() -> tuple[str, str, str]:
     """
     Get Garmin Connect credentials from the vault.
@@ -434,7 +445,13 @@ def _pause_flag_path() -> Path:
 
 
 def is_sync_paused() -> bool:
-    """Return True if Garmin sync is paused after a login failure."""
+    """Return True if Garmin sync is paused after a login failure.
+
+    The pause circuit breaker only applies to the legacy (email/password)
+    backend; the Personal API has no login to fail, so it is never paused.
+    """
+    if _use_personal_backend():
+        return False
     return _pause_flag_path().exists()
 
 
@@ -1036,6 +1053,13 @@ def sync_activities(
     Returns:
         Dict with counts of activities processed and stream records stored.
     """
+    if _use_personal_backend():
+        from src.ingestion.garmin_personal import sync_activities_personal
+        return sync_activities_personal(
+            days=days, db_path=db_path, unbounded=unbounded,
+            progress_callback=progress_callback,
+        )
+
     if db_path is None:
         db_path = str(config.db_path("cycling_agent.sqlite"))
 
@@ -1196,6 +1220,13 @@ def sync_garmin(
     Returns:
         Dict with counts of new/updated records.
     """
+    if _use_personal_backend():
+        from src.ingestion.garmin_personal import sync_garmin_personal
+        return sync_garmin_personal(
+            days=days, db_path=db_path, unbounded=unbounded,
+            progress_callback=progress_callback, force_resync=force_resync,
+        )
+
     if db_path is None:
         db_path = str(config.db_path("cycling_agent.sqlite"))
 
