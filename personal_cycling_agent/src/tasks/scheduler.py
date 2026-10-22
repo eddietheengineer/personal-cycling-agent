@@ -57,6 +57,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_ACTIVITY_HOURS = DEFAULT_ACTIVITY_SYNC_HOURS
 DEFAULT_WELLNESS_HOURS = DEFAULT_WELLNESS_SYNC_HOURS
 
+# How long stop() waits for the loop thread before returning and letting it
+# finish in the background (exposed so tests can shorten it).
+STOP_JOIN_TIMEOUT_S = 10.0
+
 
 def _env_bool(key: str, default: bool = False) -> bool:
     val = os.environ.get(key, "").strip().lower()
@@ -146,11 +150,23 @@ class SyncScheduler:
             )
 
     def stop(self) -> None:
-        """Stop the scheduler."""
+        """Stop the scheduler.
+
+        Sets the stop event and joins the loop briefly. If a sync is still in
+        flight, the loop thread exits on its own once it finishes; until then
+        ``is_running`` stays True so a later ``start()`` cannot spawn a second
+        concurrent loop.
+        """
         self._stop_event.set()
-        if self._thread:
-            self._thread.join(timeout=10)
-            self._thread = None
+        with self._lock:
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout=STOP_JOIN_TIMEOUT_S)
+            if thread.is_alive():
+                logger.warning(
+                    "Sync scheduler stop: loop still finishing a sync; "
+                    "it will exit on its own"
+                )
         logger.info("Sync scheduler stopped")
 
     def _is_manual_sync_running(self) -> bool:
@@ -159,36 +175,50 @@ class SyncScheduler:
         return bg is not None and bg.is_running
 
     def _run(self) -> None:
-        """Main scheduler loop."""
-        activity_interval = self.activity_interval_hours * 3600
-        wellness_interval = self.wellness_interval_hours * 3600
+        """Main scheduler loop.
 
-        # On startup, check for missed data immediately (don't wait for first interval)
-        next_activity_check = time.time()
-        next_wellness_check = time.time()
+        Intervals are re-read from the environment every cycle so that
+        ``set_intervals`` takes effect without an app restart. A shortened
+        interval also collapses any over-long pending wait (bounded by one
+        new interval); a lengthened one applies from the next fire onward.
+        """
+        try:
+            # On startup, check for missed data immediately (don't wait for first interval)
+            next_activity_check = time.time()
+            next_wellness_check = time.time()
 
-        logger.info(
-            f"Scheduler loop: activity interval={activity_interval}s, "
-            f"wellness interval={wellness_interval}s"
-        )
+            while not self._stop_event.is_set():
+                now = time.time()
 
-        while not self._stop_event.is_set():
-            now = time.time()
+                # Re-read each cycle: interval changes must apply without a restart
+                activity_interval = self.activity_interval_hours * 3600
+                wellness_interval = self.wellness_interval_hours * 3600
 
-            # ── Activity check ──
-            if now >= next_activity_check:
-                if not self._is_manual_sync_running():
-                    self._sync_activities()
-                next_activity_check = now + activity_interval
+                # Collapse pending waits that now exceed the (shortened) interval
+                if next_activity_check > now + activity_interval:
+                    next_activity_check = now + activity_interval
+                if next_wellness_check > now + wellness_interval:
+                    next_wellness_check = now + wellness_interval
 
-            # ── Wellness check ──
-            if now >= next_wellness_check:
-                if not self._is_manual_sync_running():
-                    self._sync_wellness()
-                next_wellness_check = now + wellness_interval
+                # ── Activity check ──
+                if now >= next_activity_check:
+                    if not self._is_manual_sync_running():
+                        self._sync_activities()
+                    next_activity_check = now + activity_interval
 
-            # Sleep briefly and check stop event
-            self._stop_event.wait(timeout=30)
+                # ── Wellness check ──
+                if now >= next_wellness_check:
+                    if not self._is_manual_sync_running():
+                        self._sync_wellness()
+                    next_wellness_check = now + wellness_interval
+
+                # Sleep briefly and check stop event
+                self._stop_event.wait(timeout=30)
+        finally:
+            # Self-clear so a later start() isn't blocked by a dead thread ref
+            with self._lock:
+                if self._thread is threading.current_thread():
+                    self._thread = None
 
     def _sync_activities(self) -> None:
         """Poll for new activities."""
@@ -246,18 +276,12 @@ class SyncScheduler:
         _write_env("AUTO_SYNC_ENABLED", str(enabled).lower())
 
         if enabled:
+            # start() is a no-op when already running, so repeated Save clicks
+            # don't re-trigger syncs. A freshly started loop's first check
+            # fires immediately, which serves as the initial sync.
             self.start()
-            # Trigger immediate sync on enable
-            threading.Thread(target=self._initial_sync, daemon=True, name="initial-sync").start()
         else:
             self.stop()
-
-    def _initial_sync(self) -> None:
-        """Run both activity and wellness sync immediately after enabling."""
-        logger.info("Auto-sync enabled: running initial sync")
-        self._sync_activities()
-        self._sync_wellness()
-        logger.info("Auto-sync initial sync complete")
 
     def set_intervals(self, activity_hours: int, wellness_hours: int) -> None:
         """Update sync intervals and persist to config.env."""

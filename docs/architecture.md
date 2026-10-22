@@ -101,7 +101,7 @@ Configuration via environment variables:
 | Activity interval | `AUTO_SYNC_ACTIVITY_HOURS` | 1 |
 | Wellness interval | `AUTO_SYNC_WELLNESS_HOURS` | 6 |
 
-Collision avoidance: checks if a manual `BackgroundSync` is active; if so, skips the auto-sync cycle. On enable, triggers an immediate sync for both cycles.
+Collision avoidance: checks if a manual `BackgroundSync` is active; if so, skips the auto-sync cycle. On enable, the loop's first check fires immediately (one initial sync); with the scheduler already running, `set_enabled(True)` is a no-op, so repeated Save clicks don't re-trigger syncs. Intervals are re-read from the environment every cycle, so `set_intervals` applies without an app restart — a shortened interval collapses the pending wait (bounded by one new interval), a lengthened one applies from the next fire. `stop()` joins the loop briefly; if a sync is still in flight, the loop exits on its own afterwards and `is_running` stays True until then, so `start()` can never spawn a second concurrent loop.
 
 ---
 
