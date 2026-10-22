@@ -16,14 +16,13 @@ ATL_HALFLIFE_DAYS = 7.0
 
 # ---------------------------------------------------------------------------
 # Sync Limits
-# Used in: garmin_connect.py, visualize.py
+# Used in: visualize.py
 # ---------------------------------------------------------------------------
 MAX_SYNC_DAYS = 3650  # 10-year cap on unbounded sync
-DEFAULT_CLI_SYNC_DAYS = 90
 
 # ---------------------------------------------------------------------------
 # Garmin API Rate Limiting
-# Used in: garmin_connect.py
+# Used in: garmin_pipeline.py, garmin_personal.py
 # ---------------------------------------------------------------------------
 GARMIN_RATE_LIMIT_MIN_INTERVAL = 1.0  # seconds
 GARMIN_RATE_LIMIT_MAX_BACKOFF = 300.0  # seconds

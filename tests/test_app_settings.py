@@ -42,7 +42,6 @@ def _minimal_vault(tmp_path):
 
     os.environ["CYCLING_AGENT_VAULT"] = str(vault)
     os.environ["PANDAS_PYARROW_TO_PYTHON"] = "deprecated"
-    os.environ["GARMIN_TOKENSTORE"] = str(vault / "nonexistent_tokenstore")
     os.environ["ATHLETE_NAME"] = "Test Rider"
     os.environ["WEIGHT_KG"] = "72"
     os.environ["HEIGHT_CM"] = "175"
@@ -60,19 +59,17 @@ def _minimal_vault(tmp_path):
     os.environ["BIKES"] = "Road bike"
     os.environ["POWER_METER"] = "PowerTap"
     os.environ["HR_MONITOR"] = "Garmin HRM"
-    os.environ["GARMIN_EMAIL"] = ""
-    os.environ["GARMIN_PASSWORD"] = ""
+    os.environ["GARMIN_PERSONAL_API_KEY"] = ""
 
     yield str(vault)
 
     for k in list(os.environ.keys()):
         if k in ("CYCLING_AGENT_VAULT", "PANDAS_PYARROW_TO_PYTHON",
-                  "GARMIN_TOKENSTORE",
                   "ATHLETE_NAME", "WEIGHT_KG", "HEIGHT_CM", "DISCIPLINE",
                   "FTP_WATTS", "MAX_HR", "RESTING_HR", "LT1_POWER", "LT2_POWER",
                   "PRIMARY_GOAL", "SECONDARY_GOAL", "TRAINING_DAYS",
                   "MAX_SESSION_DURATION", "TERRAIN", "BIKES", "POWER_METER",
-                  "HR_MONITOR", "GARMIN_EMAIL", "GARMIN_PASSWORD"):
+                  "HR_MONITOR", "GARMIN_PERSONAL_API_KEY"):
             del os.environ[k]
 
 
@@ -95,9 +92,9 @@ def _go(app: AppTest, page: str) -> AppTest:
 
 
 class TestGarminConnectSection:
-    """Garmin Connect subheader and backend-specific auth UI."""
+    """Garmin Connect subheader and Personal API setup UI."""
 
-    def test_garmin_connect_subheader(self, app):
+    def test_garmin_subheader(self, app):
         """Settings page shows 'Garmin Connect' subheader."""
         _go(app, "Settings")
         subheaders = [s.value for s in app.subheader]
@@ -115,34 +112,6 @@ class TestGarminConnectSection:
         btn_labels = [b.label for b in app.button]
         assert "💾 Save key" in btn_labels
         assert "🔍 Test connection" in btn_labels
-
-    def test_not_connected_info_message(self, app, monkeypatch):
-        """Legacy backend shows not connected message when no credentials are set."""
-        monkeypatch.setenv("GARMIN_BACKEND", "legacy")
-        _go(app, "Settings")
-        infos = [i.value for i in app.info]
-        assert any("Not connected" in v or "not connected" in v.lower() for v in infos)
-
-    def test_sign_in_button_present(self, app, monkeypatch):
-        """Legacy backend renders the Sign In button in the sign-in form."""
-        monkeypatch.setenv("GARMIN_BACKEND", "legacy")
-        _go(app, "Settings")
-        btn_labels = [b.label for b in app.button]
-        assert "Sign In" in btn_labels
-
-    def test_garmin_email_input_present(self, app, monkeypatch):
-        """Legacy backend shows Garmin Email text input."""
-        monkeypatch.setenv("GARMIN_BACKEND", "legacy")
-        _go(app, "Settings")
-        email_inputs = [t for t in app.text_input if "Email" in t.label]
-        assert len(email_inputs) >= 1
-
-    def test_garmin_password_input_present(self, app, monkeypatch):
-        """Legacy backend shows Garmin Password text input."""
-        monkeypatch.setenv("GARMIN_BACKEND", "legacy")
-        _go(app, "Settings")
-        pw_inputs = [t for t in app.text_input if "Password" in t.label]
-        assert len(pw_inputs) >= 1
 
     def test_sync_all_historical_button_present(self, app):
         """Sync All Historical Data button is rendered."""

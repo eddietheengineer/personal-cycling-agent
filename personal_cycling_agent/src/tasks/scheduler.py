@@ -193,7 +193,7 @@ class SyncScheduler:
     def _sync_activities(self) -> None:
         """Poll for new activities."""
         try:
-            from src.ingestion.garmin_connect import sync_activities
+            from src.ingestion.garmin_personal import sync_activities
 
             logger.info("Auto-sync: checking for new activities")
             result = sync_activities(days=1)
@@ -219,7 +219,7 @@ class SyncScheduler:
     def _sync_wellness(self) -> None:
         """Poll for new wellness data."""
         try:
-            from src.ingestion.garmin_connect import sync_garmin
+            from src.ingestion.garmin_personal import sync_garmin
 
             logger.info("Auto-sync: checking for new wellness data")
             result = sync_garmin(days=1)

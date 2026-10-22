@@ -279,8 +279,7 @@ def env_vars(db_path, _vault_dir):
         "BIKES": "Road bike",
         "POWER_METER": "PowerTap",
         "HR_MONITOR": "Garmin HRM",
-        "GARMIN_EMAIL": "",
-        "GARMIN_PASSWORD": "",
+        "GARMIN_PERSONAL_API_KEY": "",
     }
     old = {}
     for k, v in env.items():

@@ -1,10 +1,8 @@
 """
-Garmin Connect Personal API client + sync (PRIMARY data source).
+Garmin Connect Personal API client + sync (the only data source).
 
 Official first-party access to the user's own Garmin Connect data using a
-Personal API key (created in the Garmin Connect web UI). The legacy
-``garminconnect`` (unofficial email/password + MFA) client in
-``garmin_connect.py`` is retained as a switchable fallback (``GARMIN_BACKEND``).
+Personal API key (created in the Garmin Connect web UI).
 
 Auth model:
     1. POST the Personal API key to the token endpoint -> a Bearer token.
@@ -48,11 +46,29 @@ from src import config as _config_mod
 
 from src.config.constants import (
     MAX_SYNC_DAYS,
-    GARMIN_ACTIVITY_BATCH_SIZE,
-    GARMIN_FIT_DOWNLOAD_INTERVAL,
     GARMIN_WELLNESS_POLL_INTERVAL,
 )
 from src.db.store import CyclingDB
+from src.ingestion.garmin_pipeline import (
+    GarminPersonalApiError,
+    GarminPersonalAuthError,
+    GarminPersonalRateLimited,
+    _retry_on_rate_limit,
+    _sync_activities_batch,
+    rate_limiter,
+    reset_rate_limiter,
+)
+
+__all__ = [
+    "PersonalApi",
+    "PersonalActivityClient",
+    "GarminPersonalApiError",
+    "GarminPersonalAuthError",
+    "GarminPersonalRateLimited",
+    "test_personal_connection",
+    "sync_garmin",
+    "sync_activities",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -72,18 +88,6 @@ TOKEN_REFRESH_WINDOW_S = 60 * 60
 
 # The activity-search endpoint 500s for limit > 50.
 PERSONAL_MAX_ACTIVITY_LIMIT = 50
-
-
-class GarminPersonalAuthError(RuntimeError):
-    """The Personal API key is missing, invalid, or revoked (401/403)."""
-
-
-class GarminPersonalRateLimited(RuntimeError):
-    """A Personal API request was rate limited (429)."""
-
-
-class GarminPersonalApiError(RuntimeError):
-    """A Personal API request failed (non-auth, non-rate-limit)."""
 
 
 def _token_cache_path() -> Path:
@@ -267,7 +271,7 @@ def extract_wellness_day(summary: dict | None, hrv: dict | None,
                          sleep: dict | None, body_battery: list) -> dict[str, Any]:
     """Extract the app's normalized wellness fields from Personal API responses.
 
-    Returns a dict with the same keys the legacy sync writes into the wellness
+    Returns a dict with the same keys the wellness sync writes into the
     record (minus weight/steps, which come from the bulk fetch).
     """
     summary = summary or {}
@@ -280,16 +284,22 @@ def extract_wellness_day(summary: dict | None, hrv: dict | None,
     sleep_hours = (sleep_ms / 3600.0) if sleep_ms else None
 
     body_battery_start = body_battery_end = None
-    body_battery = _get(summary, "bodyBattery", "latestValue")
-    if body_battery:
-        arr = _get(body_battery, "bodyBatteryValuesArray")
-        if isinstance(arr, list) and arr:
+    if isinstance(body_battery, list) and body_battery:
+        # Per-day report: list of objects, each with a bodyBatteryValuesArray
+        # of [timestamp, value] pairs (mirrors the legacy extraction).
+        report = body_battery[0] if isinstance(body_battery[0], dict) else {}
+        arr = report.get("bodyBatteryValuesArray") or []
+        if arr:
             try:
                 body_battery_start = arr[0][1]
                 body_battery_end = arr[-1][1]
                 body_battery = body_battery_end
             except (IndexError, TypeError):
                 pass
+    else:
+        # Fall back to the daily summary's latest value when no per-day
+        # body-battery report was fetched.
+        body_battery = _get(summary, "bodyBattery", "latestValue")
 
     intensity = (
         (_get(summary, "intensityMinutes", "moderate", default=0) or 0)
@@ -335,23 +345,42 @@ def extract_steps(summary: dict | None) -> int | None:
     return _get(summary, "movement", "steps", "value")
 
 
-# ── garminconnect-compatible adapter (reuses the legacy activity pipeline) ──
+# ── client adapter (feeds the shared activity pipeline) ──────────────
 
 class PersonalActivityClient:
-    """Presents the Personal API as the small ``garminconnect.Garmin`` surface
+    """Presents the Personal API as the small client surface
     that ``_sync_activities_batch`` / ``_fetch_activity_streams`` rely on:
     ``get_activities``, ``count_activities``, ``download_activity``.
 
-    This lets the existing (proven) activity-sync pipeline run unchanged against
-    the Personal API. The activity-search and FIT-download response shapes match
-    what those functions expect.
+    This lets the shared activity-sync pipeline run unchanged against
+    the Personal API. The activity-search and FIT-download response shapes
+    match what those functions expect.
     """
 
     def __init__(self, api: PersonalApi):
         self._api = api
 
     def get_activities(self, start: int = 0, limit: int = 100) -> list:
-        return self._api.search_activities(start=start, limit=min(limit, PERSONAL_MAX_ACTIVITY_LIMIT))
+        """Return up to *limit* activities starting at *start*.
+
+        The search endpoint 500s for limit > 50, so requests larger than
+        PERSONAL_MAX_ACTIVITY_LIMIT are served by multiple API calls. This
+        keeps the batch pipeline's page-size math (which assumes it receives
+        exactly the requested limit until the list ends) working unchanged.
+        """
+        out: list = []
+        offset = start
+        remaining = limit
+        while remaining > 0:
+            page = self._api.search_activities(
+                start=offset, limit=min(remaining, PERSONAL_MAX_ACTIVITY_LIMIT)
+            )
+            out.extend(page)
+            remaining -= len(page)
+            offset += len(page)
+            if len(page) < PERSONAL_MAX_ACTIVITY_LIMIT:
+                break  # end of the activity list
+        return out
 
     def count_activities(self) -> int:
         # No count endpoint on the Personal API; the caller treats failure as
@@ -395,8 +424,8 @@ def _compute_sync_dates(last_synced: str | None, today: date, days: int,
                         unbounded: bool) -> list[date]:
     """Return the wellness dates to sync (empty if already up to date).
 
-    Mirrors the legacy ``sync_garmin`` date logic so both backends advance the
-    same cursor.
+    Mirrors the original ``sync_garmin`` date logic so the wellness sync
+    advances the same cursor:
     """
     if unbounded:
         if last_synced:
@@ -436,7 +465,7 @@ def _compute_sync_dates(last_synced: str | None, today: date, days: int,
     return all_dates[:days] if days < len(all_dates) else all_dates
 
 
-def sync_garmin_personal(
+def sync_garmin(
     days: int = 1,
     db_path: str | None = None,
     unbounded: bool = False,
@@ -452,8 +481,7 @@ def sync_garmin_personal(
             "Garmin Connect web UI and add it to config.env."
         )
 
-    # Shared rate limiter (same module-level instance the legacy sync uses).
-    from src.ingestion.garmin_connect import rate_limiter, reset_rate_limiter, _retry_on_rate_limit
+    # Shared rate limiter and retry helper come from garmin_pipeline.
 
     db = CyclingDB(db_path)
     if force_resync:
@@ -588,9 +616,9 @@ def sync_garmin_personal(
     return {"wellness_records": total_stored, "with_hrv": total_with_hrv}
 
 
-# ── activity sync (Personal API, via the shared legacy pipeline) ──────
+# ── activity sync (Personal API, via the shared pipeline) ─────────────
 
-def sync_activities_personal(
+def sync_activities(
     days: int = 1,
     db_path: str | None = None,
     unbounded: bool = False,
@@ -600,7 +628,8 @@ def sync_activities_personal(
 
     Delegates to the existing ``_sync_activities_batch`` pipeline (offset
     pagination, resume offset, FIT download + parse, refresh) via a
-    ``PersonalActivityClient`` adapter, so the behavior matches the legacy path.
+    ``PersonalActivityClient`` adapter, so the behavior matches the
+    shared pipeline.
     """
     if db_path is None:
         db_path = str(_config_mod.db_path("cycling_agent.sqlite"))
@@ -609,12 +638,6 @@ def sync_activities_personal(
             "GARMIN_PERSONAL_API_KEY not set. Create a Personal API key in the "
             "Garmin Connect web UI and add it to config.env."
         )
-
-    from src.ingestion.garmin_connect import (
-        _sync_activities_batch,
-        rate_limiter,
-        reset_rate_limiter,
-    )
 
     db = CyclingDB(db_path)
     last_synced = db.get_last_synced("garmin_activities")

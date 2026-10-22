@@ -59,145 +59,39 @@ The local `pca` container is a **pre-commit preview** of your working tree; the 
 
 **Source layout:** `personal_cycling_agent/src/` is the single source of truth. Root `src/` is a symlink to `personal_cycling_agent/src/`. All edits go to `src/` (follows the symlink). Docker builds from `personal_cycling_agent/` where real files live.
 
-## Garmin Data Backends
+## Garmin Data Source
 
-Garmin data is fetched through a switchable backend, selected by the
-`GARMIN_BACKEND` setting in `config.env` (default `personal`). The Settings
-page has a "Garmin data source" radio to switch between the two.
-
-- **`personal` (default, primary)** — the official **Garmin Connect Personal
-  API** (API-key auth, no password, no MFA). Implemented in
-  `src/ingestion/garmin_personal.py`. The API key is stored in `config.env` as
-  `GARMIN_PERSONAL_API_KEY` (create one at https://developer.garmin.com/).
-  Tokens are cached in `~/cycling-agent-data/.garmin_personal_token.json`.
-- **`legacy`** — the unofficial `garminconnect` client (email/password + MFA),
-  implemented in `src/ingestion/garmin_connect.py`. See the section below.
-
-### Dispatch
-
-`sync_garmin()` and `sync_activities()` in `garmin_connect.py` check
-`_use_personal_backend()` (reads `GARMIN_BACKEND`, default `personal`) and
-delegate to `garmin_personal.sync_garmin_personal` / `sync_activities_personal`
-when the Personal API is selected; otherwise they fall through to the legacy
-body unchanged. `is_sync_paused()` is backend-aware: the pause circuit breaker
-only applies to the legacy backend (the Personal API has no login to fail).
+Garmin data comes from the official **Garmin Connect Personal API** — the only
+backend. Implemented in `src/ingestion/garmin_personal.py` (client + wellness
+sync) with shared FIT parsing, rate limiting, and the batch activity pipeline
+in `src/ingestion/garmin_pipeline.py`. The old unofficial
+`garminconnect`/`garmin-auth` email+MFA backend (`garmin_connect.py`) has been
+deleted; `GARMIN_BACKEND`, `GARMIN_EMAIL`, `GARMIN_PASSWORD`, and
+`GARMIN_TOKENSTORE` are no longer read anywhere (stale keys in a user's
+`config.env` are simply ignored).
 
 ### Personal API notes
 
 - Base URL `https://personal.connectapi.garmin.com`; auth is
   `Authorization: ApiKey <key>` for the token endpoint, then `Bearer <token>`.
-- The activity-search endpoint **500s for `limit > 50`** — the client caps the
-  limit at `PERSONAL_MAX_ACTIVITY_LIMIT = 50`.
+  The key is stored in `config.env` as `GARMIN_PERSONAL_API_KEY`; the Bearer
+  token is cached in `~/cycling-agent-data/.garmin_personal_token.json`.
+- The activity-search endpoint **500s for `limit > 50`** —
+  `PERSONAL_MAX_ACTIVITY_LIMIT = 50`. `PersonalActivityClient.get_activities`
+  hides this cap by paginating internally, so the batch pipeline can request
+  its normal 100-item pages.
 - FIT downloads require an `Accept` header including
   `application/x-zip-compressed` (or `*/*`); `application/zip` alone → 406.
 - The Personal API does not expose the 4 `metrics-service` charts (endurance
   score, hill score, training readiness, morning training readiness); those
-  fields are left empty by the personal backend. The legacy backend still
-  fetches them.
-- The personal activity path reuses the legacy `_sync_activities_batch` /
+  fields are left empty.
+- The activity path runs the shared `_sync_activities_batch` /
   `_fetch_activity_streams` pipeline via a `PersonalActivityClient` adapter
-  (garminconnect-compatible `get_activities` / `count_activities` /
-  `download_activity`), so FIT parsing and stream storage are shared.
-
-## Garmin Authentication (garmin-auth 0.3.0) — Legacy backend
-
-The **legacy** backend (selected via `GARMIN_BACKEND=legacy`) uses `garmin-auth` 0.3.0 for Garmin Connect authentication. The API has specific patterns for MFA handling that must be followed to avoid breaking the auth flow.
-
-### Correct API Usage
-
-**For UI contexts (Streamlit Settings page):**
-
-```python
-from garmin_auth import GarminAuth
-
-# Phase 1: Initial login attempt
-auth = GarminAuth(
-    email=email,
-    password=password,
-    token_dir=tokenstore,
-    return_on_mfa=True,  # CRITICAL: don't prompt interactively
-)
-result = auth.login()
-
-if result == "needs_mfa":
-    # MFA required — save auth instance to session state
-    st.session_state.garmin_auth_instance = auth
-    # Show OTP input form to user
-else:
-    # result is a Garmin client — success
-    client = result
-
-# Phase 2: Complete MFA (after user enters OTP)
-auth = st.session_state.garmin_auth_instance
-auth.resume_login(mfa_code)  # Returns Garmin client on success
-```
-
-**For non-interactive contexts (background sync, cron jobs):**
-
-```python
-auth = GarminAuth(
-    email=email,
-    password=password,
-    token_dir=tokenstore,
-    return_on_mfa=True,  # CRITICAL: don't prompt interactively
-)
-result = auth.login()
-
-if result == "needs_mfa":
-    raise RuntimeError(
-        "Garmin login requires MFA but running non-interactively. "
-        "Please log in via the Settings page first to cache tokens."
-    )
-
-client = result
-```
-
-### Critical Points
-
-1. **`auth.login()` handles cached tokens automatically.** It tries cached tokens first via `_try_cached_login()` internally, then falls back to fresh login. You do NOT need to call a separate method to check cached tokens.
-
-2. **Always use `return_on_mfa=True` in non-interactive contexts.** This prevents garmin-auth from calling the `prompt_mfa` callback, which would fail in Streamlit/background jobs.
-
-3. **Never call `auth.get_garmin()` — this method doesn't exist in garmin-auth 0.3.0.** The correct method is `auth.login()`.
-
-4. **For MFA completion, call `auth.resume_login(code)` on the SAME instance** that returned `"needs_mfa"`. Creating a new `GarminAuth` instance loses the pending MFA state and will trigger a new login attempt (causing duplicate OTP emails).
-
-5. **Tokens are automatically persisted** by garmin-auth after successful login. They're stored in the `token_dir` directory and reused on subsequent calls.
-
-### Common Mistakes
-
-- Using `prompt_mfa` callback instead of `return_on_mfa=True` — causes interactive prompts in non-interactive contexts
-- Calling `auth.get_garmin()` — this method doesn't exist, will raise `AttributeError`
-- Creating a new `GarminAuth` instance for MFA completion — loses pending MFA state, triggers duplicate login attempts
-- Not checking for `result == "needs_mfa"` — will treat the sentinel string as a valid client
-- Calling `auth.login()` twice without saving the instance — triggers multiple login attempts to Garmin servers, may cause rate limiting
-
-### Tokenstore Path Consistency
-
-**CRITICAL:** The `token_dir` parameter must be consistent across all authentication calls.
-
-- The UI login (Settings page) uses `os.environ.get("GARMIN_TOKENSTORE", "")` to get the token directory
-- The sync functions (`sync_garmin()`, `sync_activities()`) call `_create_client()` which must use the **same** token directory
-- If the paths differ, tokens saved during UI login won't be found during sync, causing fresh login attempts and MFA emails
-
-**Solution:** `_create_client()` should default to `os.getenv("GARMIN_TOKENSTORE", "")` when `tokenstore` parameter is `None`:
-
-```python
-def _create_client(tokenstore: str | None = None) -> "garminconnect.Garmin":
-    ...
-    if tokenstore is None:
-        tokenstore = os.getenv("GARMIN_TOKENSTORE", "")
-    
-    auth = GarminAuth(
-        email=email,
-        password=password,
-        token_dir=tokenstore if tokenstore else "~/.garminconnect",
-        return_on_mfa=True,
-    )
-    ...
-```
-
-This ensures both UI login and background sync use the same token directory.
+  (`get_activities` / `count_activities` / `download_activity`), so FIT
+  parsing and stream storage are shared with the wellness path's helpers.
+- Public entry points are `sync_garmin()` (wellness) and `sync_activities()`
+  in `garmin_personal.py`; there is no pause circuit breaker (no login to
+  fail) — `is_sync_paused` no longer exists.
 
 ## Page Specs — Layout & Invariants
 
@@ -243,7 +137,7 @@ Default page: Dashboard. Page routing via `st.session_state.nav_page`.
 
 ### Settings (`_render_garmin_setup` + `_render_llm_settings` + `_render_memory_settings`)
 
-**Sections (top to bottom):** Garmin login form, sync buttons, sync progress (settings origin only), LLM endpoint config, memory journal.
+**Sections (top to bottom):** Garmin Personal API key form, sync buttons, sync progress (settings origin only), LLM endpoint config, memory journal.
 
 **Buttons:**
 - `Sync All Historical Data` — syncs all history (3650 days, unbounded), sets `sync_origin="settings"`. Progress shows **only** on Settings.
@@ -251,7 +145,7 @@ Default page: Dashboard. Page routing via `st.session_state.nav_page`.
 - `💾 Save` (LLM) — saves LLM config.
 - `🔍 Test Connection` (LLM) — tests LLM endpoint.
 
-**Invariant:** Garmin MFA flow lives here. Settings sync/reparse progress MUST NOT appear on any other page.
+**Invariant:** Settings sync/reparse progress MUST NOT appear on any other page.
 
 ### Coach (section within Dashboard, NOT a separate page)
 

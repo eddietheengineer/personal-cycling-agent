@@ -60,8 +60,7 @@ def _minimal_vault(tmp_path):
     os.environ["BIKES"] = "Road bike"
     os.environ["POWER_METER"] = "PowerTap"
     os.environ["HR_MONITOR"] = "Garmin HRM"
-    os.environ["GARMIN_EMAIL"] = ""
-    os.environ["GARMIN_PASSWORD"] = ""
+    os.environ["GARMIN_PERSONAL_API_KEY"] = ""
 
     yield str(vault)
 
@@ -71,7 +70,7 @@ def _minimal_vault(tmp_path):
                   "FTP_WATTS", "MAX_HR", "RESTING_HR", "LT1_POWER", "LT2_POWER",
                   "PRIMARY_GOAL", "SECONDARY_GOAL", "TRAINING_DAYS",
                   "MAX_SESSION_DURATION", "TERRAIN", "BIKES", "POWER_METER",
-                  "HR_MONITOR", "GARMIN_EMAIL", "GARMIN_PASSWORD"):
+                  "HR_MONITOR", "GARMIN_PERSONAL_API_KEY"):
             del os.environ[k]
 
 

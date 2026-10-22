@@ -20,17 +20,11 @@ Five layers:
 
 ## 1. Garmin Connect Ingestion
 
-**Module**: `src/ingestion/garmin_connect.py`
+**Module**: `src/ingestion/garmin_personal.py` (client + wellness sync) with shared FIT parsing, rate limiting, and the batch activity pipeline in `src/ingestion/garmin_pipeline.py`.
 
 ### Authentication
 
-Uses `garmin-auth` 0.3.0 wrapping Garmin SSO OAuth. Cached tokens persist across restarts. Token fallback chain:
-
-1. `GARMIN_TOKENSTORE` environment variable
-2. `/data/.garminconnect/` (container vault)
-3. `~/.garminconnect/` (home directory)
-
-First login requires email, password, and MFA OTP. After that, cached tokens auto-reuse.
+Uses the official **Garmin Connect Personal API** (`personal.connectapi.garmin.com`). The API key (`GARMIN_PERSONAL_API_KEY` in `config.env`) is exchanged for a 24h Bearer token; the token is cached in the vault (`.garmin_personal_token.json`) and refreshed automatically when expired. No email/password or MFA is involved.
 
 ### Rate Limiting
 
@@ -45,32 +39,21 @@ Two-phase fetch:
 
 **Bulk (once per session, date range):**
 
-| Garmin API | DB Column |
+| Personal API | DB Column |
 |---|---|
-| `get_weigh_ins(start, end)` | `wellness.weight` |
-| `get_body_composition(start, end)` | `wellness.weight` (fallback) |
-| `get_daily_steps(start, end)` | `wellness.steps` |
-| `get_endurance_score(start, end)` | `wellness.endurance_score` |
-| `get_hill_score(start, end)` | `wellness.hill_score` |
+| `weight_range(start, end)` | `wellness.weight` |
+| `daily_summaries(start, end)` | `wellness.steps`, `weight` (fallback) |
+
+The Personal API does not expose the metrics-service charts (endurance score, hill score, training readiness, morning training readiness); those columns stay empty.
 
 **Per-day (only for dates with bulk data, not already in DB):**
 
-| Garmin API | DB Column(s) |
+| Personal API | DB Column(s) |
 |---|---|
-| `get_hrv_data(date)` | `wellness.rmssd` |
-| `get_sleep_data(date)` | `wellness.sleep_score`, `sleep_hours` |
-| `get_stats(date)` | `wellness.resting_hr`, `stress` |
-| `get_heart_rates(date)` | `wellness.resting_hr`, `min_hr`, `max_hr` |
-| `get_respiration_data(date)` | `wellness.respiration_rate` |
-| `get_spo2_data(date)` | `wellness.spo2` |
-| `get_hydration_data(date)` | `wellness.hydration_ml` |
-| `get_intensity_minutes_data(date)` | `wellness.intensity_minutes` |
-| `get_body_battery(date)` | `wellness.body_battery` |
-| `get_floors(date)` | `wellness.floors` |
-| `get_training_readiness(date)` | `wellness.training_readiness_score` |
-| `get_user_summary(date)` | `wellness.calories`, `active_calories`, `distance_m` |
-| `get_lifestyle_logging_data(date)` | `raw_wellness` only |
-| `get_morning_training_readiness(date)` | `raw_wellness` only |
+| `hrv(date)` | `wellness.rmssd` |
+| `sleep(date)` | `wellness.sleep_score`, `sleep_hours` |
+| `body_battery(date)` | `wellness.body_battery` |
+| `daily_summaries` row | `wellness.resting_hr`, `stress`, `spo2`, `hydration_ml`, `intensity_minutes`, `calories`, `active_calories`, `distance_m` |
 
 All per-day responses are also stored as full JSON in `raw_wellness` for later re-extraction.
 
@@ -418,7 +401,7 @@ docker run -d --name pca -p 8501:8501 \
 
 - Source code baked into image (not volume-mounted)
 - Data persists at `/data` (mounted from host)
-- Garmin tokens at `/data/.garminconnect/`
+- Personal API token cache at `/data/.garmin_personal_token.json`
 - Wiki at `/data/wiki/`
 - SQLite DB at `/data/data/cycling_agent.sqlite`
 

@@ -1,4 +1,4 @@
-"""Tests for FIT field parsing in src.ingestion.garmin_connect._parse_fit_file.
+"""Tests for FIT field parsing in src.ingestion.garmin_pipeline._parse_fit_file.
 
 Verifies that session-level FIT fields are extracted correctly, with
 special attention to the total_elapsed_time conversion from
@@ -58,7 +58,7 @@ class TestFitFieldParsing:
         """Build the session-level extraction logic from _parse_fit_file
         and return the extracted values, without touching the DB or file system.
 
-        Mirrors the extraction block at garmin_connect.py lines 1430-1469.
+        Mirrors the extraction block at garmin_pipeline.py _parse_fit_frames.
         """
         fit_duration = None
         fit_distance = None
@@ -356,11 +356,11 @@ class TestFitFieldParsing:
             }),
         ]
 
-        with patch("src.ingestion.garmin_connect.fitdecode") as mock_fitdecode:
+        with patch("src.ingestion.garmin_pipeline.fitdecode") as mock_fitdecode:
             mock_fitdecode.FitReader.return_value = MockFitReader(frames)
             mock_fitdecode.FitDataMessage = MockFitDataMessage
 
-            from src.ingestion.garmin_connect import _parse_fit_file
+            from src.ingestion.garmin_pipeline import _parse_fit_file
 
             _parse_fit_file(
                 activity_id=12345,
@@ -386,11 +386,11 @@ class TestFitFieldParsing:
                 "total_elapsed_time": MockFitField(600000),  # 10 min in ms
             }),
         ]
-        with patch("src.ingestion.garmin_connect.fitdecode") as mock_fitdecode:
+        with patch("src.ingestion.garmin_pipeline.fitdecode") as mock_fitdecode:
             mock_fitdecode.FitReader.return_value = MockFitReader(frames)
             mock_fitdecode.FitDataMessage = MockFitDataMessage
 
-            from src.ingestion.garmin_connect import _parse_fit_file
+            from src.ingestion.garmin_pipeline import _parse_fit_file
 
             _parse_fit_file(
                 activity_id=99,

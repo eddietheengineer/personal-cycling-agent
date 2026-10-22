@@ -9,7 +9,6 @@ Usage:
     python setup.py
 """
 
-import getpass
 import os
 import shutil
 import subprocess
@@ -74,27 +73,13 @@ def prompt(label: str, default: str = "") -> str:
 
 
 try:
-    from src.config import hash_password
+    from src.config import vault_path  # noqa: F401 — fails fast if deps missing
 except ImportError as e:
     import sys
     missing = str(e).split("'")[1] if "'" in str(e) else str(e)
     print(f"Missing dependency: {missing}")
     print(f"Run: pip install -r requirements.txt")
     sys.exit(1)
-
-
-def prompt_password(label: str, existing_hash: str = "") -> tuple[str, str]:
-    """
-    Prompt for a password securely (no echo).
-    Returns (hash_line, raw_value) for storage in config.env.
-    If the user presses Enter with no input, returns ("", "").
-    """
-    hint = f" (currently set)" if existing_hash and (existing_hash.startswith("hash:") or existing_hash.startswith("pbkdf2:")) else ""
-    print(f"  {label}{hint}: ", end="", flush=True)
-    raw = getpass.getpass("")
-    if not raw:
-        return "", ""
-    return hash_password(raw)
 
 
 def read_env() -> dict[str, str]:
@@ -196,30 +181,22 @@ def _check_openai_compat(base_url: str) -> tuple[bool, list[str]]:
 # ── Sections ─────────────────────────────────────────────────────────
 
 def setup_env() -> None:
-    banner("Garmin Connect Credentials")
+    banner("Garmin Connect (Personal API)")
 
     env = read_env()
 
     print("  Garmin Connect is the primary data source for this agent.")
     print("  It provides HRV/RMSSD, RHR, stress, sleep, weight, and activities.")
-    print("  Get your credentials from your Garmin Connect account.")
+    print("  Create a Personal API key in the Garmin Connect web UI:")
+    print("  Settings -> Developer Settings -> Personal API (API key).")
     print()
 
-    env["GARMIN_EMAIL"] = prompt(
-        "  Garmin email", env.get("GARMIN_EMAIL", "")
+    env["GARMIN_PERSONAL_API_KEY"] = prompt(
+        "  Garmin Personal API key", env.get("GARMIN_PERSONAL_API_KEY", "")
     )
 
-    if env["GARMIN_EMAIL"]:
-        h, raw = prompt_password(
-            "  Garmin password", env.get("GARMIN_PASSWORD", "")
-        )
-        env["GARMIN_PASSWORD"] = h
-        env["GARMIN_TOKENSTORE"] = prompt(
-            "  Token store path (blank for default)",
-            env.get("GARMIN_TOKENSTORE", ""),
-        )
-    else:
-        print("\n  ⚠  Garmin email is required. Set it later in config.env or re-run setup.")
+    if not env["GARMIN_PERSONAL_API_KEY"]:
+        print("\n  ⚠  Personal API key is required for Garmin sync. Set it later in config.env or re-run setup.")
 
     banner("LLM (OpenAI-compatible)")
 
@@ -316,24 +293,21 @@ def setup_garmin() -> None:
 
     # Option 2: API sync
     print()
-    email = os.getenv("GARMIN_EMAIL", "")
-    if email:
-        answer = prompt("  Sync HRV data from Garmin Connect API? [y/N]", "").lower()
+    api_key = os.getenv("GARMIN_PERSONAL_API_KEY", "")
+    if api_key:
+        answer = prompt("  Sync HRV data from the Garmin Personal API? [y/N]", "").lower()
         if answer == "y":
             try:
-                from src.ingestion.garmin_connect import sync_garmin
+                from src.ingestion.garmin_personal import sync_garmin
                 days = prompt("  Days to sync back", "90")
                 counts = sync_garmin(days=int(days))
                 print(f"  ✓  Synced {counts['wellness_records']} records ({counts['with_hrv']} with HRV)")
-            except ImportError as e:
-                print(f"  ⚠  {e}")
-                print("  Install with: pip install garminconnect curl_cffi")
             except Exception as e:
                 print(f"  ⚠  Sync failed: {e}")
         else:
-            print("  Skipped API sync. Run later: python -m src.ingestion.garmin_connect")
+            print("  Skipped API sync.")
     else:
-        print("  Garmin credentials not set. Set GARMIN_EMAIL/GARMIN_PASSWORD in config.env for API sync.")
+        print("  Personal API key not set. Set GARMIN_PERSONAL_API_KEY in config.env for API sync.")
     print()
 
 def setup_cron() -> None:
@@ -381,7 +355,7 @@ def main() -> None:
     banner("Setup Complete!")
     print()
     print(f"  Secrets stored in: {VAULT}")
-    print(f"  - {ENV_PATH}       (API keys, LLM, credentials)")
+    print(f"  - {ENV_PATH}       (API keys, LLM)")
     print(f"  - {PROFILE_PATH}  (training profile)")
     print(f"  - {VAULT}/data/   (SQLite DB, logs)")
     print()

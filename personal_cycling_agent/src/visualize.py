@@ -1834,60 +1834,14 @@ def _update_config_env(updates: dict) -> None:
     else:
         lines = []
     existing_keys = {l.split("=", 1)[0] for l in lines if "=" in l}
-    raw_lines_to_add = []
     for k, v in updates.items():
-        if k == "GARMIN_PASSWORD":
-            os.environ[k] = v
-            raw_lines_to_add.append(f'{k}_RAW="{v}"')
-            hashed, _ = config.hash_password(v)
-            v = hashed
         if k in existing_keys:
             lines = [f'{k}="{v}"' if l.startswith(f"{k}=") else l for l in lines]
         else:
             lines.append(f'{k}="{v}"')
-    for raw_line in raw_lines_to_add:
-        raw_key = raw_line.split("=", 1)[0]
-        if raw_key in existing_keys:
-            lines = [raw_line if l.startswith(f"{raw_key}=") else l for l in lines]
-        else:
-            lines.append(raw_line)
     env_path.write_text("\n".join(lines) + "\n")
     for k, v in updates.items():
-        if k != "GARMIN_PASSWORD":
-            os.environ[k] = v
-
-
-def _current_garmin_backend() -> str:
-    """Return the active Garmin backend: "personal" (default) or "legacy"."""
-    return os.getenv("GARMIN_BACKEND", "personal").strip().lower()
-
-
-def _render_backend_selector() -> None:
-    """Render the backend radio and persist the choice to config.env."""
-    current = _current_garmin_backend()
-    choice = st.radio(
-        "Garmin data source",
-        options=["personal", "legacy"],
-        index=0 if current == "personal" else 1,
-        format_func=lambda v: {
-            "personal": "Personal API (recommended)",
-            "legacy": "Legacy (email/password + MFA)",
-        }[v],
-        horizontal=True,
-        key="garmin_backend_selector",
-        help=(
-            "Personal API uses your official Garmin Personal API key (no "
-            "password, no MFA). Legacy uses the unofficial garminconnect "
-            "client with email/password."
-        ),
-    )
-    if choice != current:
-        _update_config_env({"GARMIN_BACKEND": choice})
-        os.environ["GARMIN_BACKEND"] = choice
-        st.session_state.garmin_auth_state = "idle"
-        st.session_state.garmin_auth_instance = None
-        st.session_state.garmin_auth_error = ""
-        st.rerun()
+        os.environ[k] = v
 
 
 def _render_personal_api_setup() -> None:
@@ -1956,204 +1910,18 @@ def _render_personal_api_setup() -> None:
             st.warning(f"Could not verify Personal API connection: {e}")
 
 
-def _render_legacy_auth_ui(current_email: str, has_credentials: bool) -> None:
-    """Render the legacy (email/password + MFA) Garmin auth UI."""
-    from src.ingestion.garmin_connect import is_sync_paused
-    # ── Auth state machine ───────────────────────────────────────────
-    # States: "idle" (no credentials), "mfa_pending" (needs OTP),
-    # "connected" (authenticated), "error" (auth failed)
-    auth_state = st.session_state.get("garmin_auth_state", "idle")
-    auth_instance = st.session_state.get("garmin_auth_instance", None)
-    auth_error = st.session_state.get("garmin_auth_error", "")
-
-    # Determine effective connection status: connected if we have
-    # credentials AND either a successful auth state or cached tokens
-    # (use _check_garmin_connected so Settings tab matches Dashboard)
-    has_cached_tokens = _check_garmin_connected()
-    is_connected = auth_state == "connected" or (has_credentials and has_cached_tokens) or has_cached_tokens
-
-    # ── Auth status display ──────────────────────────────────────────
-    if is_connected:
-        col_status, col_action = st.columns([3, 1])
-        with col_status:
-            if current_email:
-                st.success(f"Connected as: {current_email}")
-            else:
-                st.success("Connected (cached tokens found)")
-        with col_action:
-            if st.button("Modify", key="modify_credentials"):
-                st.session_state.show_clear_dialog = True
-    elif auth_state == "mfa_pending":
-        if auth_instance is None:
-            # Session lost (e.g. browser restart) — need fresh login
-            st.warning("MFA session expired. Please sign in again.")
-            st.session_state.garmin_auth_state = "idle"
-            st.rerun()
-        else:
-            st.warning("MFA required. Enter your verification code below.")
-    elif auth_state == "error":
-        st.error(f"Authentication failed: {auth_error}")
-        if is_sync_paused():
-            st.info("Background sync is paused and will not retry. It resumes automatically after a successful sign-in.")
-        if has_credentials:
-            st.info("Your credentials are saved. Try signing in again.")
-            if st.button("Sign In Again", key="signin_retry"):
-                st.session_state.garmin_auth_state = "idle"
-                st.session_state.garmin_auth_instance = None
-                st.session_state.garmin_auth_error = ""
-                st.rerun()
-    elif has_credentials:
-        if is_sync_paused():
-            # Credentials saved but sync is paused after a login failure.
-            # Do NOT auto-retry — sign in manually below to resume.
-            st.warning(
-                "Automatic sync is paused after a login failure. "
-                "Sign in below to resume."
-            )
-        else:
-            # Credentials saved but not yet authenticated — try to auth now
-            # (handles page reload after initial sign-in)
-            st.info("Credentials saved. Attempting to authenticate...")
-            from src.ingestion.garmin_connect import authenticate_garmin
-            tokenstore = os.environ.get("GARMIN_TOKENSTORE", "")
-            result, auth_inst = authenticate_garmin(
-                current_email, os.environ.get("GARMIN_PASSWORD", ""), tokenstore
-            )
-            if result.success:
-                st.session_state.garmin_auth_state = "connected"
-                st.session_state.garmin_auth_instance = None
-                st.session_state.garmin_auth_error = ""
-                st.success(f"Connected as: {current_email}")
-                is_connected = True
-                st.rerun()
-            elif result.mfa_required:
-                st.session_state.garmin_auth_state = "mfa_pending"
-                st.session_state.garmin_auth_instance = auth_inst
-                st.session_state.garmin_auth_error = ""
-                st.rerun()
-            else:
-                st.session_state.garmin_auth_state = "error"
-                st.session_state.garmin_auth_error = result.error
-                st.rerun()
-    else:
-        st.info("Not connected to Garmin Connect. Sign in below.")
-
-    # ── Clear credentials dialog ─────────────────────────────────────
-    if st.session_state.get("show_clear_dialog"):
-        with st.form("clear_dialog", clear_on_submit=False):
-            st.warning("This will clear your Garmin credentials. You'll need to sign in again.")
-            c1, c2 = st.columns(2)
-            with c1:
-                yes_clicked = st.form_submit_button("Yes, Clear", type="primary")
-            with c2:
-                no_clicked = st.form_submit_button("No, Keep")
-            if yes_clicked or no_clicked:
-                st.session_state.show_clear_dialog = False
-            if yes_clicked:
-                _update_config_env({"GARMIN_EMAIL": "", "GARMIN_PASSWORD": ""})
-                os.environ.pop("GARMIN_EMAIL", None)
-                os.environ.pop("GARMIN_PASSWORD", None)
-                st.session_state.garmin_auth_state = "idle"
-                st.session_state.garmin_auth_instance = None
-                st.session_state.garmin_auth_error = ""
-                st.success("Credentials cleared.")
-                st.rerun()
-            if no_clicked:
-                st.rerun()
-
-    # ── MFA completion form ──────────────────────────────────────────
-    if auth_state == "mfa_pending" and auth_instance is not None:
-        with st.form("garmin_mfa", clear_on_submit=False):
-            mfa_code = st.text_input(
-                "Verification Code",
-                type="password",
-                placeholder="Enter the 6-digit code from your phone",
-                key="garmin_mfa_input",
-            )
-            mfa_clicked = st.form_submit_button("Verify", type="primary")
-
-            if mfa_clicked:
-                if not mfa_code:
-                    st.error("Verification code is required.")
-                else:
-                    from src.ingestion.garmin_connect import authenticate_garmin
-                    result, auth_inst = authenticate_garmin(
-                        "", "", "", mfa_code=mfa_code, auth_instance=auth_instance
-                    )
-                    if result.success:
-                        st.session_state.garmin_auth_state = "connected"
-                        st.session_state.garmin_auth_instance = None
-                        st.session_state.garmin_auth_error = ""
-                        st.success("Authenticated successfully!")
-                        st.rerun()
-                    else:
-                        st.session_state.garmin_auth_error = result.error
-                        st.error(f"Verification failed: {result.error}")
-                        # Keep in mfa_pending so user can retry
-                        st.session_state.garmin_auth_instance = auth_inst
-
-    show_signin = (not has_credentials) or (auth_state == "error") or is_sync_paused() or (auth_state == "mfa_pending" and auth_instance is None)
-    # ── Sign-in form (when no credentials, in error state, or MFA session lost) ──
-    if show_signin:
-        with st.form("garmin_signin", clear_on_submit=False):
-            email = st.text_input("Garmin Email", placeholder="you@garmin.com", key="garmin_email_input")
-            password = st.text_input("Garmin Password", type="password", placeholder="Your Garmin Connect password", key="garmin_password_input")
-            signin_clicked = st.form_submit_button("Sign In", type="primary")
-
-            if signin_clicked:
-                if not email or not password:
-                    st.error("Email and password are required.")
-                else:
-                    _update_config_env({"GARMIN_EMAIL": email, "GARMIN_PASSWORD": password})
-                    # Immediately attempt authentication
-                    from src.ingestion.garmin_connect import authenticate_garmin
-                    tokenstore = os.environ.get("GARMIN_TOKENSTORE", "")
-                    result, auth_inst = authenticate_garmin(
-                        email, password, tokenstore
-                    )
-                    if result.success:
-                        st.session_state.garmin_auth_state = "connected"
-                        st.session_state.garmin_auth_instance = None
-                        st.session_state.garmin_auth_error = ""
-                        st.success("Authenticated successfully!")
-                        st.rerun()
-                    elif result.mfa_required:
-                        st.session_state.garmin_auth_state = "mfa_pending"
-                        st.session_state.garmin_auth_instance = auth_inst
-                        st.session_state.garmin_auth_error = ""
-                        st.rerun()
-                    else:
-                        st.session_state.garmin_auth_state = "error"
-                        st.session_state.garmin_auth_error = result.error
-                        st.error(f"Authentication failed: {result.error}")
-
-
 def _render_garmin_setup():
     """Render the Garmin Connect setup and sync tab."""
     from src.tasks.worker import BackgroundSync
     from src.ingestion.garmin_export import sync_routes_from_fit
     from src.db.store import CyclingDB
-    from src.ingestion.garmin_connect import is_sync_paused
 
     st.subheader("Garmin Connect")
 
-    current_email = os.environ.get("GARMIN_EMAIL", "")
-    has_credentials = bool(current_email and os.environ.get("GARMIN_PASSWORD", ""))
+    _render_personal_api_setup()
 
-    # ── Backend selection ────────────────────────────────────────────
-    backend = _current_garmin_backend()
-    _render_backend_selector()
-
-    if backend == "personal":
-        _render_personal_api_setup()
-    else:
-        _render_legacy_auth_ui(current_email, has_credentials)
-
-    # Connection status for gating the sync buttons (backend-aware)
-    if backend == "personal":
-        is_connected = bool(os.environ.get("GARMIN_PERSONAL_API_KEY", "").strip())
-    else:
-        is_connected = _check_garmin_connected()
+    # Connection status for gating the sync buttons
+    is_connected = bool(os.environ.get("GARMIN_PERSONAL_API_KEY", "").strip())
 
     # ── Sync state ───────────────────────────────────────────────────
     db_sync = CyclingDB(str(config.db_path("cycling_agent.sqlite")))
@@ -2255,7 +2023,7 @@ def _render_garmin_setup():
     if reparse_clicked:
         if not st.session_state.get("rearsing") and not st.session_state.get("syncing"):
             from src.tasks.worker import background_task
-            from src.ingestion.garmin_connect import reparse_all_fit_files
+            from src.ingestion.garmin_pipeline import reparse_all_fit_files
             from src.main import run_analyze
 
             def _reparse_work(cb):
@@ -2451,7 +2219,7 @@ def _render_garmin_setup():
     else:
         st.info("No power meter data found. Click 'Extract Power Meter Info' to scan FIT files.")
         if st.button("Extract Power Meter Info", type="primary", use_container_width=True, key="extract_pm"):
-            from src.ingestion.garmin_connect import extract_power_meters
+            from src.ingestion.garmin_pipeline import extract_power_meters
             count = extract_power_meters()
             st.success(f"Extracted power meter info for {count} activities.")
             st.rerun()
@@ -2465,18 +2233,8 @@ def _render_garmin_setup():
             json.dump(st.session_state.excluded_power_meters, f)
 
 # ---------------------------------------------------------------------------
-# Garmin connection check (session state or cached tokens)
+# Sync results display
 # ---------------------------------------------------------------------------
-def _check_garmin_connected() -> bool:
-    """Return True if Garmin is connected via session state or has cached tokens."""
-    if st.session_state.get("garmin_auth_state") == "connected":
-        return True
-    # Check the same tokenstore the sync pipeline will actually use,
-    # so the UI status matches what a login would find.
-    from src.ingestion.garmin_connect import _resolve_tokenstore, _has_cached_tokens
-    return _has_cached_tokens(_resolve_tokenstore())
-
-
 def _display_sync_results(result: dict) -> None:
     """Render formatted sync results."""
     # Wellness summary

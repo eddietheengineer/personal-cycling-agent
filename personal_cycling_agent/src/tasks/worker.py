@@ -99,7 +99,6 @@ class BackgroundSync:
         self,
         days: int = 1,
         db_path: str | None = None,
-        tokenstore: str | None = None,
         progress_callback: Callable[[int, str], None] | None = None,
         unbounded: bool = False,
         run_analyze_after: bool = False,
@@ -110,7 +109,6 @@ class BackgroundSync:
         Args:
             days: Number of days of data to sync.
             db_path: Optional database path override.
-            tokenstore: Optional token store path override.
             progress_callback: Optional callback(progress_percent, stage_text).
             unbounded: If True, sync all historical data until rate-limited.
             run_analyze_after: If True, run analytics after sync completes.
@@ -126,14 +124,14 @@ class BackgroundSync:
 
             self._thread = threading.Thread(
                 target=self._run_sync,
-                args=(days, db_path, tokenstore, unbounded, run_analyze_after, run_prescribe_after),
+                args=(days, db_path, unbounded, run_analyze_after, run_prescribe_after),
                 daemon=True,
                 name="bg-sync",
             )
             self._thread.start()
-    def _run_sync(self, days: int, db_path: str | None, tokenstore: str | None, unbounded: bool = False, run_analyze_after: bool = False, run_prescribe_after: bool = False) -> None:
+    def _run_sync(self, days: int, db_path: str | None, unbounded: bool = False, run_analyze_after: bool = False, run_prescribe_after: bool = False) -> None:
         """Worker thread that runs the actual sync."""
-        from src.ingestion.garmin_connect import sync_garmin, sync_activities
+        from src.ingestion.garmin_personal import sync_garmin, sync_activities
 
         self._result.mark_running("Starting sync...")
         self._notify(0, "Starting sync...")
@@ -147,7 +145,6 @@ class BackgroundSync:
             wellness_counts = sync_garmin(
                 days=days,
                 db_path=db_path,
-                tokenstore=tokenstore,
                 unbounded=unbounded,
                 progress_callback=lambda p, s: self._result.update(progress=p, stage=s),
             )
@@ -164,7 +161,6 @@ class BackgroundSync:
             activity_counts = sync_activities(
                 days=days,
                 db_path=db_path,
-                tokenstore=tokenstore,
                 unbounded=unbounded,
                 progress_callback=lambda p, s: self._result.update(progress=p, stage=s),
             )

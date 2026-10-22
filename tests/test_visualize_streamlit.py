@@ -54,7 +54,6 @@ def _minimal_vault(tmp_path):
 
     os.environ["CYCLING_AGENT_VAULT"] = str(vault)
     os.environ["PANDAS_PYARROW_TO_PYTHON"] = "deprecated"
-    os.environ["GARMIN_TOKENSTORE"] = str(vault / "nonexistent_tokenstore")
     os.environ["ATHLETE_NAME"] = "Test Rider"
     os.environ["WEIGHT_KG"] = "72"
     os.environ["HEIGHT_CM"] = "175"
@@ -72,20 +71,18 @@ def _minimal_vault(tmp_path):
     os.environ["BIKES"] = "Road bike"
     os.environ["POWER_METER"] = "PowerTap"
     os.environ["HR_MONITOR"] = "Garmin HRM"
-    os.environ["GARMIN_EMAIL"] = ""
-    os.environ["GARMIN_PASSWORD"] = ""
+    os.environ["GARMIN_PERSONAL_API_KEY"] = ""
 
     yield str(vault)
 
     # Cleanup env
     for k in list(os.environ.keys()):
         if k in ("CYCLING_AGENT_VAULT", "PANDAS_PYARROW_TO_PYTHON",
-                  "GARMIN_TOKENSTORE",
                   "ATHLETE_NAME", "WEIGHT_KG", "HEIGHT_CM", "DISCIPLINE",
                   "FTP_WATTS", "MAX_HR", "RESTING_HR", "LT1_POWER", "LT2_POWER",
                   "PRIMARY_GOAL", "SECONDARY_GOAL", "TRAINING_DAYS",
                   "MAX_SESSION_DURATION", "TERRAIN", "BIKES", "POWER_METER",
-                  "HR_MONITOR", "GARMIN_EMAIL", "GARMIN_PASSWORD"):
+                  "HR_MONITOR", "GARMIN_PERSONAL_API_KEY"):
             del os.environ[k]
 
 
@@ -318,14 +315,6 @@ class TestSettingsPage:
         _navigate(app, "Settings")
         subheaders = [s.value for s in app.subheader]
         assert "Garmin Connect" in subheaders
-
-    def test_not_connected_message(self, app, monkeypatch):
-        """Legacy backend shows not connected message when no credentials."""
-        monkeypatch.setenv("GARMIN_BACKEND", "legacy")
-        _navigate(app, "Settings")
-        infos = [i.value for i in app.info]
-        assert any("Not connected" in v or "not connected" in v.lower() for v in infos), \
-            f"Expected connection status, got {infos}"
 
     def test_sync_all_historical_disabled_without_auth(self, app):
         """Sync All Historical Data button is disabled without auth."""

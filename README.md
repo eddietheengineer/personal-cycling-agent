@@ -108,15 +108,13 @@ python -m src.ingestion.garmin_export ~/Downloads/garmin_export.zip
 
 This imports daily wellness (RHR, stress, steps, SpO2, body battery) and all activities (power, HR, TSS, distance). The raw ZIP is archived in `~/cycling-agent-data/raw/`.
 
-**Garmin Connect API** — includes HRV/RMSSD (requires `garminconnect` package):
+**Garmin Connect API** — includes HRV/RMSSD (uses the official Personal API):
 
 ```bash
-pip install garminconnect curl_cffi   # curl_cffi spoofs TLS fingerprints for Garmin's bot detection
-python -m src.ingestion.garmin_connect    # syncs last 90 days
-python -m src.ingestion.garmin_connect 365  # syncs last year
+python -m src.ingestion.garmin_personal    # syncs recent wellness history
 ```
 
-Set `GARMIN_EMAIL` and `GARMIN_PASSWORD` in `~/cycling-agent-data/config.env` (or via `python setup.py`). Auth tokens are cached — you only log in once.
+Set `GARMIN_PERSONAL_API_KEY` in `~/cycling-agent-data/config.env` (or via `python setup.py`). Create the key in the Garmin Connect web UI under Settings → Developer Settings → Personal API. The Bearer token is cached in the vault and refreshed automatically — no password or MFA involved.
 
 ### 6. Daily Automation
 
@@ -135,12 +133,10 @@ All sensitive data lives in a **vault directory** outside the repository (`~/cyc
 
 | Path | Contents |
 |---|---|
-| `~/cycling-agent-data/config.env` | API keys, LLM endpoint, biometrics. Passwords stored as PBKDF2 hashes. |
+| `~/cycling-agent-data/config.env` | API keys, LLM endpoint, biometrics |
 | `~/cycling-agent-data/user_profile.md` | Training goals, constraints, equipment |
 | `~/cycling-agent-data/data/` | SQLite database, pipeline logs, prescriptions |
 | `~/cycling-agent-data/raw/` | Raw FIT/TCX/GPX files downloaded from Garmin Connect |
-
-**Password hashing:** API secrets are stored as `pbkdf2:<salt>:<hash>` with the plaintext kept in a `_RAW` companion variable. At runtime, the hash is verified before the plaintext is loaded into the process environment, and the `_RAW` variable is cleared immediately after resolution. If the hash doesn't match, the credential is rejected.
 
 **Raw data archival:** Every activity file downloaded from Garmin Connect is saved to `~/cycling-agent-data/raw/` alongside the processed database, so you always have the original telemetry.
 
@@ -172,7 +168,8 @@ src/
 ├── main.py                  # Pipeline orchestrator
 ├── visualize.py             # Streamlit dashboard (ingress-compatible)
 ├── ingestion/
-│   ├── garmin_connect.py    # Garmin Connect API client
+│   ├── garmin_personal.py   # Garmin Personal API client + sync
+│   ├── garmin_pipeline.py   # Shared FIT parsing / rate limiting / batch sync
 │   └── garmin_export.py     # Garmin data export importer
 ├── analytics/
 │   ├── readiness.py         # Two-factor readiness engine

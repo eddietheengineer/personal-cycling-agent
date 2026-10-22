@@ -1,23 +1,23 @@
-"""Tests for wellness sync in src.ingestion.garmin_connect.
+"""Tests for wellness sync in src.ingestion.garmin_personal.
 
 Verifies that the per-day fetch loop formats dates correctly as
-'YYYY-MM-DD' strings when calling the Garmin client methods
-(get_hrv_data, get_sleep_data, get_stats). This catches bugs where
-target_str might be formatted wrong (e.g. '%m-%d-%Y', '%Y/%m/%d',
-or a datetime object instead of a string).
+'YYYY-MM-DD' strings when calling the Personal API client methods
+(hrv, sleep, body_battery). This catches bugs where the date string
+might be formatted wrong (e.g. '%m-%d-%Y', '%Y/%m/%d', or a datetime
+object instead of a string).
 
-Also tests _safe_timestamp_to_date for edge cases.
+Also tests _safe_timestamp_to_date for edge cases and the unbounded
+forward catch-up date logic.
 
-All Garmin client calls are mocked — no external API calls are made.
+All Garmin API calls are mocked — no external API calls are made.
 """
 
-import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.ingestion.garmin_connect import (
+from src.ingestion.garmin_pipeline import (
     _safe_timestamp_to_date,
 )
 
@@ -73,130 +73,108 @@ class TestSafeTimestampToDate:
 
 class TestWellnessSyncDateFormatting:
     """Verify that the wellness sync loop passes correctly formatted
-    date strings to Garmin client methods."""
+    date strings to the Personal API client methods.
+
+    Exercises the real ``sync_garmin`` with a mocked ``PersonalApi`` and
+    ``CyclingDB`` — no network, no real DB.
+    """
 
     @pytest.fixture
-    def mock_client(self):
-        """Create a mock Garmin client that records all call arguments."""
-        client = MagicMock()
-        client.get_hrv_data.return_value = {"hrvSummary": {"lastNightAvg": 45.0}}
-        client.get_sleep_data.return_value = {"sleepScore": 80, "sleepTimeSeconds": 28800}
-        client.get_stats.return_value = {
-            "restingHeartRate": 52,
-            "allDayStress": {"averageStressLevel": 30},
-        }
-        return client
+    def mock_api(self):
+        """Create a mock PersonalApi that records all call arguments.
+
+        daily_summaries returns a step value for every date in the requested
+        range so the per-day fetch loop considers those dates (it only
+        fetches days that have bulk/watch data).
+        """
+        api = MagicMock()
+        api.weight_range.return_value = {}
+
+        def _summaries(start, end):
+            out = {}
+            d = datetime.strptime(start, "%Y-%m-%d").date()
+            end_d = datetime.strptime(end, "%Y-%m-%d").date()
+            while d <= end_d:
+                out[d.strftime("%Y-%m-%d")] = {"movement": {"steps": {"value": 8000}}}
+                d += timedelta(days=1)
+            return out
+
+        api.daily_summaries.side_effect = _summaries
+        api.hrv.return_value = {"hrvSummary": {"lastNightAvg": 45.0}}
+        api.sleep.return_value = {"sleepScore": 80, "sleepTimeSeconds": 28800}
+        api.body_battery.return_value = []
+        return api
 
     @pytest.fixture
     def mock_db(self):
         """Create a mock CyclingDB."""
         db = MagicMock()
+        db.get_last_synced.return_value = "2025-01-12"
         db.get_wellness_dates.return_value = set()
         db.store_wellness.return_value = 1
         return db
 
-    def _build_sync_loop(self, mock_client, mock_db, sync_dates):
-        """Reproduce the core per-day fetch loop from sync_garmin
-        so we can inspect the date strings passed to client methods.
+    def _run_sync(self, mock_api, mock_db, days):
+        """Run the real sync_garmin with everything mocked."""
+        from src.ingestion import garmin_personal as gp
 
-        This mirrors the loop at garmin_connect.py lines 1195-1292.
-        """
-        with patch("src.ingestion.garmin_connect._rate_limiter"):
-            weight_by_date = {}
-            steps_by_date = {}
-            bulk_dates = set()
-            for d in sync_dates:
-                ds = d.strftime("%Y-%m-%d")
-                weight_by_date[ds] = 72.0
-                steps_by_date[ds] = 8000
-                bulk_dates.add(ds)
+        with patch.object(gp, "PersonalApi", return_value=mock_api), \
+             patch.object(gp, "CyclingDB", return_value=mock_db), \
+             patch.object(gp, "get_personal_api_key", return_value="test-key"), \
+             patch.object(gp, "rate_limiter"), \
+             patch.object(gp, "reset_rate_limiter"), \
+             patch.object(gp, "GARMIN_WELLNESS_POLL_INTERVAL", 0):
+            return gp.sync_garmin(days=days, db_path="/tmp/test_dates.db")
 
-            fetch_dates = [d for d in sync_dates if d.strftime("%Y-%m-%d") in bulk_dates]
+    def test_hrv_called_with_yyyy_mm_dd(self, mock_api, mock_db):
+        self._run_sync(mock_api, mock_db, days=3)
 
-            for d in fetch_dates:
-                target_str = d.strftime("%Y-%m-%d")
-
-                # HRV fetch — call through _retry_on_rate_limit mock
-                with patch("src.ingestion.garmin_connect._retry_on_rate_limit", side_effect=lambda fn: fn()):
-                    mock_client.get_hrv_data(target_str)
-
-                # Sleep fetch
-                with patch("src.ingestion.garmin_connect._retry_on_rate_limit", side_effect=lambda fn: fn()):
-                    mock_client.get_sleep_data(target_str)
-
-                # Stats fetch
-                with patch("src.ingestion.garmin_connect._retry_on_rate_limit", side_effect=lambda fn: fn()):
-                    mock_client.get_stats(target_str)
-
-                # Build record (mirrors sync_garmin)
-                weight = weight_by_date.get(target_str)
-                steps = steps_by_date.get(target_str)
-
-                if any([weight, steps]):
-                    record = {
-                        "date": target_str,
-                        "weight": weight,
-                        "steps": steps,
-                    }
-                    mock_db.store_wellness([record])
-
-            return mock_client
-
-    def test_hrv_data_called_with_yyyy_mm_dd(self, mock_client, mock_db):
-        sync_dates = [date(2025, 1, 15), date(2025, 1, 14), date(2025, 1, 13)]
-        self._build_sync_loop(mock_client, mock_db, sync_dates)
-
-        calls = [c[0][0] for c in mock_client.get_hrv_data.call_args_list]
+        calls = [c[0][0] for c in mock_api.hrv.call_args_list]
         assert len(calls) == 3
-        assert calls == ["2025-01-15", "2025-01-14", "2025-01-13"]
+        assert calls == ["2025-01-13", "2025-01-14", "2025-01-15"]
 
-    def test_sleep_data_called_with_yyyy_mm_dd(self, mock_client, mock_db):
-        sync_dates = [date(2025, 6, 1), date(2025, 5, 31)]
-        self._build_sync_loop(mock_client, mock_db, sync_dates)
+    def test_sleep_called_with_yyyy_mm_dd(self, mock_api, mock_db):
+        self._run_sync(mock_api, mock_db, days=2)
 
-        calls = [c[0][0] for c in mock_client.get_sleep_data.call_args_list]
-        assert calls == ["2025-06-01", "2025-05-31"]
+        calls = [c[0][0] for c in mock_api.sleep.call_args_list]
+        assert calls == ["2025-01-13", "2025-01-14"]
 
-    def test_stats_called_with_yyyy_mm_dd(self, mock_client, mock_db):
-        sync_dates = [date(2025, 12, 25), date(2025, 12, 24)]
-        self._build_sync_loop(mock_client, mock_db, sync_dates)
+    def test_body_battery_called_with_yyyy_mm_dd(self, mock_api, mock_db):
+        self._run_sync(mock_api, mock_db, days=2)
 
-        calls = [c[0][0] for c in mock_client.get_stats.call_args_list]
-        assert calls == ["2025-12-25", "2025-12-24"]
+        calls = [c[0][0] for c in mock_api.body_battery.call_args_list]
+        assert calls == ["2025-01-13", "2025-01-14"]
 
-    def test_all_client_methods_receive_same_date(self, mock_client, mock_db):
-        sync_dates = [date(2025, 3, 15), date(2025, 3, 14)]
-        self._build_sync_loop(mock_client, mock_db, sync_dates)
+    def test_all_client_methods_receive_same_date(self, mock_api, mock_db):
+        self._run_sync(mock_api, mock_db, days=2)
 
-        hrv = [c[0][0] for c in mock_client.get_hrv_data.call_args_list]
-        sleep = [c[0][0] for c in mock_client.get_sleep_data.call_args_list]
-        stats = [c[0][0] for c in mock_client.get_stats.call_args_list]
-        assert hrv == sleep == stats
+        hrv = [c[0][0] for c in mock_api.hrv.call_args_list]
+        sleep = [c[0][0] for c in mock_api.sleep.call_args_list]
+        bb = [c[0][0] for c in mock_api.body_battery.call_args_list]
+        assert hrv == sleep == bb
 
-    def test_date_format_not_reversed_or_slashed(self, mock_client, mock_db):
-        sync_dates = [date(2025, 1, 15)]
-        self._build_sync_loop(mock_client, mock_db, sync_dates)
+    def test_date_format_not_reversed_or_slashed(self, mock_api, mock_db):
+        self._run_sync(mock_api, mock_db, days=1)
 
-        calls = [c[0][0] for c in mock_client.get_hrv_data.call_args_list]
+        calls = [c[0][0] for c in mock_api.hrv.call_args_list]
         for ds in calls:
             assert ds.startswith("2025-"), f"Date should start with year, got: {ds}"
             assert "/" not in ds, f"Date should use dashes, not slashes: {ds}"
 
-    def test_single_digit_month_and_day_padded(self, mock_client, mock_db):
-        sync_dates = [date(2025, 1, 5)]
-        self._build_sync_loop(mock_client, mock_db, sync_dates)
+    def test_single_digit_month_and_day_padded(self, mock_api, mock_db):
+        mock_db.get_last_synced.return_value = "2025-01-04"
+        self._run_sync(mock_api, mock_db, days=1)
 
-        calls = [c[0][0] for c in mock_client.get_hrv_data.call_args_list]
+        calls = [c[0][0] for c in mock_api.hrv.call_args_list]
         assert calls[0] == "2025-01-05"
 
-    def test_wellness_record_date_matches_target_str(self, mock_client, mock_db):
-        sync_dates = [date(2025, 7, 4)]
-        self._build_sync_loop(mock_client, mock_db, sync_dates)
+    def test_wellness_record_date_matches_target(self, mock_api, mock_db):
+        self._run_sync(mock_api, mock_db, days=1)
 
         store_calls = mock_db.store_wellness.call_args_list
         assert len(store_calls) == 1
         records = store_calls[0][0][0]
-        assert records[0]["date"] == "2025-07-04"
+        assert records[0]["date"] == "2025-01-13"
 
 
 # -- Unbounded forward catch-up (regression) --
@@ -207,12 +185,12 @@ class TestUnboundedForwardCatchUp:
     today. It previously went backwards from last_synced, which can never
     close a forward gap — it re-synced already-stored days instead.
 
-    All Garmin client calls and the DB are mocked — no network, no real DB.
+    All Personal API calls and the DB are mocked — no network, no real DB.
     """
 
     def _run_unbounded(self, last_synced, today):
         import datetime as real_datetime
-        from src.ingestion import garmin_connect as gc
+        from src.ingestion import garmin_personal as gp
 
         class FakeDateTime(real_datetime.datetime):
             @classmethod
@@ -223,30 +201,28 @@ class TestUnboundedForwardCatchUp:
         mock_db.get_last_synced.return_value = last_synced
         mock_db.get_wellness_dates.return_value = set()
 
-        mock_client = MagicMock()
+        mock_api = MagicMock()
         # Bulk fetches return empty so no per-day fetches are triggered.
-        for name in ("get_weigh_ins", "get_body_composition", "get_daily_steps"):
-            getattr(mock_client, name).return_value = []
+        mock_api.weight_range.return_value = {}
+        mock_api.daily_summaries.return_value = {}
 
-        with patch.object(gc, "datetime", FakeDateTime), \
-             patch.object(gc, "_create_client", return_value=mock_client), \
-             patch.object(gc, "CyclingDB", return_value=mock_db), \
-             patch.object(gc, "_get_garmin_credentials",
-                          return_value=("e@example.com", "pw", None)), \
-             patch.object(gc, "_rate_limiter"), \
-             patch.object(gc, "reset_rate_limiter"), \
-             patch.dict(os.environ, {"GARMIN_BACKEND": "legacy"}):
-            gc.sync_garmin(unbounded=True, db_path="/tmp/test_unbounded.db")
-        return mock_client
+        with patch.object(gp, "datetime", FakeDateTime), \
+             patch.object(gp, "PersonalApi", return_value=mock_api), \
+             patch.object(gp, "CyclingDB", return_value=mock_db), \
+             patch.object(gp, "get_personal_api_key", return_value="test-key"), \
+             patch.object(gp, "rate_limiter"), \
+             patch.object(gp, "reset_rate_limiter"):
+            gp.sync_garmin(unbounded=True, db_path="/tmp/test_unbounded.db")
+        return mock_api
 
     def test_forward_catch_up_from_past_last_synced(self):
         today = date(2026, 10, 10)
-        client = self._run_unbounded("2026-09-01", today)
-        args = client.get_weigh_ins.call_args[0]
+        api = self._run_unbounded("2026-09-01", today)
+        args = api.weight_range.call_args[0]
         assert args[0] == "2026-09-02"  # last_synced + 1 day
         assert args[1] == "2026-10-10"  # today
 
     def test_already_up_to_date_makes_no_client_calls(self):
         today = date(2026, 10, 10)
-        client = self._run_unbounded("2026-10-10", today)  # last_synced == today
-        client.get_weigh_ins.assert_not_called()
+        api = self._run_unbounded("2026-10-10", today)  # last_synced == today
+        api.weight_range.assert_not_called()
