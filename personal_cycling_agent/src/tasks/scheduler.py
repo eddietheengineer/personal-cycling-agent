@@ -28,7 +28,7 @@ from typing import Any
 
 from src import config
 from src.config.constants import DEFAULT_ACTIVITY_SYNC_HOURS, DEFAULT_WELLNESS_SYNC_HOURS
-from src.tasks.worker import get_default_sync
+from src.tasks.worker import get_default_sync, get_default_task
 
 
 # Module-level lock for config.env writes (prevents TOCTOU between threads)
@@ -83,7 +83,8 @@ class SyncScheduler:
     - Activities: polls every N hours for new completed activities
     - Wellness: polls every N hours for new daily wellness data
 
-    Skips a cycle if a manual sync is already running (avoids collisions).
+    Skips a cycle if manual background work (a sync or a reparse task) is
+    already running (avoids collisions).
     """
 
     def __init__(self):
@@ -169,10 +170,18 @@ class SyncScheduler:
                 )
         logger.info("Sync scheduler stopped")
 
-    def _is_manual_sync_running(self) -> bool:
-        """Check if a user-initiated sync is currently running."""
-        bg = get_default_sync()
-        return bg is not None and bg.is_running
+    def _is_background_work_running(self) -> bool:
+        """Check if user-initiated background work is currently running.
+
+        Covers both a manual sync (``BackgroundSync``) and a reparse or
+        prescribe task (``BackgroundTask``) — all three write the same
+        database and FIT store the auto-sync cycles write to.
+        """
+        bg_sync = get_default_sync()
+        if bg_sync is not None and bg_sync.is_running:
+            return True
+        bg_task = get_default_task()
+        return bg_task is not None and bg_task.is_running
 
     def _run(self) -> None:
         """Main scheduler loop.
@@ -202,13 +211,13 @@ class SyncScheduler:
 
                 # ── Activity check ──
                 if now >= next_activity_check:
-                    if not self._is_manual_sync_running():
+                    if not self._is_background_work_running():
                         self._sync_activities()
                     next_activity_check = now + activity_interval
 
                 # ── Wellness check ──
                 if now >= next_wellness_check:
-                    if not self._is_manual_sync_running():
+                    if not self._is_background_work_running():
                         self._sync_wellness()
                     next_wellness_check = now + wellness_interval
 

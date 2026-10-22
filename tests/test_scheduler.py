@@ -6,6 +6,7 @@ Covers review finding A5:
 - enabling the scheduler runs exactly one initial sync (no double-sync when
   the Settings Save button calls set_enabled on every click)
 - stop() cannot orphan a mid-sync loop into a second concurrent loop
+- auto-sync skips firing while a reparse BackgroundTask is in flight
 """
 
 import threading
@@ -194,3 +195,35 @@ def test_start_respects_disabled_flag(sched, monkeypatch):
 
     assert not sched.is_running
     assert rec.activity_calls == 0
+
+
+def test_auto_sync_skips_while_reparse_task_running(sched, monkeypatch):
+    """A BackgroundTask (Reparse FIT) in flight must block auto-sync fires —
+    both write the same database and FIT store. Once the task finishes,
+    syncs fire again."""
+    rec = SyncRecorder()
+    rec.attach(sched)
+
+    task_running = True
+
+    class FakeTask:
+        @property
+        def is_running(self) -> bool:
+            return task_running
+
+    monkeypatch.setattr(scheduler_module, "get_default_task", lambda: FakeTask())
+    # 0h = fire on every 20ms tick, so the post-reparse resume is observable
+    monkeypatch.setenv("AUTO_SYNC_ACTIVITY_HOURS", "0")
+    monkeypatch.setenv("AUTO_SYNC_WELLNESS_HOURS", "0")
+
+    sched.start()
+    time.sleep(0.3)  # ~15 loop ticks — an unguarded fire would land here
+
+    assert rec.activity_calls == 0, "auto-sync fired while a reparse task was running"
+    assert rec.wellness_calls == 0, "auto-sync fired while a reparse task was running"
+
+    task_running = False
+    assert _wait_for(lambda: rec.activity_calls >= 1, timeout=5.0), (
+        "auto-sync never resumed after the reparse task finished"
+    )
+    sched.stop()
