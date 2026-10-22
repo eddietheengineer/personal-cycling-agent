@@ -11,6 +11,7 @@ Also tests _safe_timestamp_to_date for edge cases.
 All Garmin client calls are mocked — no external API calls are made.
 """
 
+import os
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -233,7 +234,8 @@ class TestUnboundedForwardCatchUp:
              patch.object(gc, "_get_garmin_credentials",
                           return_value=("e@example.com", "pw", None)), \
              patch.object(gc, "_rate_limiter"), \
-             patch.object(gc, "reset_rate_limiter"):
+             patch.object(gc, "reset_rate_limiter"), \
+             patch.dict(os.environ, {"GARMIN_BACKEND": "legacy"}):
             gc.sync_garmin(unbounded=True, db_path="/tmp/test_unbounded.db")
         return mock_client
 

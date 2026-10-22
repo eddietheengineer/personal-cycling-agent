@@ -6,7 +6,7 @@ sync_activities(days=1) to keep data fresh without manual intervention.
 
 Configuration is persisted in config.env:
     AUTO_SYNC_ENABLED=true
-    AUTO_SYNC_ACTIVITY_MINUTES=30
+    AUTO_SYNC_ACTIVITY_HOURS=1
     AUTO_SYNC_WELLNESS_HOURS=6
 
 Usage:
@@ -27,7 +27,7 @@ from datetime import datetime
 from typing import Any
 
 from src import config
-from src.config.constants import DEFAULT_ACTIVITY_SYNC_MINUTES, DEFAULT_WELLNESS_SYNC_HOURS
+from src.config.constants import DEFAULT_ACTIVITY_SYNC_HOURS, DEFAULT_WELLNESS_SYNC_HOURS
 from src.tasks.worker import get_default_sync
 
 
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 # ── Defaults ──────────────────────────────────────────────────────────────
 
-DEFAULT_ACTIVITY_MINUTES = DEFAULT_ACTIVITY_SYNC_MINUTES
+DEFAULT_ACTIVITY_HOURS = DEFAULT_ACTIVITY_SYNC_HOURS
 DEFAULT_WELLNESS_HOURS = DEFAULT_WELLNESS_SYNC_HOURS
 
 
@@ -76,7 +76,7 @@ class SyncScheduler:
     """Daemon thread that periodically polls Garmin for new data.
 
     Two independent cycles:
-    - Activities: polls every N minutes for new completed activities
+    - Activities: polls every N hours for new completed activities
     - Wellness: polls every N hours for new daily wellness data
 
     Skips a cycle if a manual sync is already running (avoids collisions).
@@ -111,8 +111,8 @@ class SyncScheduler:
         return _env_bool("AUTO_SYNC_ENABLED", False)
 
     @property
-    def activity_interval_minutes(self) -> int:
-        return _env_int("AUTO_SYNC_ACTIVITY_MINUTES", DEFAULT_ACTIVITY_MINUTES)
+    def activity_interval_hours(self) -> int:
+        return _env_int("AUTO_SYNC_ACTIVITY_HOURS", DEFAULT_ACTIVITY_HOURS)
 
     @property
     def wellness_interval_hours(self) -> int:
@@ -141,7 +141,7 @@ class SyncScheduler:
             self._thread.start()
             logger.info(
                 f"Sync scheduler started: activities every "
-                f"{self.activity_interval_minutes}m, wellness every "
+                f"{self.activity_interval_hours}h, wellness every "
                 f"{self.wellness_interval_hours}h"
             )
 
@@ -160,7 +160,7 @@ class SyncScheduler:
 
     def _run(self) -> None:
         """Main scheduler loop."""
-        activity_interval = self.activity_interval_minutes * 60
+        activity_interval = self.activity_interval_hours * 3600
         wellness_interval = self.wellness_interval_hours * 3600
 
         # On startup, check for missed data immediately (don't wait for first interval)
@@ -259,14 +259,14 @@ class SyncScheduler:
         self._sync_wellness()
         logger.info("Auto-sync initial sync complete")
 
-    def set_intervals(self, activity_minutes: int, wellness_hours: int) -> None:
+    def set_intervals(self, activity_hours: int, wellness_hours: int) -> None:
         """Update sync intervals and persist to config.env."""
-        os.environ["AUTO_SYNC_ACTIVITY_MINUTES"] = str(activity_minutes)
+        os.environ["AUTO_SYNC_ACTIVITY_HOURS"] = str(activity_hours)
         os.environ["AUTO_SYNC_WELLNESS_HOURS"] = str(wellness_hours)
-        _write_env("AUTO_SYNC_ACTIVITY_MINUTES", str(activity_minutes))
+        _write_env("AUTO_SYNC_ACTIVITY_HOURS", str(activity_hours))
         _write_env("AUTO_SYNC_WELLNESS_HOURS", str(wellness_hours))
         logger.info(
-            f"Sync intervals updated: activities={activity_minutes}m, "
+            f"Sync intervals updated: activities={activity_hours}h, "
             f"wellness={wellness_hours}h"
         )
 

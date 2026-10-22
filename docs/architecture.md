@@ -107,15 +107,15 @@ Daemon thread running in the background. Two independent cycles:
 
 | Cycle | Interval | Call |
 |---|---|---|
-| Activities | 30 min (configurable) | `sync_activities(days=1)` |
-| Wellness | 6 hours (configurable) | `sync_garmin(days=1)` |
+| Activities | 1 hour (configurable, up to 48h) | `sync_activities(days=1)` |
+| Wellness | 6 hours (configurable, up to 48h) | `sync_garmin(days=1)` |
 
 Configuration via environment variables:
 
 | Setting | Env Var | Default |
 |---|---|---|
 | Enabled | `AUTO_SYNC_ENABLED` | `false` |
-| Activity interval | `AUTO_SYNC_ACTIVITY_MINUTES` | 30 |
+| Activity interval | `AUTO_SYNC_ACTIVITY_HOURS` | 1 |
 | Wellness interval | `AUTO_SYNC_WELLNESS_HOURS` | 6 |
 
 Collision avoidance: checks if a manual `BackgroundSync` is active; if so, skips the auto-sync cycle. On enable, triggers an immediate sync for both cycles.
@@ -373,7 +373,7 @@ wiki/
 │                     INGESTION LAYER                              │
 │  sync_garmin()     → wellness + raw_wellness                    │
 │  sync_activities() → raw_activities → FIT parse → activities    │
-│  scheduler.py      → auto-sync every 30min (act) / 6h (well)   │
+│  scheduler.py      → auto-sync every 1h (act) / 6h (well)    │
 └──────────────────────┬──────────────────────────────────────────┘
                        │
                        ▼

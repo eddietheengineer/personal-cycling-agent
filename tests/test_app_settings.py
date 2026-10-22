@@ -95,7 +95,7 @@ def _go(app: AppTest, page: str) -> AppTest:
 
 
 class TestGarminConnectSection:
-    """Garmin Connect subheader and sign-in UI."""
+    """Garmin Connect subheader and backend-specific auth UI."""
 
     def test_garmin_connect_subheader(self, app):
         """Settings page shows 'Garmin Connect' subheader."""
@@ -103,26 +103,43 @@ class TestGarminConnectSection:
         subheaders = [s.value for s in app.subheader]
         assert "Garmin Connect" in subheaders
 
-    def test_not_connected_info_message(self, app):
-        """Shows not connected message when no credentials are set."""
+    def test_personal_api_key_input_present(self, app):
+        """Default (personal) backend shows the Personal API key input."""
+        _go(app, "Settings")
+        key_inputs = [t for t in app.text_input if t.label == "Personal API Key"]
+        assert len(key_inputs) >= 1
+
+    def test_personal_api_buttons_present(self, app):
+        """Default (personal) backend shows Save key and Test connection."""
+        _go(app, "Settings")
+        btn_labels = [b.label for b in app.button]
+        assert "💾 Save key" in btn_labels
+        assert "🔍 Test connection" in btn_labels
+
+    def test_not_connected_info_message(self, app, monkeypatch):
+        """Legacy backend shows not connected message when no credentials are set."""
+        monkeypatch.setenv("GARMIN_BACKEND", "legacy")
         _go(app, "Settings")
         infos = [i.value for i in app.info]
         assert any("Not connected" in v or "not connected" in v.lower() for v in infos)
 
-    def test_sign_in_button_present(self, app):
-        """Sign In button is rendered in the Garmin sign-in form."""
+    def test_sign_in_button_present(self, app, monkeypatch):
+        """Legacy backend renders the Sign In button in the sign-in form."""
+        monkeypatch.setenv("GARMIN_BACKEND", "legacy")
         _go(app, "Settings")
         btn_labels = [b.label for b in app.button]
         assert "Sign In" in btn_labels
 
-    def test_garmin_email_input_present(self, app):
-        """Garmin Email text input is present."""
+    def test_garmin_email_input_present(self, app, monkeypatch):
+        """Legacy backend shows Garmin Email text input."""
+        monkeypatch.setenv("GARMIN_BACKEND", "legacy")
         _go(app, "Settings")
         email_inputs = [t for t in app.text_input if "Email" in t.label]
         assert len(email_inputs) >= 1
 
-    def test_garmin_password_input_present(self, app):
-        """Garmin Password text input is present."""
+    def test_garmin_password_input_present(self, app, monkeypatch):
+        """Legacy backend shows Garmin Password text input."""
+        monkeypatch.setenv("GARMIN_BACKEND", "legacy")
         _go(app, "Settings")
         pw_inputs = [t for t in app.text_input if "Password" in t.label]
         assert len(pw_inputs) >= 1

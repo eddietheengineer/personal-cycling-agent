@@ -319,8 +319,9 @@ class TestSettingsPage:
         subheaders = [s.value for s in app.subheader]
         assert "Garmin Connect" in subheaders
 
-    def test_not_connected_message(self, app):
-        """Shows not connected message when no credentials."""
+    def test_not_connected_message(self, app, monkeypatch):
+        """Legacy backend shows not connected message when no credentials."""
+        monkeypatch.setenv("GARMIN_BACKEND", "legacy")
         _navigate(app, "Settings")
         infos = [i.value for i in app.info]
         assert any("Not connected" in v or "not connected" in v.lower() for v in infos), \

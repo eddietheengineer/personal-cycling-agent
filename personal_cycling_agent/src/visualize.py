@@ -1232,7 +1232,7 @@ def _render_activity_detail():
             return
 
         with st.form("post_ride_checkin_form", clear_on_submit=False):
-            rpe = st.slider("RPE (Rate of Perceived Exertion)", 1, 10, 5,
+            rpe = st.select_slider("RPE (Rate of Perceived Exertion)", options=list(range(1, 11)), value=5,
                 format_func=lambda v: {1:"Very Easy",2:"Easy",3:"Moderate",4:"Somewhat Hard",5:"Hard",
                                        6:"Very Hard",7:"Extremely Hard",8:"Very Very Hard",9:"Max Effort",10:"Absolute Max"}[v])
             legs_feeling = st.selectbox("How did your legs feel?",
@@ -2310,31 +2310,31 @@ def _render_garmin_setup():
     scheduler = get_scheduler()
 
     enabled = scheduler.enabled
-    activity_min = scheduler.activity_interval_minutes
+    activity_hr = scheduler.activity_interval_hours
     wellness_hr = scheduler.wellness_interval_hours
 
     col_as1, col_as2, col_as3 = st.columns([2, 1, 1])
     col_as1.toggle("Enable auto-sync", value=enabled, key="auto_sync_toggle")
     col_as2.number_input(
-        "Activity check (min)",
-        min_value=10, max_value=120, value=activity_min, step=5,
-        key="auto_sync_activity_min",
+        "Activity check (hours)",
+        min_value=1, max_value=48, value=activity_hr, step=1,
+        key="auto_sync_activity_hr",
         help="How often to check for new completed activities",
     )
     col_as3.number_input(
         "Wellness check (hours)",
-        min_value=1, max_value=24, value=wellness_hr, step=1,
+        min_value=1, max_value=48, value=wellness_hr, step=1,
         key="auto_sync_wellness_hr",
         help="How often to check for new daily wellness data (HRV, RHR, sleep)",
     )
 
     if st.button("Save Auto-Sync Settings", type="primary", use_container_width=True, key="save_auto_sync"):
         new_enabled = st.session_state.auto_sync_toggle
-        new_activity_min = st.session_state.auto_sync_activity_min
+        new_activity_hr = st.session_state.auto_sync_activity_hr
         new_wellness_hr = st.session_state.auto_sync_wellness_hr
 
         scheduler.set_enabled(new_enabled)
-        scheduler.set_intervals(new_activity_min, new_wellness_hr)
+        scheduler.set_intervals(new_activity_hr, new_wellness_hr)
         st.session_state.auto_sync_saved = True
         st.rerun()
 

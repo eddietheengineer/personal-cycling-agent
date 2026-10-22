@@ -119,7 +119,7 @@ DEFAULT_SQL_QUERY_LIMIT = 100
 # Scheduler Defaults
 # Used in: tasks/scheduler.py
 # ---------------------------------------------------------------------------
-DEFAULT_ACTIVITY_SYNC_MINUTES = 30
+DEFAULT_ACTIVITY_SYNC_HOURS = 1
 DEFAULT_WELLNESS_SYNC_HOURS = 6
 
 # ---------------------------------------------------------------------------
